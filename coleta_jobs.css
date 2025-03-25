@@ -1,0 +1,599 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Runtime.InteropServices;
+using Microsoft.Win32;
+using System.Runtime.Versioning;
+
+namespace PrintRedirector
+{
+    [SupportedOSPlatform("windows")]
+    class Program
+    {
+        // Diretório onde os trabalhos de impressão serão armazenados temporariamente
+        private static string spoolDirectory = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PrintRedirector");
+        // Nome da impressora virtual
+        private static string virtualPrinterName = "Impressora Virtual Monitor3"; // Usando a mais recente criada
+        // Desativando redirecionamento para impressora real
+        private static bool enableRedirection = false;
+        // Contador de páginas total
+        private static int totalPageCount = 0;
+        // Arquivo de log para contagem de páginas
+        private static string logFile = Path.Combine(spoolDirectory, "print_log.txt");
+        // Diretório de spool do Windows
+        private static string windowsSpoolDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "spool", "PRINTERS");
+
+        static void Main(string[] args)
+        {
+            Console.WriteLine("Iniciando Redirecionador de Impressões...");
+            
+            // Configurar diretório de spool
+            try 
+            {
+                if (!Directory.Exists(spoolDirectory))
+                {
+                    Directory.CreateDirectory(spoolDirectory);
+                    Console.WriteLine($"Diretório de spool criado: {spoolDirectory}");
+                }
+                
+                // Criar arquivo de log se não existir
+                if (!File.Exists(logFile))
+                {
+                    File.WriteAllText(logFile, "=== REGISTRO DE TRABALHOS DE IMPRESSÃO ===" + Environment.NewLine);
+                    Console.WriteLine($"Arquivo de log criado: {logFile}");
+                }
+                
+                Console.WriteLine($"Arquivo de log: {logFile}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro ao configurar diretórios: {ex.Message}");
+                Console.WriteLine("Tentando usar diretório temporário...");
+                spoolDirectory = Path.GetTempPath();
+                logFile = Path.Combine(spoolDirectory, "print_log.txt");
+                Console.WriteLine($"Novo diretório para log: {spoolDirectory}");
+            }
+
+            // Verificar se o usuário é administrador
+            if (!IsAdministrator())
+            {
+                Console.WriteLine("AVISO: Este programa requer privilégios de administrador para criar impressoras virtuais.");
+                Console.WriteLine("Por favor, reinicie o programa como administrador.");
+                Console.WriteLine("Pressione qualquer tecla para sair...");
+                Console.ReadKey();
+                return;
+            }
+
+            // Criar a impressora virtual se não existir
+            if (!PrinterExists(virtualPrinterName))
+            {
+                CreateVirtualPrinter();
+            }
+            
+            // Iniciar o monitoramento de impressão
+            StartMonitoring();
+
+            Console.WriteLine("Redirecionador de Impressões está rodando. Pressione qualquer tecla para sair.");
+            Console.ReadKey();
+        }
+
+        private static bool IsAdministrator()
+        {
+            var identity = System.Security.Principal.WindowsIdentity.GetCurrent();
+            var principal = new System.Security.Principal.WindowsPrincipal(identity);
+            return principal.IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
+        }
+
+        private static bool PrinterExists(string printerName)
+        {
+            try
+            {
+                // Usar PowerShell para verificar se a impressora existe (mais confiável que wmic)
+                Console.WriteLine($"Verificando se a impressora '{printerName}' existe...");
+                Process process = new Process();
+                process.StartInfo.FileName = "powershell";
+                process.StartInfo.Arguments = $"-Command \"Get-Printer -Name '{printerName}' -ErrorAction SilentlyContinue | Select-Object Name\"";
+                process.StartInfo.UseShellExecute = false;
+                process.StartInfo.RedirectStandardOutput = true;
+                process.StartInfo.RedirectStandardError = true;
+                process.StartInfo.CreateNoWindow = true;
+                process.Start();
+                
+                string output = process.StandardOutput.ReadToEnd();
+                string error = process.StandardError.ReadToEnd();
+                process.WaitForExit();
+                
+                bool exists = output.Contains(printerName);
+                
+                if (exists)
+                {
+                    Console.WriteLine($"A impressora '{printerName}' já existe no sistema.");
+                }
+                else
+                {
+                    Console.WriteLine($"A impressora '{printerName}' não foi encontrada no sistema.");
+                }
+                
+                return exists;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro ao verificar a existência da impressora: {ex.Message}");
+                return false;
+            }
+        }
+
+        private static void CreateVirtualPrinter()
+        {
+            Console.WriteLine("Criando impressora virtual usando PowerShell...");
+            
+            try
+            {
+                // Verificar os drivers de impressora disponíveis
+                Console.WriteLine("Verificando drivers de impressora disponíveis...");
+                Process driverProcess = new Process();
+                driverProcess.StartInfo.FileName = "powershell";
+                driverProcess.StartInfo.Arguments = "Get-PrinterDriver | Select-Object Name | Format-Table -AutoSize";
+                driverProcess.StartInfo.UseShellExecute = false;
+                driverProcess.StartInfo.RedirectStandardOutput = true;
+                driverProcess.StartInfo.CreateNoWindow = true;
+                driverProcess.Start();
+                
+                string driversOutput = driverProcess.StandardOutput.ReadToEnd();
+                driverProcess.WaitForExit();
+                
+                Console.WriteLine("Drivers disponíveis:");
+                Console.WriteLine(driversOutput);
+                
+                // Identificar o driver a ser usado (XPS ou outro compatível)
+                string driverName = "Microsoft Print To PDF"; // Usar PDF que já aparece na lista
+                if (!driversOutput.Contains(driverName))
+                {
+                    // Procurar por alternativas
+                    if (driversOutput.Contains("Microsoft XPS Document Writer v4"))
+                    {
+                        driverName = "Microsoft XPS Document Writer v4";
+                    }
+                    else if (driversOutput.Contains("Microsoft Virtual Print Class Driver"))
+                    {
+                        driverName = "Microsoft Virtual Print Class Driver";
+                    }
+                }
+                Console.WriteLine($"Usando driver: {driverName}");
+                
+                // Criar porta para a impressora virtual
+                string portName = "MonitorPort";
+                string addPortCommand = "Add-PrinterPort -Name \"" + portName + "\" -PrinterHostAddress \"127.0.0.1\"";
+                Console.WriteLine($"Criando porta: {addPortCommand}");
+                ExecutePowerShellCommand(addPortCommand);
+                
+                // Criar a impressora virtual usando PowerShell com aspas corretamente escapadas
+                string addPrinterCommand = "Add-Printer -Name '" + virtualPrinterName + "' -DriverName '" + driverName + "' -PortName '" + portName + "'";
+                Console.WriteLine($"Criando impressora: {addPrinterCommand}");
+                ExecutePowerShellCommand(addPrinterCommand);
+                
+                // Verificar se a impressora foi criada
+                Console.WriteLine("Verificando se a impressora foi criada...");
+                Process verifyProcess = new Process();
+                verifyProcess.StartInfo.FileName = "powershell";
+                verifyProcess.StartInfo.Arguments = "Get-Printer | Select-Object Name | Format-Table -AutoSize";
+                verifyProcess.StartInfo.UseShellExecute = false;
+                verifyProcess.StartInfo.RedirectStandardOutput = true;
+                verifyProcess.StartInfo.CreateNoWindow = true;
+                verifyProcess.Start();
+                
+                string printersOutput = verifyProcess.StandardOutput.ReadToEnd();
+                verifyProcess.WaitForExit();
+                
+                Console.WriteLine("Impressoras disponíveis:");
+                Console.WriteLine(printersOutput);
+                
+                if (printersOutput.Contains(virtualPrinterName))
+                {
+                    Console.WriteLine($"Impressora virtual '{virtualPrinterName}' criada com sucesso.");
+                }
+                else
+                {
+                    Console.WriteLine($"ATENÇÃO: A impressora '{virtualPrinterName}' não aparece na lista de impressoras.");
+                    Console.WriteLine("Tentando método alternativo...");
+                    
+                    // Método alternativo: usar PrintUIEntry de forma diferente
+                    Console.WriteLine("Tentando criar porta e impressora com método alternativo...");
+                    
+                    // Criar porta TCP/IP
+                    ExecuteCommand("rundll32 printui.dll,PrintUIEntry /ga /n\"" + virtualPrinterName + "\" /j\"Monitor Print Port\"");
+                    
+                    // Adicionar impressora com driver "Microsoft Print to PDF"
+                    string rundllCommand = "rundll32 printui.dll,PrintUIEntry /if /b \"" + virtualPrinterName + 
+                                          "\" /f \"%windir%\\inf\\ntprint.inf\" /r \"LPT1:\" /m \"" + driverName + "\"";
+                    Console.WriteLine($"Comando alternativo: {rundllCommand}");
+                    ExecuteCommand(rundllCommand);
+                    
+                    // Verificar novamente
+                    verifyProcess.Start();
+                    printersOutput = verifyProcess.StandardOutput.ReadToEnd();
+                    verifyProcess.WaitForExit();
+                    
+                    if (printersOutput.Contains(virtualPrinterName))
+                    {
+                        Console.WriteLine($"Impressora virtual '{virtualPrinterName}' criada com sucesso pelo método alternativo.");
+                    }
+                    else
+                    {
+                        Console.WriteLine("FALHA: Não foi possível criar a impressora virtual.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro ao criar impressora virtual: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            }
+        }
+        
+        private static void ExecutePowerShellCommand(string psCommand)
+        {
+            try
+            {
+                Process process = new Process();
+                process.StartInfo.FileName = "powershell";
+                process.StartInfo.Arguments = "-Command \"& { " + psCommand + " }\"";
+                process.StartInfo.UseShellExecute = false;
+                process.StartInfo.RedirectStandardOutput = true;
+                process.StartInfo.RedirectStandardError = true;
+                process.StartInfo.CreateNoWindow = true;
+                process.Start();
+                
+                string output = process.StandardOutput.ReadToEnd();
+                string error = process.StandardError.ReadToEnd();
+                
+                process.WaitForExit();
+                
+                if (!string.IsNullOrWhiteSpace(output))
+                {
+                    Console.WriteLine($"Saída do PowerShell: {output}");
+                }
+                
+                if (!string.IsNullOrWhiteSpace(error))
+                {
+                    Console.WriteLine($"Erro do PowerShell: {error}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Exceção ao executar comando PowerShell: {ex.Message}");
+            }
+        }
+
+        private static void ExecuteCommand(string command)
+        {
+            try
+            {
+                Process process = new Process();
+                ProcessStartInfo startInfo = new ProcessStartInfo();
+                startInfo.WindowStyle = ProcessWindowStyle.Hidden;
+                startInfo.FileName = "cmd.exe";
+                startInfo.Arguments = "/C " + command;
+                startInfo.UseShellExecute = false;
+                startInfo.RedirectStandardOutput = true;
+                startInfo.RedirectStandardError = true;
+                process.StartInfo = startInfo;
+                process.Start();
+                
+                string output = process.StandardOutput.ReadToEnd();
+                string error = process.StandardError.ReadToEnd();
+                
+                process.WaitForExit();
+                
+                if (!string.IsNullOrWhiteSpace(error))
+                {
+                    Console.WriteLine($"Erro ao executar comando: {error}");
+                }
+                
+                if (!string.IsNullOrWhiteSpace(output) && output.Contains("ERRO"))
+                {
+                    Console.WriteLine($"Saída do comando: {output}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Exceção ao executar comando: {ex.Message}");
+            }
+        }
+
+        private static void SetDefaultPrinter(string printerName)
+        {
+            try
+            {
+                using (RegistryKey key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows NT\CurrentVersion\Windows", true))
+                {
+                    if (key != null)
+                    {
+                        key.SetValue("Device", printerName + ",winspool,Ne00:", RegistryValueKind.String);
+                        Console.WriteLine($"Impressora '{printerName}' definida como padrão.");
+                    }
+                    else
+                    {
+                        Console.WriteLine("Não foi possível acessar a chave do registro para definir a impressora padrão.");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro ao definir impressora padrão: {ex.Message}");
+            }
+        }
+
+        private static void StartMonitoring()
+        {
+            Console.WriteLine("Iniciando monitoramento de impressões...");
+            
+            // Carregar contagem anterior de páginas se existir
+            if (File.Exists(logFile))
+            {
+                try
+                {
+                    string[] lines = File.ReadAllLines(logFile);
+                    if (lines.Length > 0)
+                    {
+                        string lastLine = lines[lines.Length - 1];
+                        if (lastLine.Contains("Total acumulado:"))
+                        {
+                            int startIndex = lastLine.LastIndexOf("Total acumulado:") + "Total acumulado:".Length;
+                            string countStr = lastLine.Substring(startIndex).Trim();
+                            if (int.TryParse(countStr, out int savedCount))
+                            {
+                                totalPageCount = savedCount;
+                                Console.WriteLine($"Contagem anterior de páginas carregada: {totalPageCount}");
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Erro ao carregar contagem anterior: {ex.Message}");
+                }
+            }
+
+            // Criar o diretório de saída para PDFs
+            string pdfOutputDir = Path.Combine(spoolDirectory, "output");
+            if (!Directory.Exists(pdfOutputDir))
+            {
+                Directory.CreateDirectory(pdfOutputDir);
+            }
+
+            // Configurar a impressora virtual para salvar em PDF
+            // Agora aqui vamos verificar jobs de impressão diretamente via WMI
+            Console.WriteLine("Configurando monitoramento de trabalhos de impressão via PowerShell...");
+            
+            // Iniciar uma tarefa para monitorar periodicamente trabalhos de impressão
+            Task.Run(() => MonitorPrintJobs());
+        }
+
+        private static void MonitorPrintJobs()
+        {
+            Console.WriteLine($"Monitorando trabalhos de impressão para a impressora '{virtualPrinterName}'...");
+            Console.WriteLine("IMPORTANTE: Por favor, imprima um documento na impressora virtual para testar.");
+            Console.WriteLine($"Arquivo de log: {logFile}");
+            
+            try
+            {
+                while (true)
+                {
+                    try 
+                    {
+                        // Verificar se há novos trabalhos de impressão
+                        Console.WriteLine("Verificando trabalhos de impressão...");
+                        Process process = new Process();
+                        process.StartInfo.FileName = "powershell";
+                        process.StartInfo.Arguments = $"-Command \"& {{ Get-PrintJob -PrinterName '{virtualPrinterName}' | Select-Object JobId, DocumentName, TotalPages | ConvertTo-Json -Depth 3 }}\"";
+                        process.StartInfo.UseShellExecute = false;
+                        process.StartInfo.RedirectStandardOutput = true;
+                        process.StartInfo.RedirectStandardError = true;
+                        process.StartInfo.CreateNoWindow = true;
+                        process.Start();
+                        
+                        string output = process.StandardOutput.ReadToEnd();
+                        string error = process.StandardError.ReadToEnd();
+                        process.WaitForExit();
+                        
+                        if (!string.IsNullOrEmpty(error))
+                        {
+                            Console.WriteLine($"Erro ao verificar trabalhos: {error}");
+                        }
+                        
+                        // Se encontrou trabalhos de impressão
+                        if (!string.IsNullOrEmpty(output) && (output.Contains("JobId") || output.Contains("DocumentName")))
+                        {
+                            Console.WriteLine("=== TRABALHO DE IMPRESSÃO DETECTADO! ===");
+                            Console.WriteLine(output);
+                            
+                            // Verificar se o JSON está em formato de array ou objeto único
+                            bool isArray = output.Trim().StartsWith("[");
+                            
+                            // Processar cada trabalho no array
+                            if (isArray)
+                            {
+                                // Dividir o array baseado nos objetos JSON (abordagem simples)
+                                string[] jobMarkers = { "},{" };
+                                string cleanOutput = output.Trim()
+                                    .Replace("[{", "")
+                                    .Replace("}]", "")
+                                    .Replace("\r", "").Replace("\n", "").Replace("\t", "");
+                                
+                                string[] jobs = cleanOutput.Split(jobMarkers, StringSplitOptions.RemoveEmptyEntries);
+                                
+                                foreach (string job in jobs)
+                                {
+                                    string jobJson = "{" + job + "}";
+                                    ProcessJobOutput(jobJson);
+                                }
+                            }
+                            else
+                            {
+                                // É um objeto único, processar diretamente
+                                ProcessJobOutput(output);
+                            }
+                        }
+                        else 
+                        {
+                            Console.WriteLine("Nenhum trabalho de impressão encontrado.");
+                        }
+                    }
+                    catch (Exception ex) 
+                    {
+                        Console.WriteLine($"Erro durante a verificação: {ex.Message}");
+                    }
+                    
+                    // Aguardar antes da próxima verificação
+                    Console.WriteLine("Aguardando 5 segundos para próxima verificação...");
+                    Thread.Sleep(5000);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro fatal no monitoramento: {ex.Message}");
+                Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            }
+        }
+        
+        private static void ProcessJobOutput(string jobJson)
+        {
+            try
+            {
+                // Extrair informações básicas
+                string documentName = "Documento desconhecido";
+                int pages = 1;
+                
+                // Extrair nome do documento
+                if (jobJson.Contains("\"DocumentName\""))
+                {
+                    int nameStart = jobJson.IndexOf("\"DocumentName\"") + "\"DocumentName\"".Length + 2;
+                    int nameEnd = jobJson.IndexOf("\"", nameStart);
+                    if (nameStart > 0 && nameEnd > nameStart)
+                    {
+                        documentName = jobJson.Substring(nameStart, nameEnd - nameStart);
+                    }
+                }
+                
+                // Extrair número de páginas
+                if (jobJson.Contains("\"TotalPages\""))
+                {
+                    int pagesStart = jobJson.IndexOf("\"TotalPages\"") + "\"TotalPages\"".Length + 1;
+                    int pagesEnd = jobJson.IndexOf(",", pagesStart);
+                    if (pagesStart > 0)
+                    {
+                        if (pagesEnd < 0) // Se for o último elemento do JSON
+                        {
+                            pagesEnd = jobJson.IndexOf("}", pagesStart);
+                        }
+                        
+                        if (pagesEnd > pagesStart)
+                        {
+                            string pagesStr = jobJson.Substring(pagesStart, pagesEnd - pagesStart).Trim();
+                            pagesStr = pagesStr.Replace(",", "").Replace("}", "").Trim();
+                            if (!int.TryParse(pagesStr, out pages) || pages <= 0)
+                            {
+                                pages = 1;
+                            }
+                        }
+                    }
+                }
+                
+                Console.WriteLine($"INFORMAÇÕES DO TRABALHO: Documento '{documentName}', Páginas: {pages}");
+                
+                // Registrar trabalho no log
+                totalPageCount += pages;
+                LogPrintJob(documentName, pages, totalPageCount);
+                
+                Console.WriteLine("Trabalho contabilizado com sucesso!");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro ao processar trabalho: {ex.Message}");
+            }
+        }
+
+        private static void OnPrintJobCreated(object source, FileSystemEventArgs e)
+        {
+            // Este método não será mais usado, mas mantemos para compatibilidade
+            Console.WriteLine($"Arquivo de spool detectado: {e.Name}");
+        }
+
+        private static void ProcessVirtualPrinterJob(string documentName, int pages, string filePath)
+        {
+            // Este método não será mais usado, mas mantemos para compatibilidade
+            Console.WriteLine($"Processando trabalho: {documentName}, {pages} páginas");
+        }
+
+        private static void LogPrintJob(string documentName, int pages, int totalCount)
+        {
+            try
+            {
+                string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                string logEntry = $"{timestamp} - Documento: {documentName}, Páginas: {pages}, Total acumulado: {totalCount}";
+                
+                try 
+                {
+                    // Garantir que o diretório existe
+                    if (!Directory.Exists(Path.GetDirectoryName(logFile)))
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(logFile));
+                    }
+                    
+                    // Escrever no arquivo de log
+                    File.AppendAllText(logFile, logEntry + Environment.NewLine);
+                    Console.WriteLine($"Log salvo em: {logFile}");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Erro ao escrever no arquivo de log: {ex.Message}");
+                    // Tentar criar o arquivo novamente com um caminho alternativo
+                    string altLogFile = Path.Combine(Path.GetTempPath(), "print_log.txt");
+                    File.AppendAllText(altLogFile, logEntry + Environment.NewLine);
+                    Console.WriteLine($"Log salvo em caminho alternativo: {altLogFile}");
+                }
+                
+                Console.WriteLine("=============================================");
+                Console.WriteLine(logEntry);
+                Console.WriteLine("=============================================");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Erro fatal no registro de log: {ex.Message}");
+            }
+        }
+
+        private static void RedirectToPrinter(string documentName, string filePath)
+        {
+            // Método mantido para compatibilidade, mas não redirecionamos a impressão
+            if (enableRedirection)
+            {
+                try
+                {
+                    Console.WriteLine($"Redirecionamento de impressão desativado para '{documentName}'");
+                    
+                    // Implementação futura aqui, quando necessário
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Erro ao redirecionar impressão: {ex.Message}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Redirecionamento desativado para '{documentName}'. Apenas contando páginas.");
+            }
+        }
+    }
+
+    // Classe auxiliar para chamar APIs nativas do Windows, se necessário
+    public static class NativeMethods
+    {
+        [DllImport("winspool.drv", CharSet = CharSet.Auto, SetLastError = true)]
+        public static extern bool SetDefaultPrinter(string Name);
+    }
+}

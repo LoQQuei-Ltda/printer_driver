@@ -1,0 +1,15 @@
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\bin\Debug\net8.0\PrintMonitor.exe
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\bin\Debug\net8.0\PrintMonitor.deps.json
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\bin\Debug\net8.0\PrintMonitor.runtimeconfig.json
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\bin\Debug\net8.0\PrintMonitor.dll
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\bin\Debug\net8.0\PrintMonitor.pdb
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\PrintMonitor.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\PrintMonitor.AssemblyInfoInputs.cache
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\PrintMonitor.AssemblyInfo.cs
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\PrintMonitor.csproj.CoreCompileInputs.cache
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\PrintMonitor.sourcelink.json
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\PrintMonitor.dll
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\refint\PrintMonitor.dll
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\PrintMonitor.pdb
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\PrintMonitor.genruntimeconfig.cache
+C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net8.0\ref\PrintMonitor.dll
