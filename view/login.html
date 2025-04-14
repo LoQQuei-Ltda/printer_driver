@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Login - Gerenciamento de Impressão</title>
+  <link rel="stylesheet" href="../assets/css/login.css">
+</head>
+<body>
+  <div class="login-container">
+    <img src="../assets/icon/printer.ico" alt="Logo" class="logo">
+    <h1>Gerenciamento de Impressão</h1>
+    
+    <form id="loginForm">
+      <div class="form-group">
+        <label for="email">Email</label>
+        <input type="text" id="email" required value="eduardo.sirino@loqquei.com.br">
+      </div>
+      
+      <div class="form-group">
+        <label for="password">Senha</label>
+        <input type="password" id="password" required value="EdusEdus@747466">
+      </div>
+      
+      <button type="submit" id="loginButton" class="login-button">
+        Entrar
+      </button>
+      
+      <div id="errorMessage" class="error-message"></div>
+    </form>
+    
+    <div class="footer">
+      &copy; 2025 LoQQuei-Ltda. Todos os direitos reservados.
+    </div>
+  </div>
+  
+  <script>
+    // Importar os módulos do Electron
+    const { ipcRenderer } = require('electron');
+    
+    // Referências aos elementos da interface
+    const loginForm = document.getElementById('loginForm');
+    const emailInput = document.getElementById('email');
+    const passwordInput = document.getElementById('password');
+    const loginButton = document.getElementById('loginButton');
+    const errorMessage = document.getElementById('errorMessage');
+    
+    // Variável para controlar se está autenticando
+    let isAuthenticating = false;
+    
+    // Função para mostrar erro
+    function showError(message) {
+      errorMessage.textContent = message;
+      errorMessage.style.display = 'block';
+    }
+    
+    // Função para ocultar erro
+    function hideError() {
+      errorMessage.style.display = 'none';
+    }
+    
+    // Iniciar autenticação
+    function startAuth() {
+      isAuthenticating = true;
+      loginButton.disabled = true;
+      loginButton.innerHTML = '<span class="loading"></span> Autenticando...';
+      hideError();
+    }
+    
+    // Finalizar autenticação
+    function endAuth() {
+      isAuthenticating = false;
+      loginButton.disabled = false;
+      loginButton.textContent = 'Entrar';
+    }
+    
+    // Evento de envio do formulário
+    loginForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      
+      if (isAuthenticating) return;
+      
+      const email = emailInput.value.trim();
+      const password = passwordInput.value;
+      
+      if (!email || !password) {
+        showError('Por favor, preencha todos os campos.');
+        return;
+      }
+      
+      startAuth();
+      
+      // Enviar credenciais para o processo principal
+      ipcRenderer.send('login', { email, password });
+    });
+    
+    // Receber resposta de login
+    ipcRenderer.on('login-response', (event, data) => {
+      if (data.success) {
+        // Login bem-sucedido, o processo principal irá redirecionar
+      } else {
+        endAuth();
+        showError(data.message || 'Erro de autenticação. Tente novamente.');
+      }
+    });
+    
+    // Focar no campo de usuário ao carregar
+    emailInput.focus();
+  </script>
+</body>
+</html>

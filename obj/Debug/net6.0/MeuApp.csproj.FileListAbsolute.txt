@@ -1,5 +1,0 @@
-C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net6.0\MeuApp.GeneratedMSBuildEditorConfig.editorconfig
-C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net6.0\MeuApp.AssemblyInfoInputs.cache
-C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net6.0\MeuApp.AssemblyInfo.cs
-C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net6.0\MeuApp.csproj.CoreCompileInputs.cache
-C:\Users\eduardo.sirino\Documents\GitHub\printer_driver\obj\Debug\net6.0\MeuApp.sourcelink.json

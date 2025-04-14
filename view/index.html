@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gerenciamento de Impressão</title>
+  <link rel="stylesheet" href="../assets/css/index.css">
+</head>
+
+<body>
+  <!-- ===== WINDOW TITLEBAR ===== -->
+  <div class="titlebar">
+    <div class="drag-region">Gerenciamento de Impressão</div>
+    <div class="window-controls">
+      <button id="closeBtn" class="window-control close-button" title="Fechar">
+        <svg width="10" height="10" viewBox="0 0 10 10">
+          <path d="M1 1l8 8m0-8l-8 8" stroke="currentColor" stroke-width="1.5" fill="none" />
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ===== MAIN CONTAINER ===== -->
+  <div class="container">
+    <!-- ===== CONTENT AREA ===== -->
+    <div class="content">
+      <!-- Tab Navigation -->
+      <div class="tab-container">
+        <div class="tab active" data-tab="print">Documentos</div>
+        <div class="tab" data-tab="system">Sistema</div>
+      </div>
+
+      <!-- ===== DOCUMENTS TAB ===== -->
+      <div class="tab-content" id="printTab">
+        <div class="title-bar">
+          <h2>Arquivos para Impressão</h2>
+          <button id="refreshButton" class="button refresh">Atualizar</button>
+        </div>
+
+        <div class="files-list" id="filesContainer">
+          <div class="loading-container">
+            <div class="loading-spinner"></div>
+            <p>Carregando arquivos...</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== SYSTEM TAB ===== -->
+      <div class="tab-content hidden" id="systemTab">
+        <div class="title-bar">
+          <h2>Status do Sistema</h2>
+        </div>
+
+        <div class="status-section" id="statusSection">
+          <div class="loading-container">
+            <div class="loading-spinner"></div>
+            <p>Verificando...</p>
+          </div>
+        </div>
+
+        <div class="install-button-container">
+          <button id="installButton" class="button install-button" disabled>Instalar Sistema</button>
+        </div>
+
+        <!-- Installation Log Monitor -->
+        <div class="install-log-container">
+          <div class="log-header">
+            <span>Log de Instalação</span>
+            <button class="clear-log-btn" id="clearLogBtn">Limpar</button>
+          </div>
+          <div class="install-log" id="installLog">
+            <div class="log-entry">Clique em "Instalar Sistema" para iniciar a instalação...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== FOOTER ===== -->
+    <div class="footer">
+      <span id="userName">Carregando...</span>
+      <a href="#" id="logoutButton">Sair</a>
+    </div>
+  </div>
+
+  <!-- ===== MODALS ===== -->
+  <!-- Print Modal -->
+  <div id="printModal" class="modal">
+    <div class="modal-content">
+      <h3 class="modal-title">Imprimir Documento</h3>
+      <div id="printInfo">Selecione a impressora:</div>
+      <select id="printerSelect" class="printer-select">
+        <option value="">Carregando impressoras...</option>
+      </select>
+      <div class="modal-buttons">
+        <button id="cancelPrintButton" class="cancel-button">Cancelar</button>
+        <button id="confirmPrintButton" class="print-button">Imprimir</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== SCRIPTS ===== -->
+  <script>
+    // Import Electron modules
+    const { ipcRenderer } = require('electron');
+
+    // DOM References
+    const userName = document.getElementById('userName');
+    const logoutButton = document.getElementById('logoutButton');
+    const statusSection = document.getElementById('statusSection');
+    const installButton = document.getElementById('installButton');
+    const filesContainer = document.getElementById('filesContainer');
+    const refreshButton = document.getElementById('refreshButton');
+    const printModal = document.getElementById('printModal');
+    const printInfo = document.getElementById('printInfo');
+    const printerSelect = document.getElementById('printerSelect');
+    const cancelPrintButton = document.getElementById('cancelPrintButton');
+    const confirmPrintButton = document.getElementById('confirmPrintButton');
+    const tabs = document.querySelectorAll('.tab');
+    const tabContents = document.querySelectorAll('.tab-content');
+    const closeBtn = document.getElementById('closeBtn');
+    const installLog = document.getElementById('installLog');
+    const clearLogBtn = document.getElementById('clearLogBtn');
+
+    // State variables
+    let currentUser = null;
+    let arquivos = [];
+    let impressoras = [];
+    let selectedFileId = null;
+    let isLoading = false;
+    let systemCheckPassed = false; // Nova variável para rastrear status do sistema
+
+    // ===== INITIALIZATION =====
+    document.addEventListener('DOMContentLoaded', () => {
+      loadUserInfo();
+      checkInstallationStatus();
+      loadFileList();
+      loadPrinterList();
+
+      // Set up tabs
+      tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+          const tabName = tab.getAttribute('data-tab');
+          switchTab(tabName);
+        });
+      });
+    });
+
+    // ===== TAB NAVIGATION =====
+    function switchTab(tabName) {
+      // Remove active class from all tabs
+      tabs.forEach(tab => {
+        tab.classList.remove('active');
+      });
+
+      // Hide all tab contents
+      tabContents.forEach(content => {
+        content.classList.add('hidden');
+      });
+
+      // Activate the selected tab
+      document.querySelector(`.tab[data-tab="${tabName}"]`).classList.add('active');
+      document.getElementById(`${tabName}Tab`).classList.remove('hidden');
+    }
+
+    // ===== USER MANAGEMENT =====
+    function loadUserInfo() {
+      ipcRenderer.send('get-user');
+
+      ipcRenderer.once('user-data', (event, userData) => {
+        if (userData && userData.user) {
+          currentUser = userData.user;
+          userName.textContent = userData.user.name;
+        } else {
+          userName.textContent = 'Usuário';
+        }
+      });
+    }
+
+    function logout() {
+      if (confirm('Tem certeza que deseja sair?')) {
+        ipcRenderer.send('logout');
+      }
+    }
+
+    // ===== SYSTEM INSTALLATION =====
+    function checkInstallationStatus() {
+      statusSection.innerHTML = `
+        <div class="loading-container">
+          <div class="loading-spinner"></div>
+          <p>Verificando...</p>
+        </div>
+      `;
+
+      installButton.disabled = true;
+
+      ipcRenderer.send('verificar-instalacao');
+
+      ipcRenderer.once('status-instalacao', (event, status) => {
+        let statusHTML = '';
+        let hasIssue = false;
+
+        if (status.error) {
+          hasIssue = true;
+          statusHTML = `
+            <div class="status-item">
+              <div class="status-indicator red"></div>
+              <div class="status-label">Erro ao verificar status</div>
+            </div>
+          `;
+          installButton.textContent = 'Verificar Novamente';
+          installButton.disabled = false;
+          installButton.onclick = checkInstallationStatus;
+        } else {
+          statusHTML = `
+            <div class="status-item">
+              <div class="status-indicator ${status.wslInstalled ? 'green' : 'red'}"></div>
+              <div class="status-label">Windows Subsystem for Linux</div>
+            </div>
+            <div class="status-item">
+              <div class="status-indicator ${status.wsl2Configured ? 'green' : 'red'}"></div>
+              <div class="status-label">WSL 2 Configurado</div>
+            </div>
+            <div class="status-item">
+              <div class="status-indicator ${status.distroInstalled ? 'green' : 'red'}"></div>
+              <div class="status-label">Ubuntu Instalado</div>
+            </div>
+            <div class="status-item">
+              <div class="status-indicator ${status.userConfigured ? 'green' : 'red'}"></div>
+              <div class="status-label">Usuário do Sistema Configurado</div>
+            </div>
+          `;
+
+          const isInstalled = status.wslInstalled && status.wsl2Configured &&
+            status.distroInstalled && status.userConfigured;
+
+          if (!isInstalled) {
+            hasIssue = true;
+          }
+
+          if (isInstalled) {
+            systemCheckPassed = true;
+            installButton.textContent = 'Sistema Instalado';
+            installButton.disabled = true;
+
+            // Add status text below the button
+            const installContainer = installButton.parentElement;
+            if (!installContainer.querySelector('.status-text')) {
+              const statusText = document.createElement('div');
+              statusText.className = 'status-text';
+              statusText.textContent = 'O sistema já está configurado e pronto para uso';
+              installContainer.appendChild(statusText);
+            }
+          } else {
+            systemCheckPassed = false;
+            installButton.textContent = 'Instalar Sistema';
+            installButton.disabled = false;
+            installButton.onclick = initiateInstallation;
+
+            // Add status text below the button
+            const installContainer = installButton.parentElement;
+            if (!installContainer.querySelector('.status-text')) {
+              const statusText = document.createElement('div');
+              statusText.className = 'status-text';
+              statusText.textContent = 'Clique para instalar os componentes necessários';
+              installContainer.appendChild(statusText);
+            }
+          }
+        }
+
+        statusSection.innerHTML = statusHTML;
+        
+        // Se houver qualquer problema, redirecione para a aba Sistema
+        if (hasIssue) {
+          switchTab('system');
+          // Adicionar uma entrada de log informativa
+          addLogEntry('Problema detectado na verificação do sistema. Redirecionado para aba Sistema.', 'warning');
+        }
+      });
+    }
+
+    function initiateInstallation() {
+      installButton.disabled = true;
+      installButton.textContent = 'Instalando...';
+
+      // Update status text
+      const installContainer = installButton.parentElement;
+      const statusText = installContainer.querySelector('.status-text');
+      if (statusText) {
+        statusText.textContent = 'Instalação em andamento, aguarde...';
+      }
+
+      // Clear and add initial log entry
+      addLogEntry('Iniciando processo de instalação do sistema...', 'info');
+      addLogEntry('Este processo pode levar vários minutos, aguarde até a conclusão.', 'info');
+
+      ipcRenderer.send('iniciar-instalacao');
+    }
+
+    function addLogEntry(message, type = 'info') {
+      if (!installLog) return;
+
+      const entry = document.createElement('div');
+      entry.className = `log-entry ${type}`;
+      entry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+
+      installLog.appendChild(entry);
+      installLog.scrollTop = installLog.scrollHeight; // Scroll to bottom
+    }
+
+    function clearLog() {
+      if (installLog) {
+        installLog.innerHTML = '';
+        addLogEntry('Log limpo pelo usuário', 'info');
+      }
+    }
+
+    // ===== FILE MANAGEMENT =====
+    function loadFileList() {
+      if (isLoading) return;
+      isLoading = true;
+
+      filesContainer.innerHTML = `
+        <div class="loading-container">
+          <div class="loading-spinner"></div>
+          <p>Carregando arquivos...</p>
+        </div>
+      `;
+
+      refreshButton.disabled = true;
+
+      ipcRenderer.send('listar-arquivos');
+
+      ipcRenderer.once('arquivos-response', (event, response) => {
+        isLoading = false;
+        refreshButton.disabled = false;
+
+        if (response.success && response.arquivos && response.arquivos.length > 0) {
+          arquivos = response.arquivos;
+
+          let filesHTML = '';
+
+          arquivos.forEach(arquivo => {
+            let statusClass = '';
+
+            switch (arquivo.status.toLowerCase()) {
+              case 'pendente':
+                statusClass = 'pending';
+                break;
+              case 'impresso':
+                statusClass = 'printed';
+                break;
+              case 'falha':
+                statusClass = 'failed';
+                break;
+              default:
+                statusClass = 'pending';
+            }
+
+            filesHTML += `
+              <div class="file-item">
+                <div class="file-header">
+                  <div class="file-name">${arquivo.nome}</div>
+                  <span class="file-status ${statusClass}">${arquivo.status}</span>
+                </div>
+                <div class="file-meta">
+                  <span>${arquivo.tamanho}</span>
+                  <span>${arquivo.data}</span>
+                </div>
+                <div class="file-actions">
+                  <button class="action-button" onclick="showPrintModal(${arquivo.id})">Imprimir</button>
+                </div>
+              </div>
+            `;
+          });
+
+          filesContainer.innerHTML = filesHTML;
+        } else {
+          filesContainer.innerHTML = `
+            <div class="empty-state">
+              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="#95a5a6" stroke-width="2">
+                <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+                <polyline points="13 2 13 9 20 9"></polyline>
+              </svg>
+              <p>Nenhum arquivo encontrado para impressão.</p>
+            </div>
+          `;
+        }
+      });
+    }
+
+    // ===== PRINTER MANAGEMENT =====
+    function loadPrinterList() {
+      ipcRenderer.send('listar-impressoras');
+
+      ipcRenderer.once('impressoras-response', (event, response) => {
+        if (response.success && response.impressoras && response.impressoras.length > 0) {
+          impressoras = response.impressoras;
+
+          printerSelect.innerHTML = '';
+
+          impressoras.forEach(impressora => {
+            const option = document.createElement('option');
+            option.value = impressora.id;
+            option.textContent = `${impressora.nome} (${impressora.localizacao}) - ${impressora.status}`;
+            option.disabled = impressora.status.toLowerCase() !== 'online';
+            printerSelect.appendChild(option);
+          });
+        } else {
+          printerSelect.innerHTML = '<option value="">Nenhuma impressora disponível</option>';
+        }
+      });
+    }
+
+    window.showPrintModal = function (fileId) {
+      // Verifique se o sistema está OK antes de permitir impressão
+      if (!systemCheckPassed) {
+        alert('O sistema precisa estar completamente instalado antes de imprimir.');
+        switchTab('system');
+        return;
+      }
+      
+      selectedFileId = fileId;
+
+      const arquivo = arquivos.find(a => a.id === fileId);
+      if (arquivo) {
+        printInfo.textContent = `Imprimir "${arquivo.nome}" em:`;
+        printModal.style.display = 'block';
+
+        // Update printer list
+        loadPrinterList();
+      }
+    };
+
+    function printFile() {
+      if (!selectedFileId || !printerSelect.value) return;
+
+      confirmPrintButton.disabled = true;
+      confirmPrintButton.textContent = 'Enviando...';
+
+      ipcRenderer.send('imprimir-arquivo', {
+        arquivoId: selectedFileId,
+        impressoraId: printerSelect.value
+      });
+
+      ipcRenderer.once('impressao-response', (event, response) => {
+        confirmPrintButton.disabled = false;
+        confirmPrintButton.textContent = 'Imprimir';
+
+        if (response.success) {
+          alert(`Documento enviado para impressão com sucesso.\nID do trabalho: ${response.jobId}`);
+          closePrintModal();
+          loadFileList(); // Update list to reflect new status
+        } else {
+          alert(`Erro ao enviar documento para impressão: ${response.message}`);
+        }
+      });
+    }
+
+    function closePrintModal() {
+      printModal.style.display = 'none';
+      selectedFileId = null;
+    }
+
+    // ===== EVENT LISTENERS =====
+    refreshButton.addEventListener('click', loadFileList);
+    logoutButton.addEventListener('click', logout);
+    cancelPrintButton.addEventListener('click', closePrintModal);
+    confirmPrintButton.addEventListener('click', printFile);
+    clearLogBtn.addEventListener('click', clearLog);
+
+    // Window controls
+    closeBtn.addEventListener('click', () => {
+      ipcRenderer.send('hide-window');
+    });
+
+    // Receive installation logs from main process
+    ipcRenderer.on('installation-log', (event, data) => {
+      addLogEntry(data.message, data.type);
+    });
+
+    // Close modal when clicking outside
+    window.addEventListener('click', (event) => {
+      if (event.target === printModal) {
+        closePrintModal();
+      }
+    });
+
+    document.getElementById('closeBtn').addEventListener('click', () => {
+      if (window.electronAPI) {
+        window.electronAPI.send('close-app');
+      }
+    });
+
+    // Create electronAPI namespace if it doesn't exist
+    if (!window.electronAPI) {
+      window.electronAPI = {
+        send: (channel, data) => {
+          if (window.ipcRenderer) {
+            window.ipcRenderer.send(channel, data);
+          }
+        },
+        receive: (channel, callback) => {
+          if (window.ipcRenderer) {
+            window.ipcRenderer.on(channel, callback);
+          }
+        }
+      };
+    }
+
+    // Manage critical state when a modal is open
+    const observer = new MutationObserver(mutations => {
+      mutations.forEach(mutation => {
+        if (mutation.attributeName === 'style') {
+          const modal = document.querySelector('.modal');
+          if (modal && getComputedStyle(modal).display !== 'none') {
+            window.electronAPI.send('set-critical-operation', true);
+          } else {
+            window.electronAPI.send('set-critical-operation', false);
+          }
+        }
+      });
+    });
+
+    // Observe changes in modals
+    const modal = document.querySelector('.modal');
+    if (modal) {
+      observer.observe(modal, { attributes: true });
+    }
+  </script>
+</body>
+
+</html>

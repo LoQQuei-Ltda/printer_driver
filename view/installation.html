@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Instalação - Sistema de Gerenciamento de Impressão</title>
+  <link rel="stylesheet" href="../assets/css/installation.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Instalação do Sistema de Gerenciamento de Impressão</h1>
+    </header>
+    
+    <div class="progress-container">
+      <div class="step-status" id="stepStatus">Iniciando instalação...</div>
+      
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      
+      <div class="log-container" id="logContainer"></div>
+      
+      <button id="closeButton" class="close-button">Concluir</button>
+    </div>
+    
+    <div class="footer">
+      &copy; 2025 LoQQuei-Ltda. Todos os direitos reservados.
+    </div>
+  </div>
+  
+  <!-- Modal de Pergunta -->
+  <div id="questionModal" class="modal">
+    <div class="modal-content">
+      <h3 class="modal-title" id="questionText">Pergunta</h3>
+      <input type="text" id="answerInput" class="modal-input">
+      <div class="modal-buttons">
+        <button class="modal-button confirm" id="answerButton">Confirmar</button>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    // Importar os módulos do Electron
+    const { ipcRenderer } = require('electron');
+    
+    // Referências aos elementos da interface
+    const stepStatus = document.getElementById('stepStatus');
+    const progressBar = document.getElementById('progressBar');
+    const logContainer = document.getElementById('logContainer');
+    const closeButton = document.getElementById('closeButton');
+    const questionModal = document.getElementById('questionModal');
+    const questionText = document.getElementById('questionText');
+    const answerInput = document.getElementById('answerInput');
+    const answerButton = document.getElementById('answerButton');
+    
+    // Variáveis de controle
+    const allSteps = [
+      'Verificando pré-requisitos',
+      'Instalando Windows Subsystem for Linux (WSL)',
+      'Configurando WSL 2',
+      'Instalando Ubuntu',
+      'Configurando usuário padrão',
+      'Configurando ambiente de sistema',
+      'Configurando serviços',
+      'Finalizando instalação'
+    ];
+    let currentStep = 0;
+    let installationComplete = false;
+    
+    // Função para atualizar o progresso
+    function updateProgress(step, percentage) {
+      if (step >= 0 && step < allSteps.length) {
+        currentStep = step;
+        stepStatus.textContent = allSteps[step];
+      }
+      
+      if (percentage >= 0 && percentage <= 100) {
+        progressBar.style.width = `${percentage}%`;
+      }
+    }
+    
+    // Função para adicionar uma entrada no log
+    function addLogEntry(message, type = 'info') {
+      const logEntry = document.createElement('div');
+      logEntry.className = `log-entry ${type}`;
+      logEntry.textContent = message;
+      
+      logContainer.appendChild(logEntry);
+      logContainer.scrollTop = logContainer.scrollHeight;
+      
+      // Atualizar progresso com base na mensagem
+      updateProgressFromMessage(message, type);
+    }
+    
+    // Função para estimar o progresso com base nas mensagens de log
+    function updateProgressFromMessage(message, type) {
+      if (installationComplete) return;
+      
+      const lowerMessage = message.toLowerCase();
+      
+      // Detectar em qual etapa estamos com base na mensagem
+      if (lowerMessage.includes('verificando privilégios') || 
+          lowerMessage.includes('verificando versão do windows') ||
+          lowerMessage.includes('verificando virtualização')) {
+        updateProgress(0, 10);
+      } else if (lowerMessage.includes('instalando wsl') || 
+                lowerMessage.includes('recurso wsl habilitado')) {
+        updateProgress(1, 25);
+      } else if (lowerMessage.includes('definindo wsl 2') || 
+                lowerMessage.includes('kernel do wsl2 instalado')) {
+        updateProgress(2, 40);
+      } else if (lowerMessage.includes('instalando ubuntu') || 
+                lowerMessage.includes('ubuntu instalado')) {
+        updateProgress(3, 55);
+      } else if (lowerMessage.includes('configurando usuário padrão')) {
+        updateProgress(4, 65);
+      } else if (lowerMessage.includes('configurando o sistema') || 
+                lowerMessage.includes('clonando repositório')) {
+        updateProgress(5, 75);
+      } else if (lowerMessage.includes('configurando cups') || 
+                lowerMessage.includes('configurando samba') ||
+                lowerMessage.includes('configurando nginx') ||
+                lowerMessage.includes('configurando postgresql')) {
+        updateProgress(6, 85);
+      } else if (lowerMessage.includes('instalação concluída')) {
+        updateProgress(7, 100);
+        installationComplete = true;
+        closeButton.style.display = 'block';
+      }
+    }
+    
+    // Função para mostrar o modal de pergunta
+    function showQuestionModal(question) {
+      questionText.textContent = question;
+      answerInput.value = '';
+      questionModal.style.display = 'block';
+      answerInput.focus();
+    }
+    
+    // Função para esconder o modal de pergunta
+    function hideQuestionModal() {
+      questionModal.style.display = 'none';
+    }
+    
+    // Inicializar
+    document.addEventListener('DOMContentLoaded', () => {
+      updateProgress(0, 5);
+      addLogEntry('Iniciando processo de instalação...', 'header');
+    });
+    
+    // Fechar a janela
+    closeButton.addEventListener('click', () => {
+      window.close();
+    });
+    
+    // Receber mensagens de log do processo principal
+    ipcRenderer.on('log', (event, data) => {
+      addLogEntry(data.message, data.type);
+    });
+    
+    // Receber perguntas do processo principal
+    ipcRenderer.on('pergunta', (event, data) => {
+      showQuestionModal(data.question);
+    });
+    
+    // Receber notificação de instalação completa
+    ipcRenderer.on('instalacao-completa', (event, data) => {
+      if (data.success) {
+        updateProgress(7, 100);
+        addLogEntry('Instalação concluída com sucesso!', 'success');
+      } else {
+        addLogEntry(`Instalação falhou: ${data.error || 'Erro desconhecido'}`, 'error');
+      }
+      
+      closeButton.style.display = 'block';
+    });
+    
+    // Evento de clique no botão de confirmação do modal
+    answerButton.addEventListener('click', () => {
+      const resposta = answerInput.value;
+      ipcRenderer.send('resposta-pergunta', resposta);
+      hideQuestionModal();
+    });
+    
+    // Evento de pressionar Enter no input de resposta
+    answerInput.addEventListener('keypress', (event) => {
+      if (event.key === 'Enter') {
+        answerButton.click();
+      }
+    });
+  </script>
+</body>
+</html>
