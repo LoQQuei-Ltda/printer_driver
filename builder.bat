@@ -38,30 +38,39 @@ if exist "dist" (
   rmdir /s /q dist
 )
 
-if exist "node_modules" (
-  echo - Removendo node_modules...
-  rmdir /s /q node_modules
-)
+@REM if exist "node_modules" (
+@REM   echo - Removendo node_modules...
+@REM   rmdir /s /q node_modules
+@REM )
 
 if exist "Output" (
   echo - Removendo pasta Output...
   rmdir /s /q Output
 )
 
-echo.
-echo Matando processos relacionados ao Electron...
-taskkill /f /im electron.exe >nul 2>&1
-taskkill /f /im app-builder.exe >nul 2>&1
-taskkill /f /im "Instalador de Gerenciamento de Impressão.exe" >nul 2>&1
+@REM echo.
+@REM echo Limpando diretórios de build anteriores...
+@REM echo - Fechando processos relacionados...
+@REM taskkill /f /im electron.exe >nul 2>&1
+@REM taskkill /f /im app-builder.exe >nul 2>&1
+@REM taskkill /f /im "Instalador de Gerenciamento de Impressão.exe" >nul 2>&1
 
-echo.
-echo Instalando dependências...
-call npm install
-if %ERRORLEVEL% NEQ 0 (
-  echo Erro: Não foi possível instalar as dependências
-  pause
-  exit /b 1
-)
+@REM REM Pausa para garantir que todos os processos foram encerrados
+@REM timeout /t 2 /nobreak >nul
+
+@REM if exist "dist" (
+@REM   echo - Removendo pasta dist...
+@REM   rmdir /s /q dist 2>nul
+@REM   if exist "dist" (
+@REM     rd /s /q dist 2>nul
+@REM   )
+@REM )
+
+@REM echo - Limpando cache do NPM...
+@REM call npm cache clean --force
+
+@REM echo - Instalando dependências com limpeza forçada...
+@REM call npm install --force
 
 echo.
 echo Construindo aplicação Electron...

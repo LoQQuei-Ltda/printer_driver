@@ -1,44 +1,24 @@
 /**
  * Sistema de Gerenciamento de Impressão - Aplicação Desktop
- * Main Process
  */
 
-//======================================================================
-// IMPORTS & REQUIRES
-//======================================================================
-const { 
-  app, 
-  BrowserWindow, 
-  ipcMain, 
-  dialog, 
-  Tray, 
-  Menu, 
-  shell, 
-  nativeImage, 
-  screen 
-} = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, shell, nativeImage, screen } = require('electron');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, exec } = require('child_process');
 const fs = require('fs');
 const url = require('url');
 const axios = require('axios');
 const installer = require('./installer');
 
-//======================================================================
-// GLOBAL VARIABLES
-//======================================================================
-// Window references
+// Manter referências globais
 let mainWindow;
-let loginWindow = null;
-let installationWindow = null;
-
-// System state
 let tray = null;
 let isQuitting = false;
+let loginWindow = null;
+let installationWindow = null;
+let isInstallingComponents = false;
 
-//======================================================================
-// APP CONFIGURATION
-//======================================================================
+// Configuração da aplicação
 const appConfig = {
   apiPrincipalServiceUrl: 'https://api.loqquei.com.br/api/v1',
   apiLocalUrl: 'http://localhost:3000/api',
@@ -51,50 +31,286 @@ const appConfig = {
   defaultHeight: 600
 };
 
-//======================================================================
-// UTILITY FUNCTIONS
-//======================================================================
-/**
- * Execute a command with timeout
- * @param {string} command - Command to execute
- * @param {number} timeoutMs - Timeout in milliseconds
- * @param {boolean} quiet - Whether to suppress output
- * @returns {Promise<string>} Command output
- */
-function execPromise(command, timeoutMs = 60000, quiet = false) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`Tempo limite excedido (${timeoutMs/1000}s): ${command}`));
-    }, timeoutMs);
+const setupWSL = process.argv.includes('--setup-wsl');
+
+if (setupWSL) {
+  console.log('Iniciando verificação e configuração do WSL e Ubuntu...');
+  
+  // Verificar se estamos rodando como administrador
+  checkAdminPrivileges().then(isAdmin => {
+    if (!isAdmin) {
+      dialog.showMessageBox({
+        type: 'error',
+        title: 'Privilégios de Administrador',
+        message: 'Esta operação precisa ser executada como administrador.',
+        detail: 'Por favor, execute a aplicação novamente como administrador.',
+        buttons: ['OK']
+      }).then(() => {
+        app.exit(1);
+      });
+      return;
+    }
     
-    execFile('cmd.exe', ['/c', command], { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
-      clearTimeout(timeout);
-      
-      if (error) {
-        reject(error);
-        return;
+    // Configurar o ambiente WSL
+    setupEnvironment().then(success => {
+      if (success) {
+        dialog.showMessageBox({
+          type: 'info',
+          title: 'Configuração Concluída',
+          message: 'A configuração do WSL e Ubuntu foi concluída com sucesso.',
+          detail: 'O sistema está pronto para uso.',
+          buttons: ['OK']
+        }).then(() => {
+          app.exit(0);
+        });
+      } else {
+        dialog.showMessageBox({
+          type: 'warning',
+          title: 'Configuração Incompleta',
+          message: 'A configuração do WSL e Ubuntu não foi concluída completamente.',
+          detail: 'Alguns recursos podem não funcionar corretamente.',
+          buttons: ['OK']
+        }).then(() => {
+          app.exit(1);
+        });
       }
-      resolve(stdout.trim());
+    }).catch(error => {
+      dialog.showMessageBox({
+        type: 'error',
+        title: 'Erro na Configuração',
+        message: 'Ocorreu um erro durante a configuração do WSL e Ubuntu.',
+        detail: error.message || 'Erro desconhecido',
+        buttons: ['OK']
+      }).then(() => {
+        console.error('Erro ao configurar WSL:', error);
+        app.exit(1);
+      });
     });
+  }).catch(error => {
+    console.error('Erro ao verificar privilégios:', error);
+    app.exit(1);
+  });
+  
+  return;
+}
+
+
+// Função para verificar privilégios de administrador
+async function checkAdminPrivileges() {
+  try {
+    if (process.platform !== 'win32') {
+      return true; // Em sistemas não-Windows, presume-se privilégios suficientes
+    }
+
+    // Verificar se estamos rodando como administrador
+    return new Promise((resolve) => {
+      exec('powershell -Command "([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"',
+        (error, stdout, stderr) => {
+          if (error) {
+            console.error('Erro ao verificar privilégios:', error);
+            resolve(false);
+            return;
+          }
+          resolve(stdout.trim() === 'True');
+        }
+      );
+    });
+  } catch (error) {
+    console.error('Erro ao verificar privilégios de administrador:', error);
+    return false;
+  }
+}
+
+// Elevar privilégios do aplicativo (reiniciar como administrador)
+function elevatePrivileges() {
+  try {
+    const appPath = process.execPath;
+    const args = process.argv.slice(1);
+
+    // Usar PowerShell para executar como administrador
+    execFile('powershell.exe', [
+      '-Command',
+      `Start-Process -FilePath '${appPath.replace(/(\s+)/g, '`$1')}' -ArgumentList '${args.join(' ')}' -Verb RunAs`
+    ]);
+
+    // Encerrar o processo atual
+    setTimeout(() => app.exit(), 1000);
+  } catch (error) {
+    console.error('Erro ao elevar privilégios:', error);
+    return false;
+  }
+}
+
+// Verificar e configurar o ambiente necessário (WSL e Ubuntu)
+async function setupEnvironment() {
+  try {
+    // Se já está instalando componentes, não continuar
+    if (isInstallingComponents) return;
+    isInstallingComponents = true;
+
+    console.log('Verificando componentes do sistema...');
+
+    // Verificar se WSL e Ubuntu já estão instalados
+    const wslStatus = await installer.checkWSLStatusDetailed();
+
+    // Se tudo estiver instalado, não fazer nada
+    if (wslStatus.installed && wslStatus.wsl2 && wslStatus.hasDistro) {
+      console.log('Todos os componentes do sistema estão instalados');
+      isInstallingComponents = false;
+      return true;
+    }
+
+    // Exibir diálogo perguntando se o usuário deseja instalar os componentes
+    const choice = await dialog.showMessageBox({
+      type: 'question',
+      title: 'Instalação de Componentes',
+      message: 'Componentes necessários não encontrados',
+      detail: `Este aplicativo requer ${!wslStatus.installed ? 'WSL 2' : ''}${(!wslStatus.installed && !wslStatus.hasDistro) ? ' e ' : ''}${!wslStatus.hasDistro ? 'Ubuntu' : ''} para funcionar corretamente. Deseja instalar esses componentes agora?`,
+      buttons: ['Sim', 'Não'],
+      defaultId: 0
+    });
+
+    if (choice.response === 1) {
+      // Usuário optou por não instalar
+      isInstallingComponents = false;
+      return false;
+    }
+
+    // Mostrar janela de instalação
+    createInstallationWindow();
+
+    // Configurar a função personalizada de perguntas
+    installer.setCustomAskQuestion(function (question) {
+      return new Promise((resolve) => {
+        // Log da pergunta
+        installer.log(`Pergunta: ${question}`, 'info');
+
+        if (installationWindow && !installationWindow.isDestroyed()) {
+          // Enviar a pergunta para a interface
+          installationWindow.webContents.send('pergunta', { question });
+
+          // Configurar receptor de resposta via IPC
+          const responseHandler = (responseEvent, resposta) => {
+            ipcMain.removeListener('resposta-pergunta', responseHandler);
+            resolve(resposta);
+          };
+
+          // Escutar pela resposta
+          ipcMain.once('resposta-pergunta', responseHandler);
+        } else {
+          // Fallback: usar dialog
+          dialog.showMessageBox({
+            type: 'question',
+            buttons: ['Sim', 'Não'],
+            defaultId: 0,
+            title: 'Instalador',
+            message: question
+          }).then(result => {
+            const response = result.response === 0 ? 's' : 'n';
+            resolve(response);
+          }).catch(() => {
+            // Em caso de erro, assumir sim
+            resolve('s');
+          });
+        }
+      });
+    });
+
+    // Enviar logs para a instalação
+    if (installationWindow && !installationWindow.isDestroyed()) {
+      installationWindow.webContents.send('log', {
+        type: 'header',
+        message: 'Iniciando instalação de componentes do sistema'
+      });
+    }
+
+    // Instalar os componentes necessários
+    const resultado = await installer.installSystem();
+
+    if (resultado.success) {
+      await dialog.showMessageBox({
+        type: 'info',
+        title: 'Instalação Concluída',
+        message: 'Componentes instalados com sucesso!',
+        detail: 'O sistema está pronto para uso.',
+        buttons: ['OK']
+      });
+      isInstallingComponents = false;
+      return true;
+    } else if (resultado.needsReboot) {
+      const rebootChoice = await dialog.showMessageBox({
+        type: 'warning',
+        title: 'Reinicialização Necessária',
+        message: 'É necessário reiniciar o computador para continuar a instalação.',
+        detail: 'Deseja reiniciar agora?',
+        buttons: ['Sim', 'Não'],
+        defaultId: 0
+      });
+
+      if (rebootChoice.response === 0) {
+        // Reiniciar o computador
+        exec('shutdown /r /t 10');
+      }
+      isInstallingComponents = false;
+      return false;
+    } else {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'Erro na Instalação',
+        message: 'Não foi possível instalar todos os componentes necessários.',
+        detail: resultado.message || 'Verifique o log para mais detalhes.',
+        buttons: ['OK']
+      });
+      isInstallingComponents = false;
+      return false;
+    }
+  } catch (error) {
+    console.error('Erro ao configurar ambiente:', error);
+    isInstallingComponents = false;
+    return false;
+  }
+}
+
+// Garantir que apenas uma instância do aplicativo esteja em execução
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+} else {
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    // Alguém tentou executar uma segunda instância, devemos focar nossa janela
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
   });
 }
 
-//======================================================================
-// FILE SYSTEM & DATA MANAGEMENT
-//======================================================================
-/**
- * Ensure data directories exist
- */
+// Configurar inicialização automática
+function setupAutoLaunch() {
+  const AutoLaunch = require('auto-launch');
+  const autoLauncher = new AutoLaunch({
+    name: 'Sistema de Gerenciamento de Impressão',
+    path: app.getPath('exe'),
+  });
+
+  autoLauncher.isEnabled().then((isEnabled) => {
+    if (appConfig.autoStart && !isEnabled) {
+      autoLauncher.enable();
+    } else if (!appConfig.autoStart && isEnabled) {
+      autoLauncher.disable();
+    }
+  });
+}
+
+// Criar diretório de dados se não existir
 function ensureDirectories() {
   if (!fs.existsSync(appConfig.dataPath)) {
     fs.mkdirSync(appConfig.dataPath, { recursive: true });
   }
 }
 
-/**
- * Check if user is authenticated
- * @returns {boolean} Whether user is authenticated
- */
+// Verificar se o usuário está autenticado
 function isAuthenticated() {
   try {
     if (fs.existsSync(appConfig.userDataFile)) {
@@ -107,10 +323,7 @@ function isAuthenticated() {
   return false;
 }
 
-/**
- * Save user data
- * @param {Object} userData - User data to save
- */
+// Salvar dados do usuário
 function saveUserData(userData) {
   try {
     ensureDirectories();
@@ -120,10 +333,7 @@ function saveUserData(userData) {
   }
 }
 
-/**
- * Get user data
- * @returns {Object|null} User data or null if not found
- */
+// Obter dados do usuário
 function getUserData() {
   try {
     if (fs.existsSync(appConfig.userDataFile)) {
@@ -135,9 +345,7 @@ function getUserData() {
   return null;
 }
 
-/**
- * Save window preferences
- */
+// Salvar preferências da janela
 function saveWindowPreferences() {
   try {
     if (mainWindow) {
@@ -149,7 +357,7 @@ function saveWindowPreferences() {
         y: bounds.y,
         isMaximized: mainWindow.isMaximized()
       };
-      
+
       ensureDirectories();
       fs.writeFileSync(appConfig.windowPrefsFile, JSON.stringify(prefs, null, 2), 'utf8');
     }
@@ -158,10 +366,7 @@ function saveWindowPreferences() {
   }
 }
 
-/**
- * Get window preferences
- * @returns {Object} Window preferences
- */
+// Obter preferências da janela
 function getWindowPreferences() {
   try {
     if (fs.existsSync(appConfig.windowPrefsFile)) {
@@ -170,8 +375,8 @@ function getWindowPreferences() {
   } catch (error) {
     console.error('Erro ao ler preferências da janela:', error);
   }
-  
-  // Return default values if no saved preferences
+
+  // Retornar valores padrão se não houver preferências salvas
   return {
     width: appConfig.defaultWidth,
     height: appConfig.defaultHeight,
@@ -179,28 +384,78 @@ function getWindowPreferences() {
   };
 }
 
-//======================================================================
-// WINDOW MANAGEMENT
-//======================================================================
-/**
- * Create the main application window
- */
-function createMainWindow() {
+// Criar janela de login
+function createLoginWindow() {
+  // Importar o ícone da aplicação
   const iconPath = path.join(__dirname, 'assets/icon/printer.ico');
-  
+
+  // Obter tamanho da tela
   const primaryDisplay = screen.getPrimaryDisplay();
   const { width, height } = primaryDisplay.workAreaSize;
-  
+
+  // Tamanho padrão da janela de login
+  const windowWidth = 360;
+  const windowHeight = 480;
+
+  // Calcular posição (canto inferior direito)
+  const x = width - windowWidth - 20;
+  const y = height - windowHeight - 60; // Deixar espaço para a barra de tarefas
+
+  loginWindow = new BrowserWindow({
+    width: windowWidth,
+    height: windowHeight,
+    x: x,
+    y: y,
+    resizable: true,
+    fullscreenable: false,
+    maximizable: false,
+    icon: iconPath,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+    },
+    skipTaskbar: false,
+    frame: true,
+    show: false
+  });
+
+  loginWindow.loadFile('view/login.html');
+  loginWindow.setMenu(null);
+
+  // Mostrar a janela quando estiver pronta
+  loginWindow.once('ready-to-show', () => {
+    loginWindow.show();
+  });
+
+  loginWindow.on('closed', function () {
+    loginWindow = null;
+    if (!mainWindow && !isQuitting) {
+      app.quit();
+    }
+  });
+}
+
+// Criar janela principal
+function createMainWindow() {
+  // Importar o ícone da aplicação
+  const iconPath = path.join(__dirname, 'assets/icon/printer.ico');
+
+  // Obter tamanho da tela
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const { width, height } = primaryDisplay.workAreaSize;
+
+  // Obter preferências salvas
   const prefs = getWindowPreferences();
-  
+
+  // Calcular posição (canto inferior direito) se não houver posição salva
   let x = prefs.x;
   let y = prefs.y;
-  
+
   if (x === undefined || y === undefined) {
     x = width - prefs.width - 20;
-    y = height - prefs.height - 60; // Space for taskbar
+    y = height - prefs.height - 60; // Deixar espaço para a barra de tarefas
   }
-  
+
   mainWindow = new BrowserWindow({
     width: prefs.width || appConfig.defaultWidth,
     height: prefs.height || appConfig.defaultHeight,
@@ -221,34 +476,36 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile('view/index.html');
-  
+
+  // Maximizar a janela se for a preferência do usuário
   if (prefs.isMaximized) {
     mainWindow.maximize();
   }
-  
+
+  // Mostrar a janela quando estiver pronta
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
   });
 
-  // Save size and position when resized or moved
+  // Salvar tamanho e posição quando a janela for movida ou redimensionada
   mainWindow.on('resize', () => {
     if (!mainWindow.isMaximized()) {
       saveWindowPreferences();
     }
   });
-  
+
   mainWindow.on('move', () => {
     if (!mainWindow.isMaximized()) {
       saveWindowPreferences();
     }
   });
-  
+
   mainWindow.on('maximize', saveWindowPreferences);
   mainWindow.on('unmaximize', saveWindowPreferences);
 
   mainWindow.on('blur', () => {
     const isCriticalOperation = global.criticalOperation || false;
-    
+
     if (!isCriticalOperation && appConfig.minimizeOnBlur) {
       mainWindow.hide();
     }
@@ -270,60 +527,11 @@ function createMainWindow() {
   global.appWindow = mainWindow;
 }
 
-/**
- * Create the login window
- */
-function createLoginWindow() {
-  const iconPath = path.join(__dirname, 'assets/icon/printer.ico');
-  
-  const primaryDisplay = screen.getPrimaryDisplay();
-  const { width, height } = primaryDisplay.workAreaSize;
-  
-  const windowWidth = 360;
-  const windowHeight = 480;
-  
-  const x = width - windowWidth - 20;
-  const y = height - windowHeight - 60; // Space for taskbar
-  
-  loginWindow = new BrowserWindow({
-    width: windowWidth,
-    height: windowHeight,
-    x: x,
-    y: y,
-    resizable: true,
-    fullscreenable: false,
-    maximizable: false,
-    icon: iconPath,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-    },
-    skipTaskbar: false,
-    frame: true,
-    show: false
-  });
-
-  loginWindow.loadFile('view/login.html');
-  loginWindow.setMenu(null);
-  
-  loginWindow.once('ready-to-show', () => {
-    loginWindow.show();
-  });
-
-  loginWindow.on('closed', function () {
-    loginWindow = null;
-    if (!mainWindow && !isQuitting) {
-      app.quit();
-    }
-  });
-}
-
-/**
- * Create installation window
- */
+// Criar janela de instalação
 function createInstallationWindow() {
+  // Importar o ícone da aplicação
   const iconPath = path.join(__dirname, 'assets/icon/printer.ico');
-  
+
   installationWindow = new BrowserWindow({
     width: 800,
     height: 700,
@@ -339,7 +547,8 @@ function createInstallationWindow() {
 
   installationWindow.loadFile('view/installation.html');
   installationWindow.setMenu(null);
-  
+
+  // Mostrar a janela quando estiver pronta
   installationWindow.once('ready-to-show', () => {
     installationWindow.show();
   });
@@ -349,19 +558,19 @@ function createInstallationWindow() {
   });
 }
 
-/**
- * Create system tray icon
- */
+// Criar ícone na bandeja
 function createTray() {
+  // Usar o ícone da aplicação
   const iconPath = path.join(__dirname, 'assets/icon/printer.ico');
-  
+
+  // Criar o ícone na bandeja
   try {
     tray = new Tray(iconPath);
-    
+
     const contextMenu = Menu.buildFromTemplate([
-      { 
-        label: 'Abrir Sistema de Gerenciamento de Impressão', 
-        click: function() {
+      {
+        label: 'Abrir Sistema de Gerenciamento de Impressão',
+        click: function () {
           if (mainWindow) {
             mainWindow.show();
           } else if (isAuthenticated()) {
@@ -372,19 +581,19 @@ function createTray() {
         }
       },
       { type: 'separator' },
-      { 
-        label: 'Sair', 
-        click: function() {
+      {
+        label: 'Sair',
+        click: function () {
           isQuitting = true;
           app.quit();
         }
       }
     ]);
-    
+
     tray.setToolTip('Sistema de Gerenciamento de Impressão');
     tray.setContextMenu(contextMenu);
-    
-    tray.on('click', function() {
+
+    tray.on('click', function () {
       if (mainWindow) {
         if (mainWindow.isVisible()) {
           mainWindow.hide();
@@ -402,83 +611,59 @@ function createTray() {
   }
 }
 
-//======================================================================
-// SECURITY & ADMINISTRATION
-//======================================================================
-/**
- * Check if app is running with admin privileges
- * @returns {Promise<boolean>} Whether app is running as admin
- */
-async function checkAdmin() {
+// Função auxiliar para executar comandos
+function execPromise(command, timeoutMs = 60000, quiet = false) {
   return new Promise((resolve, reject) => {
-    if (process.platform !== 'win32') {
-      // Non-Windows platforms are assumed to be OK
-      resolve(true);
-      return;
-    }
-    
-    const options = {
-      name: 'Verificação de Administrador'
-    };
-    
-    try {
-      // Try to execute a command that requires admin privileges
-      execFile('powershell.exe', ['-Command', '([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)'], options, (error, stdout, stderr) => {
-        if (error) {
-          resolve(false);
-          return;
-        }
-        
-        resolve(stdout.trim() === 'True');
-      });
-    } catch (error) {
-      resolve(false);
-    }
+    const timeout = setTimeout(() => {
+      reject(new Error(`Tempo limite excedido (${timeoutMs / 1000}s): ${command}`));
+    }, timeoutMs);
+
+    execFile('cmd.exe', ['/c', command], { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+      clearTimeout(timeout);
+
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(stdout.trim());
+    });
   });
 }
 
-/**
- * Configure auto-launch on startup
- */
-function setupAutoLaunch() {
-  const AutoLaunch = require('auto-launch');
-  const autoLauncher = new AutoLaunch({
-    name: 'Sistema de Gerenciamento de Impressão',
-    path: app.getPath('exe'),
-  });
+// Este método será chamado quando o Electron terminar a inicialização
+app.whenReady().then(async () => {
+  // Verificar se temos privilégios de administrador
+  const isAdmin = await checkAdminPrivileges();
 
-  autoLauncher.isEnabled().then((isEnabled) => {
-    if (appConfig.autoStart && !isEnabled) {
-      autoLauncher.enable();
-    } else if (!appConfig.autoStart && isEnabled) {
-      autoLauncher.disable();
+  if (!isAdmin) {
+    // Mostrar diálogo perguntando se deseja continuar com elevação
+    const choice = await dialog.showMessageBox({
+      type: 'question',
+      title: 'Privilégios de Administrador',
+      message: 'Este aplicativo precisa de privilégios de administrador',
+      detail: 'Para instalação e configuração adequada dos componentes, é necessário executar como administrador. Deseja continuar?',
+      buttons: ['Sim', 'Não'],
+      defaultId: 0
+    });
+
+    if (choice.response === 0) {
+      // Tentar elevar privilégios
+      elevatePrivileges();
+      return; // Encerra este processo, o novo será executado como admin
     }
-  });
-}
+    // Se o usuário não quiser elevar, continuaremos sem privilégios de admin
+    console.log('Continuando sem privilégios de administrador (algumas funcionalidades podem não funcionar)');
+  }
 
-//======================================================================
-// APP LIFECYCLE
-//======================================================================
-// Ensure single instance
-const gotTheLock = app.requestSingleInstanceLock();
-if (!gotTheLock) {
-  app.quit();
-} else {
-  app.on('second-instance', (event, commandLine, workingDirectory) => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
-  });
-}
-
-// App initialization
-app.whenReady().then(() => {
+  // Inicialização normal do aplicativo
   setupAutoLaunch();
   ensureDirectories();
   createTray();
-  
+
+  // Verificar e configurar componentes do sistema
+  await setupEnvironment();
+
+  // Verificar se o usuário está autenticado
   if (isAuthenticated()) {
     createMainWindow();
   } else {
@@ -496,22 +681,22 @@ app.whenReady().then(() => {
   });
 });
 
-// App shutdown
+// Evento quando o aplicativo está pronto para fechar
 app.on('before-quit', function () {
   isQuitting = true;
 });
 
-// Prevent app close on all windows closed
+// Manter o aplicativo em execução quando todas as janelas forem fechadas
 app.on('window-all-closed', function (e) {
   if (process.platform !== 'darwin') {
-    // Don't terminate the app, keep it running in the background
+    // Não finalizar o aplicativo, mantê-lo em segundo plano
     e.preventDefault();
   }
 });
 
-//======================================================================
-// IPC EVENT HANDLERS - WINDOW OPERATIONS
-//======================================================================
+// Capturar eventos do processo de renderização
+
+// Eventos de controle da janela
 ipcMain.on('minimize-window', (event) => {
   if (mainWindow) {
     mainWindow.minimize();
@@ -526,10 +711,11 @@ ipcMain.on('hide-window', (event) => {
 
 ipcMain.on('close-app', () => {
   if (mainWindow) {
-    mainWindow.hide(); // Just hide the window instead of closing it
+    mainWindow.hide(); // Apenas esconde a janela em vez de fechá-la
   }
 });
 
+// Manipular minimização de janela
 ipcMain.on('minimize-app', () => {
   if (mainWindow) {
     mainWindow.minimize();
@@ -540,216 +726,84 @@ ipcMain.on('set-critical-operation', (event, isCritical) => {
   global.criticalOperation = isCritical;
 });
 
-//======================================================================
-// IPC EVENT HANDLERS - AUTHENTICATION
-//======================================================================
+// Login
 ipcMain.on('login', async (event, credentials) => {
   try {
-    // Here you would make the call to the authentication API
-    // Simulating a successful response for now
-    let response;
+    let response
     try {
       response = await axios.post(`${appConfig.apiPrincipalServiceUrl}/login/desktop`, {
         email: credentials.email,
         password: credentials.password
       });
     } catch (error) {
-      event.reply('login-response', { 
-        success: false, 
+      event.reply('login-response', {
+        success: false,
         message: error?.response?.data?.message || 'Erro ao autenticar com o servidor. Tente novamente mais tarde.'
       });
       return;
     }
-    
+
     if (response.status === 200) {
-      // Save user data
+      // Salvar os dados do usuário
       saveUserData(response.data);
-      
-      // Close login window and open main window
+
+      // Fechar a janela de login e abrir a janela principal
       if (loginWindow) {
         loginWindow.close();
       }
       createMainWindow();
-      
+
       event.reply('login-response', { success: true });
     } else {
       console.log('Falha na autenticação:', response.data);
-      event.reply('login-response', { 
-        success: false, 
+      event.reply('login-response', {
+        success: false,
         message: response?.data?.message || 'Falha na autenticação. Verifique suas credenciais.'
       });
     }
   } catch (error) {
     console.error('Erro de login:', error);
-    event.reply('login-response', { 
-      success: false, 
+    event.reply('login-response', {
+      success: false,
       message: 'Erro ao conectar ao servidor. Tente novamente mais tarde.'
     });
   }
 });
 
+// Logout
 ipcMain.on('logout', (event) => {
   try {
     if (fs.existsSync(appConfig.userDataFile)) {
       fs.unlinkSync(appConfig.userDataFile);
     }
-    
+
     if (mainWindow) {
       mainWindow.close();
     }
-    
+
     createLoginWindow();
     event.reply('logout-response', { success: true });
   } catch (error) {
     console.error('Erro ao fazer logout:', error);
-    event.reply('logout-response', { 
-      success: false, 
+    event.reply('logout-response', {
+      success: false,
       message: 'Erro ao fazer logout.'
     });
   }
 });
 
+// Obter informações do usuário
 ipcMain.on('get-user', (event) => {
   const userData = getUserData();
   event.reply('user-data', userData);
 });
 
-//======================================================================
-// IPC EVENT HANDLERS - PRINT MANAGEMENT
-//======================================================================
-ipcMain.on('listar-arquivos', async (event) => {
-  try {
-    const userData = getUserData();
-    
-    if (!userData || !userData.token) {
-      event.reply('arquivos-response', { 
-        success: false, 
-        message: 'Usuário não autenticado' 
-      });
-      return;
-    }
-    
-    // Here you would make the API call to get the files
-    // Simulating a response for now
-    const arquivos = [
-      { id: 1, nome: 'Documento 1.pdf', tamanho: '2.5 MB', data: '2025-04-10', status: 'Pendente' },
-      { id: 2, nome: 'Relatório Mensal.docx', tamanho: '1.8 MB', data: '2025-04-11', status: 'Pendente' },
-      { id: 3, nome: 'Imagem.jpg', tamanho: '3.2 MB', data: '2025-04-09', status: 'Impresso' },
-      { id: 4, nome: 'Planilha.xlsx', tamanho: '1.1 MB', data: '2025-04-08', status: 'Falha' }
-    ];
-    
-    /* Real API implementation:
-    const response = await axios.get(`${appConfig.apiBaseUrl}/files`, {
-      headers: {
-        'Authorization': `Bearer ${userData.token}`
-      }
-    });
-    const arquivos = response.data;
-    */
-    
-    event.reply('arquivos-response', { success: true, arquivos });
-  } catch (error) {
-    console.error('Erro ao listar arquivos:', error);
-    event.reply('arquivos-response', { 
-      success: false, 
-      message: 'Erro ao listar arquivos para impressão' 
-    });
-  }
-});
-
-ipcMain.on('listar-impressoras', async (event) => {
-  try {
-    const userData = getUserData();
-    
-    if (!userData || !userData.token) {
-      event.reply('impressoras-response', { 
-        success: false, 
-        message: 'Usuário não autenticado' 
-      });
-      return;
-    }
-    
-    // Here you would make the API call to get the printers
-    // Simulating a response for now
-    const impressoras = [
-      { id: 1, nome: 'HP LaserJet Pro', status: 'Online', localizacao: 'Recepção' },
-      { id: 2, nome: 'Epson EcoTank', status: 'Online', localizacao: 'Escritório' },
-      { id: 3, nome: 'Brother MFC', status: 'Offline', localizacao: 'Sala de Reunião' },
-      { id: 4, nome: 'Canon PIXMA', status: 'Online', localizacao: 'Administração' }
-    ];
-    
-    /* Real API implementation:
-    const response = await axios.get(`${appConfig.apiBaseUrl}/printers`, {
-      headers: {
-        'Authorization': `Bearer ${userData.token}`
-      }
-    });
-    const impressoras = response.data;
-    */
-    
-    event.reply('impressoras-response', { success: true, impressoras });
-  } catch (error) {
-    console.error('Erro ao listar impressoras:', error);
-    event.reply('impressoras-response', { 
-      success: false, 
-      message: 'Erro ao listar impressoras disponíveis' 
-    });
-  }
-});
-
-ipcMain.on('imprimir-arquivo', async (event, { arquivoId, impressoraId }) => {
-  try {
-    const userData = getUserData();
-    
-    if (!userData || !userData.token) {
-      event.reply('impressao-response', { 
-        success: false, 
-        message: 'Usuário não autenticado' 
-      });
-      return;
-    }
-    
-    // Here you would make the API call to print the file
-    // Simulating a response for now
-    const resultado = { 
-      success: true, 
-      jobId: Math.floor(Math.random() * 10000), 
-      message: 'Arquivo enviado para impressão com sucesso' 
-    };
-    
-    /* Real API implementation:
-    const response = await axios.post(`${appConfig.apiBaseUrl}/print`, {
-      fileId: arquivoId,
-      printerId: impressoraId
-    }, {
-      headers: {
-        'Authorization': `Bearer ${userData.token}`
-      }
-    });
-    const resultado = response.data;
-    */
-    
-    event.reply('impressao-response', resultado);
-  } catch (error) {
-    console.error('Erro ao imprimir arquivo:', error);
-    event.reply('impressao-response', { 
-      success: false, 
-      message: 'Erro ao enviar arquivo para impressão' 
-    });
-  }
-});
-
-//======================================================================
-// IPC EVENT HANDLERS - SYSTEM INSTALLATION
-//======================================================================
+// Verificar status de instalação do WSL
 ipcMain.on('verificar-instalacao', async (event) => {
   try {
-    const instalador = require('./installer');
-    
-    // Check WSL status
-    const wslStatus = await instalador.checkWSLStatusDetailed();
-    
-    // Check if default user is configured
+    const wslStatus = await installer.checkWSLStatusDetailed();
+
+    // Verificar se o usuário padrão está configurado
     let userConfigured = false;
     if (wslStatus.installed && wslStatus.wsl2 && wslStatus.hasDistro) {
       try {
@@ -759,7 +813,7 @@ ipcMain.on('verificar-instalacao', async (event) => {
         console.error('Erro ao verificar usuário:', error);
       }
     }
-    
+
     event.reply('status-instalacao', {
       wslInstalled: wslStatus.installed,
       wsl2Configured: wslStatus.wsl2,
@@ -778,89 +832,115 @@ ipcMain.on('verificar-instalacao', async (event) => {
   }
 });
 
+// Instalação do WSL
 ipcMain.on('iniciar-instalacao', async (event) => {
   try {
-    // Check if running as administrator
-    const isAdmin = await checkAdmin();
-    
+    // Verificar se está sendo executado como administrador
+    const isAdmin = await checkAdminPrivileges();
+
     if (!isAdmin) {
-      dialog.showMessageBox(mainWindow, {
-        type: 'error',
+      const choice = await dialog.showMessageBox(mainWindow, {
+        type: 'question',
         title: 'Privilégios de Administrador',
         message: 'Esta operação precisa ser executada como administrador.',
-        detail: 'Por favor, execute a aplicação novamente como administrador.',
-        buttons: ['OK']
+        detail: 'Deseja tentar executar com privilégios elevados?',
+        buttons: ['Sim', 'Não'],
+        defaultId: 0
       });
+
+      if (choice.response === 0) {
+        // Tentar elevar privilégios
+        elevatePrivileges();
+      }
       return;
     }
-    
-    // Open installation window
+
+    // Abrir janela de instalação
     createInstallationWindow();
-    
-    // Start installation process
+
+    // Iniciar o processo de instalação
     event.reply('log', {
       type: 'header',
       message: 'Iniciando instalação do Sistema de Gerenciamento de Impressão'
     });
-    
-    // Send log to main interface too
+
+    // Enviar um log para a interface principal também
     event.reply('installation-log', {
       type: 'info',
       message: 'Iniciando instalação do Sistema de Gerenciamento de Impressão'
     });
-    
-    // Call installer function
-    const instalador = require('./installer');
-    
-    // Replace log function to send to interface
-    const originalLog = instalador.log;
-    instalador.log = function(message, type = 'info') {
-      // Execute original log
+
+    // Chamar a função de instalação do installer.js
+
+    // Substituir a função de log para enviar para a interface
+    const originalLog = installer.log;
+    installer.log = function (message, type = 'info') {
+      // Executar o log original
       originalLog(message, type);
-      
-      // Send to interface
+
+      // Enviar para a interface
       event.reply('log', { type, message });
-      
-      // Send to main interface log
+
+      // Enviar para o log da interface principal
       event.reply('installation-log', { type, message });
-      
-      // Also send to installation window
+
+      // Também enviar para a janela de instalação
       if (installationWindow && !installationWindow.isDestroyed()) {
         installationWindow.webContents.send('log', { type, message });
       }
     };
-    
-    // Replace askQuestion function to use dialogs
-    const originalAskQuestion = instalador.askQuestion;
-    global.askQuestionCallback = null;
-    
-    instalador.askQuestion = function(question) {
+
+    // Configurar a função personalizada de perguntas
+    installer.setCustomAskQuestion(function (question) {
       return new Promise((resolve) => {
+        // Log da pergunta
+        installer.log(`Pergunta: ${question}`, 'info');
+
         if (installationWindow && !installationWindow.isDestroyed()) {
+          // Enviar a pergunta para a interface
           installationWindow.webContents.send('pergunta', { question });
+
+          // Configurar receptor de resposta via IPC
+          const responseHandler = (responseEvent, resposta) => {
+            ipcMain.removeListener('resposta-pergunta', responseHandler);
+            resolve(resposta);
+          };
+
+          // Escutar pela resposta
+          ipcMain.once('resposta-pergunta', responseHandler);
         } else {
-          event.reply('pergunta', { question });
+          // Fallback: usar dialog
+          dialog.showMessageBox(mainWindow, {
+            type: 'question',
+            buttons: ['Sim', 'Não'],
+            defaultId: 0,
+            title: 'Instalador',
+            message: question
+          }).then(result => {
+            const response = result.response === 0 ? 's' : 'n';
+            resolve(response);
+          }).catch(() => {
+            // Em caso de erro, assumir sim
+            resolve('s');
+          });
         }
-        
-        // Set up global callback to receive the answer
-        global.askQuestionCallback = resolve;
       });
-    };
-    
-    // Start installation
-    const resultado = await instalador.installSystem();
-    
-    // Report result
+    });
+
+    // Iniciar a instalação
+    const resultado = await installer.installSystem();
+
+    // Informar o resultado
     if (resultado.success) {
       event.reply('log', {
         type: 'success',
         message: resultado.message
       });
-      
+
       if (installationWindow && !installationWindow.isDestroyed()) {
         installationWindow.webContents.send('instalacao-completa', { success: true });
       }
-      
+
       dialog.showMessageBox(mainWindow, {
         type: 'info',
         title: 'Instalação Concluída',
@@ -873,11 +953,11 @@ ipcMain.on('iniciar-instalacao', async (event) => {
         type: 'error',
         message: resultado.message
       });
-      
+
       if (installationWindow && !installationWindow.isDestroyed()) {
         installationWindow.webContents.send('instalacao-completa', { success: false });
       }
-      
+
       if (resultado.needsReboot) {
         const escolha = await dialog.showMessageBox(mainWindow, {
           type: 'warning',
@@ -887,10 +967,10 @@ ipcMain.on('iniciar-instalacao', async (event) => {
           buttons: ['Sim', 'Não'],
           defaultId: 0
         });
-        
+
         if (escolha.response === 0) {
-          // Restart computer
-          require('child_process').exec('shutdown /r /t 10');
+          // Reiniciar o computador
+          exec('shutdown /r /t 10');
         }
       } else {
         dialog.showMessageBox(mainWindow, {
@@ -904,19 +984,19 @@ ipcMain.on('iniciar-instalacao', async (event) => {
     }
   } catch (error) {
     console.error('Erro na instalação:', error);
-    
+
     event.reply('log', {
       type: 'error',
       message: `Erro inesperado: ${error.message || 'Erro desconhecido'}`
     });
-    
+
     if (installationWindow && !installationWindow.isDestroyed()) {
-      installationWindow.webContents.send('instalacao-completa', { 
+      installationWindow.webContents.send('instalacao-completa', {
         success: false,
-        error: error.message || 'Erro desconhecido' 
+        error: error.message || 'Erro desconhecido'
       });
     }
-    
+
     dialog.showMessageBox(mainWindow, {
       type: 'error',
       title: 'Erro na Instalação',
@@ -927,10 +1007,105 @@ ipcMain.on('iniciar-instalacao', async (event) => {
   }
 });
 
-// Receive question response
+// Receber resposta da pergunta
 ipcMain.on('resposta-pergunta', (event, resposta) => {
   if (global.askQuestionCallback) {
     global.askQuestionCallback(resposta);
     global.askQuestionCallback = null;
+  }
+});
+
+// Listar arquivos para impressão
+ipcMain.on('listar-arquivos', async (event) => {
+  try {
+    const userData = getUserData();
+
+    if (!userData || !userData.token) {
+      event.reply('arquivos-response', {
+        success: false,
+        message: 'Usuário não autenticado'
+      });
+      return;
+    }
+
+    // Aqui você faria a chamada para a API para obter os arquivos
+    // Simulando uma resposta por enquanto
+    const arquivos = [
+      { id: 1, nome: 'Documento 1.pdf', tamanho: '2.5 MB', data: '2025-04-10', status: 'Pendente' },
+      { id: 2, nome: 'Relatório Mensal.docx', tamanho: '1.8 MB', data: '2025-04-11', status: 'Pendente' },
+      { id: 3, nome: 'Imagem.jpg', tamanho: '3.2 MB', data: '2025-04-09', status: 'Impresso' },
+      { id: 4, nome: 'Planilha.xlsx', tamanho: '1.1 MB', data: '2025-04-08', status: 'Falha' }
+    ];
+
+    event.reply('arquivos-response', { success: true, arquivos });
+  } catch (error) {
+    console.error('Erro ao listar arquivos:', error);
+    event.reply('arquivos-response', {
+      success: false,
+      message: 'Erro ao listar arquivos para impressão'
+    });
+  }
+});
+
+// Listar impressoras
+ipcMain.on('listar-impressoras', async (event) => {
+  try {
+    const userData = getUserData();
+
+    if (!userData || !userData.token) {
+      event.reply('impressoras-response', {
+        success: false,
+        message: 'Usuário não autenticado'
+      });
+      return;
+    }
+
+    // Aqui você faria a chamada para a API para obter as impressoras
+    // Simulando uma resposta por enquanto
+    const impressoras = [
+      { id: 1, nome: 'HP LaserJet Pro', status: 'Online', localizacao: 'Recepção' },
+      { id: 2, nome: 'Epson EcoTank', status: 'Online', localizacao: 'Escritório' },
+      { id: 3, nome: 'Brother MFC', status: 'Offline', localizacao: 'Sala de Reunião' },
+      { id: 4, nome: 'Canon PIXMA', status: 'Online', localizacao: 'Administração' }
+    ];
+
+    event.reply('impressoras-response', { success: true, impressoras });
+  } catch (error) {
+    console.error('Erro ao listar impressoras:', error);
+    event.reply('impressoras-response', {
+      success: false,
+      message: 'Erro ao listar impressoras disponíveis'
+    });
+  }
+});
+
+// Imprimir arquivo
+ipcMain.on('imprimir-arquivo', async (event, { arquivoId, impressoraId }) => {
+  try {
+    const userData = getUserData();
+
+    if (!userData || !userData.token) {
+      event.reply('impressao-response', {
+        success: false,
+        message: 'Usuário não autenticado'
+      });
+      return;
+    }
+
+    // Aqui você faria a chamada para a API para imprimir o arquivo
+    // Simulando uma resposta por enquanto
+    const resultado = {
+      success: true,
+      jobId: Math.floor(Math.random() * 10000),
+      message: 'Arquivo enviado para impressão com sucesso'
+    };
+
+    event.reply('impressao-response', resultado);
+  } catch (error) {
+    console.error('Erro ao imprimir arquivo:', error);
+    event.reply('impressao-response', {
+      success: false,
+      message: 'Erro ao enviar arquivo para impressão'
+    });
   }
 });
