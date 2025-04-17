@@ -6,9 +6,9 @@ const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, shell, nativeImage, scr
 const path = require('path');
 const { execFile, exec } = require('child_process');
 const fs = require('fs');
-const url = require('url');
 const axios = require('axios');
 const installer = require('./installer');
+const { initTask } = require('./task');
 
 // Manter referências globais
 let mainWindow;
@@ -19,9 +19,9 @@ let installationWindow = null;
 let isInstallingComponents = false;
 let currentTheme = 'dark';
 
-// Configuração da aplicação
 const appConfig = {
-  apiPrincipalServiceUrl: 'https://api.loqquei.com.br/api/v1',
+//   apiPrincipalServiceUrl: 'https://api.loqquei.com.br/api/v1',
+  apiPrincipalServiceUrl: 'http://localhost:80/api/v1',
   apiLocalUrl: 'http://localhost:56258/api',
   autoStart: true,
   // minimizeOnBlur: true,
@@ -480,7 +480,7 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile('view/index.html');
-  mainWindow.webContents.openDevTools(); // remover
+  // mainWindow.webContents.openDevTools(); // remover
 
   // Maximizar a janela se for a preferência do usuário
   if (prefs.isMaximized) {
@@ -1222,3 +1222,10 @@ ipcMain.on('excluir-arquivo', async (event, { fileId }) => {
     });
   }
 });
+
+module.exports = {
+  userData: getUserData(),
+  appConfig
+};
+
+initTask();
