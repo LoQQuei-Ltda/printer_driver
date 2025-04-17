@@ -17,13 +17,14 @@ let isQuitting = false;
 let loginWindow = null;
 let installationWindow = null;
 let isInstallingComponents = false;
+let currentTheme = 'dark';
 
 // Configuração da aplicação
 const appConfig = {
   apiPrincipalServiceUrl: 'https://api.loqquei.com.br/api/v1',
-  apiLocalUrl: 'http://localhost:3000/api',
+  apiLocalUrl: 'http://localhost:56258/api',
   autoStart: true,
-  minimizeOnBlur: true,
+  // minimizeOnBlur: true,
   dataPath: path.join(app.getPath('userData'), 'appData'),
   userDataFile: path.join(app.getPath('userData'), 'user.json'),
   windowPrefsFile: path.join(app.getPath('userData'), 'window_prefs.json'),
@@ -327,7 +328,8 @@ function isAuthenticated() {
 function saveUserData(userData) {
   try {
     ensureDirectories();
-    fs.writeFileSync(appConfig.userDataFile, JSON.stringify(userData, null, 2), 'utf8');
+    const data = userData && userData.data ? userData.data : userData;
+    fs.writeFileSync(appConfig.userDataFile, JSON.stringify(data, null, 2), 'utf8');
   } catch (error) {
     console.error('Erro ao salvar dados do usuário:', error);
   }
@@ -387,7 +389,8 @@ function getWindowPreferences() {
 // Criar janela de login
 function createLoginWindow() {
   // Importar o ícone da aplicação
-  const iconPath = path.join(__dirname, 'assets/icon/printer.ico');
+  const iconPath = path.join(__dirname, `assets/icon/${currentTheme}.ico`);
+  console.log(iconPath);
 
   // Obter tamanho da tela
   const primaryDisplay = screen.getPrimaryDisplay();
@@ -406,7 +409,7 @@ function createLoginWindow() {
     height: windowHeight,
     x: x,
     y: y,
-    resizable: true,
+    resizable: false,
     fullscreenable: false,
     maximizable: false,
     icon: iconPath,
@@ -438,7 +441,8 @@ function createLoginWindow() {
 // Criar janela principal
 function createMainWindow() {
   // Importar o ícone da aplicação
-  const iconPath = path.join(__dirname, 'assets/icon/printer.ico');
+  const iconPath = path.join(__dirname, `assets/icon/${currentTheme}.ico`);
+  console.log(iconPath);
 
   // Obter tamanho da tela
   const primaryDisplay = screen.getPrimaryDisplay();
@@ -476,6 +480,7 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile('view/index.html');
+  mainWindow.webContents.openDevTools(); // remover
 
   // Maximizar a janela se for a preferência do usuário
   if (prefs.isMaximized) {
@@ -524,13 +529,21 @@ function createMainWindow() {
     mainWindow = null;
   });
 
+  mainWindow.on('show', function() {
+    mainWindow.webContents.send('window-shown');
+  });
+
+  mainWindow.on('focus', function() {
+    mainWindow.webContents.send('window-shown');
+  });  
+
   global.appWindow = mainWindow;
 }
 
 // Criar janela de instalação
 function createInstallationWindow() {
   // Importar o ícone da aplicação
-  const iconPath = path.join(__dirname, 'assets/icon/printer.ico');
+  const iconPath = path.join(__dirname, 'assets/icon/loqquei.ico');
 
   installationWindow = new BrowserWindow({
     width: 800,
@@ -560,8 +573,9 @@ function createInstallationWindow() {
 
 // Criar ícone na bandeja
 function createTray() {
-  // Usar o ícone da aplicação
-  const iconPath = path.join(__dirname, 'assets/icon/printer.ico');
+  // Usar o ícone de acordo com o tema atual
+  const iconPath = path.join(__dirname, `assets/icon/${currentTheme}.ico`);
+  console.log(iconPath);
 
   // Criar o ícone na bandeja
   try {
@@ -599,6 +613,7 @@ function createTray() {
           mainWindow.hide();
         } else {
           mainWindow.show();
+          mainWindow.webContents.send('window-shown');
         }
       } else if (isAuthenticated()) {
         createMainWindow();
@@ -726,6 +741,33 @@ ipcMain.on('set-critical-operation', (event, isCritical) => {
   global.criticalOperation = isCritical;
 });
 
+ipcMain.on('update-app-icon', (event, { theme }) => {
+  // Atualizar a variável global do tema
+  currentTheme = theme;
+  
+  // Caminho para o novo ícone
+  const iconPath = path.join(__dirname, `assets/icon/${theme}.ico`);
+  console.log(iconPath);
+  
+  // Verificar se o arquivo existe
+  if (fs.existsSync(iconPath)) {
+    // Atualizar ícone da janela principal (se existir)
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setIcon(iconPath);
+    }
+    
+    // Atualizar ícone da bandeja (se existir)
+    if (tray && !tray.isDestroyed()) {
+      tray.setImage(iconPath);
+    }
+    
+    // Log para debugging
+    console.log(`Ícone da aplicação atualizado para: ${theme}`);
+  } else {
+    console.error(`Ícone não encontrado: ${iconPath}`);
+  }
+});
+
 // Login
 ipcMain.on('login', async (event, credentials) => {
   try {
@@ -768,6 +810,18 @@ ipcMain.on('login', async (event, credentials) => {
       message: 'Erro ao conectar ao servidor. Tente novamente mais tarde.'
     });
   }
+});
+
+// Abrir configurações manuais
+ipcMain.on('open-manual-settings', (event) => {
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'Configurações manuais',
+    message: 'Abrindo configurações manuais...',
+    detail: 'Abra o navegador e acesse http://localhost:631 para configurar as impressoras manualmente.',
+    buttons: ['OK']
+  });
+  shell.openExternal('http://localhost:631');
 });
 
 // Logout
@@ -1028,16 +1082,25 @@ ipcMain.on('listar-arquivos', async (event) => {
       return;
     }
 
-    // Aqui você faria a chamada para a API para obter os arquivos
-    // Simulando uma resposta por enquanto
-    const arquivos = [
-      { id: 1, nome: 'Documento 1.pdf', tamanho: '2.5 MB', data: '2025-04-10', status: 'Pendente' },
-      { id: 2, nome: 'Relatório Mensal.docx', tamanho: '1.8 MB', data: '2025-04-11', status: 'Pendente' },
-      { id: 3, nome: 'Imagem.jpg', tamanho: '3.2 MB', data: '2025-04-09', status: 'Impresso' },
-      { id: 4, nome: 'Planilha.xlsx', tamanho: '1.1 MB', data: '2025-04-08', status: 'Falha' }
-    ];
+    let files = null
+    let response
+    try {
+      response = await axios.get(`${appConfig.apiLocalUrl}/files`);
+    } catch (error) {
+      console.error(error.data);
+    }
+  
+    await installer.configureDefaultUser()
 
-    event.reply('arquivos-response', { success: true, arquivos });
+    if (response.status === 200) {
+      files = response.data?.data.sort((a, b) => {
+        return new Date(a.date) - new Date(b.date);
+      });
+    } else {
+      files = [];
+    }
+
+    event.reply('arquivos-response', { success: true, files });
   } catch (error) {
     console.error('Erro ao listar arquivos:', error);
     event.reply('arquivos-response', {
@@ -1060,16 +1123,21 @@ ipcMain.on('listar-impressoras', async (event) => {
       return;
     }
 
-    // Aqui você faria a chamada para a API para obter as impressoras
-    // Simulando uma resposta por enquanto
-    const impressoras = [
-      { id: 1, nome: 'HP LaserJet Pro', status: 'Online', localizacao: 'Recepção' },
-      { id: 2, nome: 'Epson EcoTank', status: 'Online', localizacao: 'Escritório' },
-      { id: 3, nome: 'Brother MFC', status: 'Offline', localizacao: 'Sala de Reunião' },
-      { id: 4, nome: 'Canon PIXMA', status: 'Online', localizacao: 'Administração' }
-    ];
+    let printers = null
+    let response
+    try {
+      response = await axios.get(`${appConfig.apiLocalUrl}/printers`);
+    } catch (error) {
+      console.error(error.data);
+    }
+  
+    if (response.status === 200) {
+      printers = response.data?.data;
+    } else {
+      printers = [];
+    }
 
-    event.reply('impressoras-response', { success: true, impressoras });
+    event.reply('impressoras-response', { success: true, printers });
   } catch (error) {
     console.error('Erro ao listar impressoras:', error);
     event.reply('impressoras-response', {
@@ -1080,7 +1148,7 @@ ipcMain.on('listar-impressoras', async (event) => {
 });
 
 // Imprimir arquivo
-ipcMain.on('imprimir-arquivo', async (event, { arquivoId, impressoraId }) => {
+ipcMain.on('imprimir-arquivo', async (event, { fileId, printerId }) => {
   try {
     const userData = getUserData();
 
@@ -1106,6 +1174,51 @@ ipcMain.on('imprimir-arquivo', async (event, { arquivoId, impressoraId }) => {
     event.reply('impressao-response', {
       success: false,
       message: 'Erro ao enviar arquivo para impressão'
+    });
+  }
+});
+
+ipcMain.on('excluir-arquivo', async (event, { fileId }) => {
+  try {
+    const userData = getUserData();
+
+    if (!userData || !userData.token) {
+      event.reply('exclusao-response', {
+        success: false,
+        message: 'Usuário não autenticado'
+      });
+      return;
+    }
+
+    // Fazer uma requisição para a API para excluir o arquivo
+    let response;
+    try {
+      response = await axios.delete(`${appConfig.apiLocalUrl}/files/${fileId}`);
+    } catch (error) {
+      console.error('Erro ao excluir arquivo:', error);
+      event.reply('exclusao-response', {
+        success: false,
+        message: error.response?.data?.message || 'Erro ao conectar com o servidor'
+      });
+      return;
+    }
+    
+    if (response.status === 200 || response.status === 204) {
+      event.reply('exclusao-response', { 
+        success: true,
+        message: 'Arquivo excluído com sucesso'
+      });
+    } else {
+      event.reply('exclusao-response', {
+        success: false,
+        message: response.data?.message || 'Erro ao excluir arquivo'
+      });
+    }
+  } catch (error) {
+    console.error('Erro ao excluir arquivo:', error);
+    event.reply('exclusao-response', {
+      success: false,
+      message: 'Erro ao excluir arquivo'
     });
   }
 });

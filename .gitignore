@@ -1,3 +1,5 @@
 node_modules
 dist
 Output
+instalacao_detalhada.log
+install_state.json

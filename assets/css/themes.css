@@ -1,0 +1,146 @@
+/* LoQQuei - Temas (claro/escuro) */
+
+/* Configurações do tema */
+body.light-theme {
+    --bg-primary: #f8f9fa;
+    --bg-secondary: #ffffff;
+    --bg-tertiary: #e9ecef;
+    --text-primary: #212529;
+    --text-secondary: #6c757d;
+    --text-tertiary: #adb5bd;
+    --border-color: #dee2e6;
+    --shadow-sm: 0 .125rem .25rem rgba(0, 0, 0, .075);
+    --shadow: 0 .5rem 1rem rgba(0, 0, 0, .15);
+
+    /* Status colors */
+    --success: #28a745;
+    --warning: #ffc107;
+    --danger: #dc3545;
+    --info: #17a2b8;
+}
+
+body.dark-theme {
+    --bg-primary: #121212;
+    --bg-secondary: #1e1e1e;
+    --bg-tertiary: #2d2d2d;
+    --text-primary: #f8f9fa;
+    --text-secondary: #adb5bd;
+    --text-tertiary: #6c757d;
+    --border-color: #343a40;
+    --shadow-sm: 0 .125rem .25rem rgba(0, 0, 0, .2);
+    --shadow: 0 .5rem 1rem rgba(0, 0, 0, .3);
+}
+
+/* ===== Tema específico - Header ===== */
+body.dark-theme .header {
+    background-color: #1e1e1e;
+}
+
+/* ===== Tema específico - Sidebar ===== */
+body.dark-theme .sidebar {
+    background-color: #1e1e1e;
+}
+
+body.dark-theme .user-profile {
+    border-color: #343a40;
+}
+
+body.dark-theme .nav-item:hover {
+    background-color: #2d2d2d;
+}
+
+/* ===== Tema específico - Cards ===== */
+body.dark-theme .card {
+    background-color: #1e1e1e;
+}
+
+/* ===== Tema específico - Modals ===== */
+body.dark-theme .modal-content {
+    background-color: #1e1e1e;
+}
+
+/* ===== Tema específico - Forms ===== */
+body.dark-theme .form-control {
+    background-color: #2d2d2d;
+    border-color: #343a40;
+    color: #f8f9fa;
+}
+
+/* ===== Tema específico - Progress ===== */
+body.dark-theme .progress-container {
+    background-color: #343a40;
+}
+
+/* ===== Tema específico - Loading ===== */
+body.dark-theme .loading-spinner {
+    border-color: #343a40;
+    border-top-color: var(--color-primary);
+}
+
+/* ===== Theme Toggle Button ===== */
+.theme-toggle {
+    position: relative;
+    width: 40px;
+    height: 20px;
+}
+
+.theme-toggle input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.theme-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: 0.2s;
+    border-radius: 34px;
+}
+
+.theme-slider:before {
+    position: absolute;
+    content: "";
+    height: 16px;
+    width: 16px;
+    left: 2px;
+    bottom: 2px;
+    background-color: white;
+    transition: .4s;
+    border-radius: 50%;
+}
+
+input:checked+.theme-slider {
+    background-color: var(--color-primary);
+}
+
+input:focus+.theme-slider {
+    box-shadow: 0 0 1px var(--color-primary);
+}
+
+input:checked+.theme-slider:before {
+    transform: translateX(20px);
+}
+
+/* Ícones para o tema */
+.theme-icon {
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    margin-right: 8px;
+}
+
+.theme-toggle-wrapper {
+    display: flex;
+    align-items: center;
+    margin-left: 16px;
+}
+
+/* Transições de tema suaves */
+body * {
+    transition: background-color 0.15s, color 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
