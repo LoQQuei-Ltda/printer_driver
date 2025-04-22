@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Instalador do Sistema de Gerenciamento de Impressão",
   "main": "main.js",
+  "updateConfig": {
+    "autoUpdate": true
+  },
   "scripts": {
     "start": "electron .",
     "clean": "rimraf dist && rimraf node_modules/.cache",
@@ -49,8 +52,10 @@
     ]
   },
   "dependencies": {
+    "adm-zip": "^0.5.16",
     "auto-launch": "^5.0.5",
     "axios": "^1.6.7",
+    "compare-versions": "^6.1.1",
     "node-schedule": "^2.1.1"
   }
 }

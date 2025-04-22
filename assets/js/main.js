@@ -355,7 +355,15 @@ class PrintManager {
         }
         
         // Definir inicial do avatar
-        if (this.dom.userInitial && userData.user.name) {
+        if (this.dom.userInitial && userData.user.picture) {
+          this.dom.userInitial.textContent = null;
+          this.dom.userInitial.style.backgroundImage = `url(${userData.user.picture})`;
+          this.dom.userInitial.style.backgroundSize = "contain";
+          this.dom.userInitial.style.backgroundPosition = "center";
+          this.dom.userInitial.style.backgroundRepeat = "no-repeat";
+          this.dom.userInitial.style.width = "40px";
+          this.dom.userInitial.style.height = "40px";
+        } else if (this.dom.userInitial && userData.user.name) {
           this.dom.userInitial.textContent = userData.user.name.charAt(0).toUpperCase();
         }
       } else {

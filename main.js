@@ -3,21 +3,23 @@
  */
 
 const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, shell, nativeImage, screen } = require('electron');
-const path = require('path');
 const { execFile, exec } = require('child_process');
-const fs = require('fs');
-const axios = require('axios');
 const installer = require('./installer');
+const AppUpdater = require('./updater');
 const { initTask } = require('./task');
+const axios = require('axios');
+const path = require('path');
+const fs = require('fs');
 
 // Manter referências globais
 let mainWindow;
 let tray = null;
+let updater = null;
 let isQuitting = false;
 let loginWindow = null;
+let currentTheme = 'dark';
 let installationWindow = null;
 let isInstallingComponents = false;
-let currentTheme = 'dark';
 
 const appConfig = {
 //   apiPrincipalServiceUrl: 'https://api.loqquei.com.br/api/v1',
@@ -480,7 +482,7 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile('view/index.html');
-  // mainWindow.webContents.openDevTools(); // remover
+  mainWindow.webContents.openDevTools(); // remover
 
   // Maximizar a janela se for a preferência do usuário
   if (prefs.isMaximized) {
@@ -537,6 +539,111 @@ function createMainWindow() {
     mainWindow.webContents.send('window-shown');
   });  
 
+  mainWindow.webContents.on('did-finish-load', () => {
+    mainWindow.webContents.executeJavaScript(`
+      // Add update notification UI
+      const updateNotification = document.createElement('div');
+      updateNotification.id = 'update-notification';
+      updateNotification.style.display = 'none';
+      updateNotification.style.position = 'fixed';
+      updateNotification.style.bottom = '20px';
+      updateNotification.style.right = '20px';
+      updateNotification.style.backgroundColor = 'var(--bg-content)';
+      updateNotification.style.color = 'var(--text-color)';
+      updateNotification.style.padding = '12px 16px';
+      updateNotification.style.borderRadius = '4px';
+      updateNotification.style.boxShadow = '0 4px 12px rgba(0, 0, 0, 0.15)';
+      updateNotification.style.zIndex = '9999';
+      updateNotification.style.maxWidth = '300px';
+      document.body.appendChild(updateNotification);
+      
+      // Listen for update events
+      require('electron').ipcRenderer.on('update-status', (event, data) => {
+        const notification = document.getElementById('update-notification');
+        
+        switch(data.status) {
+          case 'update-available':
+            notification.innerHTML = \`
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                <div style="font-weight:500;">Nova atualização disponível</div>
+                <button id="close-update-notification" style="background:none;border:none;cursor:pointer;color:var(--text-secondary);">
+                  <i class="fas fa-times"></i>
+                </button>
+              </div>
+              <div style="margin-bottom:8px;">Versão \${data.version} está disponível.</div>
+              <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">\${data.notes || ''}</div>
+              <button id="install-update-btn" style="background-color:var(--color-primary);color:white;border:none;border-radius:4px;padding:8px 12px;cursor:pointer;width:100%;">
+                Atualizar agora
+              </button>
+            \`;
+            notification.style.display = 'block';
+            
+            document.getElementById('close-update-notification').addEventListener('click', () => {
+              notification.style.display = 'none';
+            });
+            
+            document.getElementById('install-update-btn').addEventListener('click', () => {
+              require('electron').ipcRenderer.send('install-update');
+              notification.style.display = 'none';
+            });
+            break;
+            
+          case 'downloading':
+          case 'installing':
+          case 'updating-wsl':
+            notification.innerHTML = \`
+              <div style="display:flex;align-items:center;">
+                <div class="spinner" style="width:16px;height:16px;margin-right:8px;"></div>
+                <div>\${data.message}</div>
+              </div>
+            \`;
+            notification.style.display = 'block';
+            break;
+            
+          case 'update-error':
+          case 'wsl-update-error':
+            notification.innerHTML = \`
+              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                <div style="font-weight:500;">Erro na atualização</div>
+                <button id="close-update-notification" style="background:none;border:none;cursor:pointer;color:var(--text-secondary);">
+                  <i class="fas fa-times"></i>
+                </button>
+              </div>
+              <div>\${data.message}</div>
+            \`;
+            notification.style.display = 'block';
+            
+            document.getElementById('close-update-notification').addEventListener('click', () => {
+              notification.style.display = 'none';
+            });
+            break;
+            
+          default:
+            if (data.message) {
+              notification.innerHTML = \`
+                <div style="display:flex;align-items:center;justify-content:space-between;">
+                  <div>\${data.message}</div>
+                  <button id="close-update-notification" style="background:none;border:none;cursor:pointer;color:var(--text-secondary);margin-left:8px;">
+                    <i class="fas fa-times"></i>
+                  </button>
+                </div>
+              \`;
+              notification.style.display = 'block';
+              
+              document.getElementById('close-update-notification').addEventListener('click', () => {
+                notification.style.display = 'none';
+              });
+              
+              // Auto hide after 5 seconds for non-critical statuses
+              setTimeout(() => {
+                notification.style.display = 'none';
+              }, 5000);
+            }
+        }
+      });
+    `);
+  });
+ 
   global.appWindow = mainWindow;
 }
 
@@ -681,6 +788,12 @@ app.whenReady().then(async () => {
   // Verificar se o usuário está autenticado
   if (isAuthenticated()) {
     createMainWindow();
+
+    updater = new AppUpdater(mainWindow);
+
+    setTimeout(() => {
+      updater.checkForUpdates(true);
+    }, 3000);
   } else {
     createLoginWindow();
   }
@@ -739,6 +852,18 @@ ipcMain.on('minimize-app', () => {
 
 ipcMain.on('set-critical-operation', (event, isCritical) => {
   global.criticalOperation = isCritical;
+});
+
+ipcMain.on('check-for-updates', (event) => {
+  if (updater) {
+    updater.checkForUpdates();
+  }
+});
+
+ipcMain.on('install-update', (event) => {
+  if (updater && updater.pendingUpdate) {
+    updater.installUpdate();
+  }
 });
 
 ipcMain.on('update-app-icon', (event, { theme }) => {
