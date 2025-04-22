@@ -11,6 +11,7 @@ class InstallationManager {
     // Referências aos elementos da interface
     this.ui = {
       stepStatus: document.getElementById('stepStatus'),
+      statusIcon: document.getElementById('statusIcon'),
       progressBar: document.getElementById('progressBar'),
       logContainer: document.getElementById('logContainer'),
       closeButton: document.getElementById('closeButton'),
@@ -18,8 +19,12 @@ class InstallationManager {
       questionText: document.getElementById('questionText'),
       answerInput: document.getElementById('answerInput'),
       answerButton: document.getElementById('answerButton'),
+      modalCloseBtn: document.getElementById('modalCloseBtn'),
       themeToggleBtn: document.getElementById('themeToggleBtn'),
-      installLogo: document.getElementById('installLogo')
+      installLogo: document.getElementById('installLogo'),
+      autoScrollToggle: document.getElementById('autoScrollToggle'),
+      minimizeBtn: document.getElementById('minimizeBtn'),
+      closeBtn: document.getElementById('closeBtn')
     };
     
     // Etapas de instalação
@@ -38,7 +43,11 @@ class InstallationManager {
     this.state = {
       currentStep: 0,
       installationComplete: false,
-      isDarkTheme: localStorage.getItem('loqqei-theme') === 'dark'
+      isDarkTheme: localStorage.getItem('loqqei-theme') === 'dark',
+      autoScroll: true,
+      logBuffer: [], // Buffer para processar logs em lote
+      processingLogs: false,
+      logUpdateInterval: null
     };
     
     // Inicializar
@@ -60,10 +69,76 @@ class InstallationManager {
     // Iniciar barra de progresso
     this.updateProgress(0, 5);
     
+    // Limpar log existente
+    this.ui.logContainer.innerHTML = '';
+    
     // Adicionar primeira entrada de log
     this.addLogEntry('Iniciando processo de instalação...', 'header');
     
+    // Iniciar o intervalo de atualização do log
+    this.startLogUpdater();
+    
     console.log('Gerenciador de instalação inicializado');
+  }
+  
+  /**
+   * Iniciar o atualizador de logs
+   * Isso permite agrupar múltiplas mensagens de log e atualizá-las de uma vez,
+   * melhorando a performance e evitando travamentos da interface
+   */
+  startLogUpdater() {
+    this.state.logUpdateInterval = setInterval(() => {
+      this.processLogBuffer();
+    }, 100); // Atualizar 10 vezes por segundo
+  }
+  
+  /**
+   * Processar o buffer de logs
+   */
+  processLogBuffer() {
+    if (this.state.processingLogs || this.state.logBuffer.length === 0) return;
+    
+    this.state.processingLogs = true;
+    
+    try {
+      // Criar um fragmento para adicionar todos os logs de uma vez
+      const fragment = document.createDocumentFragment();
+      
+      // Processar até 50 logs de uma vez para evitar sobrecarga
+      const logsToProcess = this.state.logBuffer.splice(0, 50);
+      
+      logsToProcess.forEach(logEntry => {
+        const { message, type } = logEntry;
+        
+        const entry = document.createElement('div');
+        entry.className = `log-entry ${type}`;
+        entry.textContent = message;
+        
+        fragment.appendChild(entry);
+        
+        // Atualizar progresso com base na mensagem
+        this.updateProgressFromMessage(message, type);
+      });
+      
+      // Adicionar todos os logs de uma vez
+      this.ui.logContainer.appendChild(fragment);
+      
+      // Rolar para o final se autoScroll estiver ativado
+      if (this.state.autoScroll) {
+        this.scrollLogToBottom();
+      }
+    } finally {
+      this.state.processingLogs = false;
+    }
+  }
+  
+  /**
+   * Rolar o log para o final
+   */
+  scrollLogToBottom() {
+    if (this.ui.logContainer) {
+      this.ui.logContainer.scrollTop = this.ui.logContainer.scrollHeight;
+    }
   }
   
   /**
@@ -73,13 +148,13 @@ class InstallationManager {
     if (this.state.isDarkTheme) {
       document.body.classList.add('dark-theme');
       if (this.ui.themeToggleBtn) {
-        this.ui.themeToggleBtn.innerHTML = '<i class="fas fa-sun"></i>';
+        this.ui.themeToggleBtn.checked = true;
       }
       this.updateLogo('dark');
     } else {
       document.body.classList.remove('dark-theme');
       if (this.ui.themeToggleBtn) {
-        this.ui.themeToggleBtn.innerHTML = '<i class="fas fa-moon"></i>';
+        this.ui.themeToggleBtn.checked = false;
       }
       this.updateLogo('light');
     }
@@ -130,12 +205,29 @@ class InstallationManager {
   }
   
   /**
+   * Alternar autoScroll
+   */
+  toggleAutoScroll() {
+    this.state.autoScroll = !this.state.autoScroll;
+    
+    // Atualizar ícone
+    if (this.ui.autoScrollToggle) {
+      this.ui.autoScrollToggle.innerHTML = `Auto-rolagem <i class="fas fa-toggle-${this.state.autoScroll ? 'on' : 'off'}"></i>`;
+    }
+    
+    // Se acabou de ativar, rolar para o final
+    if (this.state.autoScroll) {
+      this.scrollLogToBottom();
+    }
+  }
+  
+  /**
    * Configurar escutadores de eventos
    */
   setupEventListeners() {
     // Tema
     if (this.ui.themeToggleBtn) {
-      this.ui.themeToggleBtn.addEventListener('click', () => this.toggleTheme());
+      this.ui.themeToggleBtn.addEventListener('change', () => this.toggleTheme());
     }
     
     // Botão fechar
@@ -148,6 +240,11 @@ class InstallationManager {
       this.ui.answerButton.addEventListener('click', () => this.submitAnswer());
     }
     
+    // Botão fechar modal
+    if (this.ui.modalCloseBtn) {
+      this.ui.modalCloseBtn.addEventListener('click', () => this.hideQuestionModal());
+    }
+    
     // Tecla Enter no input de resposta
     if (this.ui.answerInput) {
       this.ui.answerInput.addEventListener('keypress', (event) => {
@@ -157,10 +254,35 @@ class InstallationManager {
       });
     }
     
+    // Toggle de auto-scroll
+    if (this.ui.autoScrollToggle) {
+      this.ui.autoScrollToggle.addEventListener('click', () => this.toggleAutoScroll());
+    }
+    
+    // Controle da janela
+    if (this.ui.minimizeBtn) {
+      this.ui.minimizeBtn.addEventListener('click', () => {
+        ipcRenderer.send('minimize-window');
+      });
+    }
+    
+    if (this.ui.closeBtn) {
+      this.ui.closeBtn.addEventListener('click', () => {
+        window.close();
+      });
+    }
+    
     // Eventos IPC
     ipcRenderer.on('log', (event, data) => this.handleLogMessage(data));
     ipcRenderer.on('pergunta', (event, data) => this.showQuestionModal(data.question));
     ipcRenderer.on('instalacao-completa', (event, data) => this.handleInstallationComplete(data));
+    
+    // Evento de fechamento da janela para limpar o intervalo
+    window.addEventListener('beforeunload', () => {
+      if (this.state.logUpdateInterval) {
+        clearInterval(this.state.logUpdateInterval);
+      }
+    });
   }
   
   /**
@@ -174,6 +296,17 @@ class InstallationManager {
     
     if (percentage >= 0 && percentage <= 100 && this.ui.progressBar) {
       this.ui.progressBar.style.width = `${percentage}%`;
+      
+      // Atualizar o ícone de status
+      if (this.ui.statusIcon) {
+        if (percentage < 30) {
+          this.ui.statusIcon.className = 'status-indicator yellow';
+        } else if (percentage < 90) {
+          this.ui.statusIcon.className = 'status-indicator yellow';
+        } else {
+          this.ui.statusIcon.className = 'status-indicator green';
+        }
+      }
     }
   }
   
@@ -181,17 +314,8 @@ class InstallationManager {
    * Adicionar entrada no log
    */
   addLogEntry(message, type = 'info') {
-    if (!this.ui.logContainer) return;
-    
-    const logEntry = document.createElement('div');
-    logEntry.className = `log-entry ${type}`;
-    logEntry.textContent = message;
-    
-    this.ui.logContainer.appendChild(logEntry);
-    this.ui.logContainer.scrollTop = this.ui.logContainer.scrollHeight;
-    
-    // Atualizar progresso com base na mensagem
-    this.updateProgressFromMessage(message, type);
+    // Adicionar ao buffer de log em vez de diretamente ao DOM
+    this.state.logBuffer.push({ message, type });
   }
   
   /**
@@ -202,12 +326,14 @@ class InstallationManager {
     
     const lowerMessage = message.toLowerCase();
     
-    // Atualize a porcentagem de progresso com base no conteúdo da mensagem
+    // Atualizar a porcentagem de progresso com base no conteúdo da mensagem
     if (lowerMessage.includes('verificando privilégios') || 
         lowerMessage.includes('verificando versão do windows')) {
       this.updateProgress(0, 5);
     } else if (lowerMessage.includes('verificando virtualização')) {
       this.updateProgress(0, 10);
+    } else if (lowerMessage.includes('wsl não está instalado')) {
+      this.updateProgress(0, 15);
     } else if (lowerMessage.includes('instalando wsl')) {
       this.updateProgress(1, 20);
     } else if (lowerMessage.includes('recurso wsl habilitado')) {
@@ -234,6 +360,11 @@ class InstallationManager {
       if (this.ui.closeButton) {
         this.ui.closeButton.style.display = 'block';
       }
+      
+      // Fechar automaticamente após 5 segundos
+      setTimeout(() => {
+        window.close();
+      }, 5000);
     }
   }
   
@@ -245,7 +376,7 @@ class InstallationManager {
     
     this.ui.questionText.textContent = question;
     this.ui.answerInput.value = '';
-    this.ui.questionModal.style.display = 'block';
+    this.ui.questionModal.style.display = 'flex';
     this.ui.answerInput.focus();
   }
   
@@ -274,12 +405,11 @@ class InstallationManager {
    * Manipular mensagem de log
    */
   handleLogMessage(data) {
-    this.addLogEntry(data.message, data.type);
+    // Adicionar timestamp à mensagem
+    const timestamp = new Date().toLocaleTimeString();
+    const formattedMessage = `[${timestamp}] ${data.message}`;
     
-    // Atualizações adicionais baseadas em tipos específicos de mensagens
-    if (data.type === 'step' || data.type === 'header') {
-      // Poderia atualizar um indicador de status, se existisse
-    }
+    this.addLogEntry(formattedMessage, data.type);
   }
   
   /**
@@ -288,42 +418,36 @@ class InstallationManager {
   handleInstallationComplete(data) {
     if (data.success) {
       this.updateProgress(7, 100);
-      this.addLogEntry('Instalação concluída com sucesso!', 'success');
-    } else {
-      this.addLogEntry(`Instalação falhou: ${data.error || 'Erro desconhecido'}`, 'error');
-    }
-    
-    if (this.ui.closeButton) {
-      this.ui.closeButton.style.display = 'block';
-    }
-  }
-  
-  /**
-   * Exibir mensagem de status
-   */
-  showStatus(message) {
-    const statusEl = document.getElementById('statusMessage');
-    
-    if (!statusEl) {
-      // Criar elemento de status se não existir
-      const container = document.querySelector('.progress-container');
+      this.addLogEntry('✅ Instalação concluída com sucesso!', 'success');
       
-      if (container) {
-        const statusDiv = document.createElement('div');
-        statusDiv.id = 'statusMessage';
-        statusDiv.className = 'status-message';
-        statusDiv.textContent = message;
-        
-        // Inserir antes da barra de progresso
-        const progressContainer = document.querySelector('.progress-bar-container');
-        if (progressContainer) {
-          container.insertBefore(statusDiv, progressContainer);
-        } else {
-          container.appendChild(statusDiv);
-        }
+      // Atualizar botão
+      if (this.ui.closeButton) {
+        this.ui.closeButton.style.display = 'block';
+        this.ui.closeButton.innerHTML = '<i class="fas fa-check-circle"></i> Instalação Concluída';
       }
+      
+      // Atualizar status icon
+      if (this.ui.statusIcon) {
+        this.ui.statusIcon.className = 'status-indicator green';
+      }
+      
+      // Fechar automaticamente após 5 segundos
+      this.addLogEntry('Esta janela será fechada automaticamente em 5 segundos...', 'info');
+      setTimeout(() => {
+        window.close();
+      }, 5000);
     } else {
-      statusEl.textContent = message;
+      this.addLogEntry(`❌ Instalação falhou: ${data.error || 'Erro desconhecido'}`, 'error');
+      
+      if (this.ui.closeButton) {
+        this.ui.closeButton.style.display = 'block';
+        this.ui.closeButton.innerHTML = '<i class="fas fa-exclamation-circle"></i> Instalação Falhou';
+      }
+      
+      // Atualizar status icon
+      if (this.ui.statusIcon) {
+        this.ui.statusIcon.className = 'status-indicator red';
+      }
     }
   }
 }

@@ -5,76 +5,103 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LoQQuei - Instalação</title>
   <link rel="stylesheet" href="../assets/css/loqqei.css">
-  <link rel="stylesheet" href="../assets/css/themes.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <!-- Favicon padrão (será atualizado pelo JavaScript) -->
+  <link rel="icon" href="../assets/icon/dark.ico">
 </head>
 <body>
   <div class="app-container">
-    <!-- Header/Titlebar -->
-    <header class="header">
-      <div class="header-title">
-        <div class="header-logo">
+    <!-- Header - Exatamente como no index.html -->
+    <header class="app-header">
+      <div class="header-left">
+        <button id="sidebarToggleBtn" class="sidebar-toggle" style="visibility: hidden;">
+          <i class="fas fa-bars"></i>
+        </button>
+        <div class="logo">
           <div id="installLogo">
             <img src="../assets/icon/dark.ico" width="32" height="32" alt="Logo" style="margin-right: 8px;">
           </div>
-          <span class="logo-text">Instalação do Sistema</span>
+          <span>Gerenciamento de Impressão - Instalação</span>
         </div>
       </div>
       <div class="header-controls">
-        <div class="theme-toggle-wrapper">
-          <label class="theme-toggle">
-            <input type="checkbox" id="themeToggleBtn">
-            <span class="theme-slider"></span>
-          </label>
-        </div>
+        <label class="theme-toggle">
+          <input type="checkbox" id="themeToggleBtn" checked>
+          <span class="slider"></span>
+        </label>
+        <button id="minimizeBtn" class="window-control">
+          <i class="fas fa-minus"></i>
+        </button>
+        <button id="closeBtn" class="window-control">
+          <i class="fas fa-times"></i>
+        </button>
       </div>
     </header>
 
-    <!-- Installation Content -->
-    <div class="installation-page">
-      <div class="installation-header">
-        <h1 class="installation-title">Instalação do Sistema de Gerenciamento de Impressão</h1>
-        <p class="installation-subtitle">Configurando os componentes necessários para o funcionamento do sistema.</p>
-      </div>
-      
-      <div class="card progress-card">
-        <div class="card-body">
-          <div class="progress-status" id="stepStatus">Iniciando instalação...</div>
-          
-          <div class="progress-container">
-            <div class="progress-bar" id="progressBar" style="width: 5%;"></div>
-          </div>
-          
-          <div class="log-container" id="logContainer"></div>
-          
-          <div class="d-flex justify-center mt-24">
-            <button id="closeButton" class="btn btn-primary" style="display: none;">
-              Concluir Instalação
-            </button>
+    <!-- Main Layout -->
+    <div class="app-layout">
+      <!-- Content Area -->
+      <main class="content-area">
+        <div class="content-header">
+          <h2>Instalação do Sistema</h2>
+        </div>
+
+        <!-- Card de Status da Instalação -->
+        <div class="status-section">
+          <div class="status-item">
+            <div id="statusIcon" class="status-indicator yellow"></div>
+            <div id="stepStatus" class="status-label">Verificando pré-requisitos</div>
           </div>
         </div>
-      </div>
-      
-      <div class="login-footer">
-        <p>&copy; 2025 LoQQuei-Ltda. Todos os direitos reservados.</p>
-      </div>
+
+        <!-- Barra de Progresso -->
+        <div style="background-color: var(--bg-content); border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);">
+          <div style="font-weight: 500; margin-bottom: 8px;">Progresso da Instalação</div>
+          <div style="background-color: var(--bg-color); height: 8px; border-radius: 4px; overflow: hidden;">
+            <div id="progressBar" style="background-color: var(--color-primary); height: 100%; width: 5%; transition: width 0.3s ease;"></div>
+          </div>
+        </div>
+        
+        <!-- Log Container - Estilo igual ao do index.html -->
+        <div class="log-container">
+          <div class="log-header">
+            <span>Log de Instalação</span>
+            <span id="autoScrollToggle" style="cursor: pointer; user-select: none;">
+              Auto-rolagem <i class="fas fa-toggle-on"></i>
+            </span>
+          </div>
+          <div id="logContainer" class="install-log">
+            <div class="log-entry">Aguardando início da instalação...</div>
+          </div>
+        </div>
+        
+        <!-- Botão de Conclusão -->
+        <div class="install-button-container">
+          <button id="closeButton" class="btn-primary installed" style="display: none;">
+            <i class="fas fa-check-circle"></i> Instalação Concluída
+          </button>
+        </div>
+      </main>
     </div>
   </div>
   
-  <!-- Question Modal -->
+  <!-- Modal de Pergunta - Estilo consistente com modais do sistema -->
   <div id="questionModal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
-        <h3 class="modal-title">Pergunta</h3>
+        <h3 class="modal-title">Entrada Necessária</h3>
+        <button class="modal-close" id="modalCloseBtn">
+          <i class="fas fa-times"></i>
+        </button>
       </div>
       <div class="modal-body">
         <p id="questionText">Pergunta aparecerá aqui</p>
-        <div class="form-group">
-          <input type="text" id="answerInput" class="form-control" placeholder="Sua resposta">
-        </div>
+        <input type="text" id="answerInput" class="select-input" placeholder="Sua resposta" style="margin-top: 10px;">
       </div>
       <div class="modal-footer">
-        <button id="answerButton" class="btn btn-primary">Confirmar</button>
+        <button id="answerButton" class="btn-primary">
+          <i class="fas fa-check"></i> Confirmar
+        </button>
       </div>
     </div>
   </div>

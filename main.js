@@ -1054,6 +1054,46 @@ ipcMain.on('iniciar-instalacao', async (event) => {
     // Substituir a função de log para enviar para a interface
     const originalLog = installer.log;
     installer.log = function (message, type = 'info') {
+      const originalConsoleLog = console.log;
+      const originalConsoleError = console.error;
+      const originalConsoleWarn = console.warn;
+
+      console.log = function() {
+        const args = Array.from(arguments).join(' ');
+        event.reply('log', { type: 'info', message: args });
+        originalConsoleLog.apply(console, arguments);
+      };
+
+      console.error = function() {
+        const args = Array.from(arguments).join(' ');
+        event.reply('log', { type: 'error', message: args });
+        originalConsoleError.apply(console, arguments);
+      };
+
+      console.warn = function() {
+        const args = Array.from(arguments).join(' ');
+        event.reply('log', { type: 'warning', message: args });
+        originalConsoleWarn.apply(console, arguments);
+      };
+
+      process.stdout.write = (function(write) {
+        return function(string, encoding, fd) {
+          if (string.trim() !== '') {
+            event.reply('log', { type: 'info', message: string.trim() });
+          }
+          write.apply(process.stdout, arguments);
+        };
+      })(process.stdout.write);
+      
+      process.stderr.write = (function(write) {
+        return function(string, encoding, fd) {
+          if (string.trim() !== '') {
+            event.reply('log', { type: 'error', message: string.trim() });
+          }
+          write.apply(process.stderr, arguments);
+        };
+      })(process.stderr.write);
+      
       // Executar o log original
       originalLog(message, type);
 
