@@ -482,7 +482,7 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile('view/index.html');
-  mainWindow.webContents.openDevTools(); // remover
+  // mainWindow.webContents.openDevTools(); // remover
 
   // Maximizar a janela se for a preferência do usuário
   if (prefs.isMaximized) {
@@ -650,31 +650,64 @@ function createMainWindow() {
 // Criar janela de instalação
 function createInstallationWindow() {
   // Importar o ícone da aplicação
-  const iconPath = path.join(__dirname, 'assets/icon/loqquei.ico');
+  const iconPath = path.join(__dirname, `assets/icon/${currentTheme}.ico`);
 
   installationWindow = new BrowserWindow({
     width: 800,
     height: 700,
-    parent: mainWindow,
-    modal: true,
     icon: iconPath,
     webPreferences: {
       nodeIntegration: true,
-      contextIsolation: false
+      contextIsolation: false,
+      devTools: true // Habilitar DevTools para debug
     },
-    show: false
+    show: false,
+    frame: false // Remover frame padrão para corresponder ao estilo do index.html
   });
 
   installationWindow.loadFile('view/installation.html');
-  installationWindow.setMenu(null);
 
   // Mostrar a janela quando estiver pronta
   installationWindow.once('ready-to-show', () => {
     installationWindow.show();
+    
+    // Para debug - abrir DevTools automaticamente
+    installationWindow.webContents.openDevTools();
+    
+    // Enviar um log inicial para confirmar que a comunicação está funcionando
+    setTimeout(() => {
+      try {
+        installationWindow.webContents.send('log', {
+          type: 'header',
+          message: 'Iniciando instalação do sistema...'
+        });
+      } catch (err) {
+        console.error('Erro ao enviar log inicial:', err);
+      }
+    }, 500);
   });
 
   installationWindow.on('closed', function () {
     installationWindow = null;
+  });
+
+  // Diagnóstico de comunicação
+  installationWindow.webContents.on('did-finish-load', () => {
+    installationWindow.webContents.executeJavaScript(`
+      console.log('Página de instalação carregada, configurando diagnóstico');
+      // Monitorar recebimento de mensagens
+      const originalConsoleLog = console.log;
+      console.log = function(...args) {
+        originalConsoleLog.apply(console, args);
+        if (args[0] === 'Log recebido:') {
+          document.getElementById('logContainer').innerHTML += 
+            '<div class="log-entry debug">Diagnóstico: Log recebido pelo renderer</div>';
+        }
+      };
+      
+      // Informar que a página está pronta
+      require('electron').ipcRenderer.send('installation-page-ready');
+    `);
   });
 }
 
@@ -866,6 +899,17 @@ ipcMain.on('install-update', (event) => {
   }
 });
 
+// Ouvir quando a página de instalação estiver pronta
+ipcMain.on('installation-page-ready', () => {
+  console.log('Página de instalação pronta para receber logs');
+  if (installationWindow && !installationWindow.isDestroyed()) {
+    installationWindow.webContents.send('log', {
+      type: 'info',
+      message: 'Interface de instalação inicializada com sucesso'
+    });
+  }
+});
+
 ipcMain.on('update-app-icon', (event, { theme }) => {
   // Atualizar a variável global do tema
   currentTheme = theme;
@@ -1052,62 +1096,86 @@ ipcMain.on('iniciar-instalacao', async (event) => {
     // Chamar a função de instalação do installer.js
 
     // Substituir a função de log para enviar para a interface
-    const originalLog = installer.log;
-    installer.log = function (message, type = 'info') {
-      const originalConsoleLog = console.log;
-      const originalConsoleError = console.error;
-      const originalConsoleWarn = console.warn;
+    const originalConsoleLog = console.log;
+    const originalConsoleError = console.error;
+    const originalConsoleWarn = console.warn;
+    const originalStdoutWrite = process.stdout.write;
+    const originalStderrWrite = process.stderr.write;
 
-      console.log = function() {
-        const args = Array.from(arguments).join(' ');
-        event.reply('log', { type: 'info', message: args });
-        originalConsoleLog.apply(console, arguments);
-      };
-
-      console.error = function() {
-        const args = Array.from(arguments).join(' ');
-        event.reply('log', { type: 'error', message: args });
-        originalConsoleError.apply(console, arguments);
-      };
-
-      console.warn = function() {
-        const args = Array.from(arguments).join(' ');
-        event.reply('log', { type: 'warning', message: args });
-        originalConsoleWarn.apply(console, arguments);
-      };
-
-      process.stdout.write = (function(write) {
-        return function(string, encoding, fd) {
-          if (string.trim() !== '') {
-            event.reply('log', { type: 'info', message: string.trim() });
-          }
-          write.apply(process.stdout, arguments);
-        };
-      })(process.stdout.write);
+    // Substituir console.log
+    console.log = function() {
+      const args = Array.from(arguments).join(' ');
+      originalConsoleLog.apply(console, arguments);
       
-      process.stderr.write = (function(write) {
-        return function(string, encoding, fd) {
-          if (string.trim() !== '') {
-            event.reply('log', { type: 'error', message: string.trim() });
-          }
-          write.apply(process.stderr, arguments);
-        };
-      })(process.stderr.write);
-      
-      // Executar o log original
-      originalLog(message, type);
-
-      // Enviar para a interface
-      event.reply('log', { type, message });
-
-      // Enviar para o log da interface principal
-      event.reply('installation-log', { type, message });
-
-      // Também enviar para a janela de instalação
+      // Enviar para o front-end
       if (installationWindow && !installationWindow.isDestroyed()) {
-        installationWindow.webContents.send('log', { type, message });
+        installationWindow.webContents.send('log', { 
+          type: 'info', 
+          message: args 
+        });
       }
     };
+
+    // Substituir console.error
+    console.error = function() {
+      const args = Array.from(arguments).join(' ');
+      originalConsoleError.apply(console, arguments);
+      
+      // Enviar para o front-end
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        installationWindow.webContents.send('log', { 
+          type: 'error', 
+          message: args 
+        });
+      }
+    };
+
+    // Substituir console.warn
+    console.warn = function() {
+      const args = Array.from(arguments).join(' ');
+      originalConsoleWarn.apply(console, arguments);
+      
+      // Enviar para o front-end
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        installationWindow.webContents.send('log', { 
+          type: 'warning', 
+          message: args 
+        });
+      }
+    };
+
+    // Capturar saída do stdout
+    process.stdout.write = function(string, encoding, fd) {
+      originalStdoutWrite.apply(process.stdout, arguments);
+      
+      if (typeof string === 'string' && string.trim() !== '') {
+        if (installationWindow && !installationWindow.isDestroyed()) {
+          installationWindow.webContents.send('log', { 
+            type: 'info', 
+            message: string.trim() 
+          });
+        }
+      }
+      
+      return true;
+    };
+
+    // Capturar saída do stderr
+    process.stderr.write = function(string, encoding, fd) {
+      originalStderrWrite.apply(process.stderr, arguments);
+      
+      if (typeof string === 'string' && string.trim() !== '') {
+        if (installationWindow && !installationWindow.isDestroyed()) {
+          installationWindow.webContents.send('log', { 
+            type: 'error', 
+            message: string.trim() 
+          });
+        }
+      }
+      
+      return true;
+    };
+
 
     // Configurar a função personalizada de perguntas
     installer.setCustomAskQuestion(function (question) {
@@ -1155,11 +1223,25 @@ ipcMain.on('iniciar-instalacao', async (event) => {
         type: 'success',
         message: resultado.message
       });
-
+    
       if (installationWindow && !installationWindow.isDestroyed()) {
+        // Enviar mensagem de conclusão
+        installationWindow.webContents.send('log', {
+          type: 'success',
+          message: '✅ Instalação concluída com sucesso!'
+        });
+        
         installationWindow.webContents.send('instalacao-completa', { success: true });
+        
+        // Fechar a janela automaticamente após 5 segundos
+        console.log('Programando fechamento automático da janela de instalação em 5 segundos');
+        setTimeout(() => {
+          if (installationWindow && !installationWindow.isDestroyed()) {
+            installationWindow.close();
+          }
+        }, 5000);
       }
-
+    
       dialog.showMessageBox(mainWindow, {
         type: 'info',
         title: 'Instalação Concluída',
@@ -1293,10 +1375,10 @@ ipcMain.on('listar-impressoras', async (event) => {
     try {
       response = await axios.get(`${appConfig.apiLocalUrl}/printers`);
     } catch (error) {
-      console.error(error.data);
+      console.error(error.response?.data?.message);
     }
   
-    if (response.status === 200) {
+    if (response?.status === 200) {
       printers = response.data?.data;
     } else {
       printers = [];

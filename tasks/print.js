@@ -61,8 +61,12 @@ module.exports = {
                 synceds.push(file.id);
             }
 
+            if (!synceds || synceds.length == 0) {
+                return;
+            }
+            
             try {
-                await axios.post(`${appConfig.apiLocalUrl}/synced`, {
+                await axios.post(`${appConfig.apiLocalUrl}/sync`, {
                     files: synceds
                 });
             } catch (error) {

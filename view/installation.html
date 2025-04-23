@@ -1,17 +1,76 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>LoQQuei - Instalação</title>
+  <title>Gerenciamento de Impressão - Instalação</title>
   <link rel="stylesheet" href="../assets/css/loqqei.css">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <!-- Favicon padrão (será atualizado pelo JavaScript) -->
   <link rel="icon" href="../assets/icon/dark.ico">
+  <style>
+    /* Estilos adicionais específicos da tela de instalação */
+    .progress-container {
+      background-color: var(--bg-content);
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .progress-label {
+      font-weight: 500;
+      margin-bottom: 8px;
+    }
+
+    .progress-bar-container {
+      background-color: var(--bg-color);
+      height: 8px;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      background-color: var(--color-primary);
+      height: 100%;
+      width: 5%;
+      transition: width 0.3s ease;
+    }
+
+    /* Status estilizado melhor */
+    .status-section {
+      background-color: var(--bg-content);
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .auto-scroll-toggle {
+      cursor: pointer;
+      user-select: none;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .auto-scroll-toggle i {
+      color: var(--color-primary);
+    }
+
+    .install-complete-btn {
+      margin-top: 16px;
+      width: 100%;
+      justify-content: center;
+    }
+  </style>
 </head>
+
 <body>
   <div class="app-container">
-    <!-- Header - Exatamente como no index.html -->
+    <!-- Header - Consistente com index.html -->
     <header class="app-header">
       <div class="header-left">
         <button id="sidebarToggleBtn" class="sidebar-toggle" style="visibility: hidden;">
@@ -55,37 +114,37 @@
         </div>
 
         <!-- Barra de Progresso -->
-        <div style="background-color: var(--bg-content); border-radius: 8px; padding: 16px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);">
-          <div style="font-weight: 500; margin-bottom: 8px;">Progresso da Instalação</div>
-          <div style="background-color: var(--bg-color); height: 8px; border-radius: 4px; overflow: hidden;">
-            <div id="progressBar" style="background-color: var(--color-primary); height: 100%; width: 5%; transition: width 0.3s ease;"></div>
+        <div class="progress-container">
+          <div class="progress-label">Progresso da Instalação</div>
+          <div class="progress-bar-container">
+            <div id="progressBar" class="progress-bar"></div>
           </div>
         </div>
-        
-        <!-- Log Container - Estilo igual ao do index.html -->
+
+        <!-- Log Container -->
         <div class="log-container">
           <div class="log-header">
             <span>Log de Instalação</span>
-            <span id="autoScrollToggle" style="cursor: pointer; user-select: none;">
+            <span id="autoScrollToggle" class="auto-scroll-toggle">
               Auto-rolagem <i class="fas fa-toggle-on"></i>
             </span>
           </div>
           <div id="logContainer" class="install-log">
-            <div class="log-entry">Aguardando início da instalação...</div>
+            <div class="log-entry">Iniciando instalação...</div>
           </div>
         </div>
-        
+
         <!-- Botão de Conclusão -->
         <div class="install-button-container">
-          <button id="closeButton" class="btn-primary installed" style="display: none;">
+          <button id="closeButton" class="btn-primary installed install-complete-btn" style="display: none;">
             <i class="fas fa-check-circle"></i> Instalação Concluída
           </button>
         </div>
       </main>
     </div>
   </div>
-  
-  <!-- Modal de Pergunta - Estilo consistente com modais do sistema -->
+
+  <!-- Modal de Pergunta -->
   <div id="questionModal" class="modal">
     <div class="modal-content">
       <div class="modal-header">
@@ -105,7 +164,8 @@
       </div>
     </div>
   </div>
-  
+
   <script src="../assets/js/installation.js"></script>
 </body>
+
 </html>
