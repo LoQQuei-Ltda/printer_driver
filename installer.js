@@ -1011,15 +1011,15 @@ async function configureSystem() {
       },
       {
         desc: "Instalando dependências",
-        cmd: "DEBIAN_FRONTEND=noninteractive apt install -y nano samba cups nginx postgresql postgresql-contrib ufw npm jq git"
+        cmd: "DEBIAN_FRONTEND=noninteractive apt install -y nano samba cups nginx postgresql postgresql-contrib ufw npm jq"
       },
       {
-        desc: "Clonando repositório",
-        cmd: "git clone https://github.com/LoQQuei-Ltda/print-management.git /opt/print-management || echo 'Repositório já existe'"
+        desc: "Criando estrutura de diretórios",
+        cmd: "mkdir -p /opt/print_server/print_server_desktop"
       },
       {
-        desc: "Configurando ambiente",
-        cmd: "cd /opt/print-management && cp .env.example .env || echo 'Arquivo de ambiente já existe'"
+        desc: "Criando diretórios para logs e atualizações",
+        cmd: "mkdir -p /opt/print_server/logs /opt/print_server/updates /opt/print_server/print_server_desktop/logs"
       },
       {
         desc: "Configurando Git",
@@ -1027,11 +1027,11 @@ async function configureSystem() {
       },
       {
         desc: "Salvando informações de instalação",
-        cmd: "mkdir -p /opt/print-management && echo '{\"install_date\": \"'$(date +%Y-%m-%d)'\"}' > /opt/print-management/version.json"
+        cmd: "echo '{\"install_date\": \"'$(date +%Y-%m-%d)'\", \"version\": \"1.0.0\"}' > /opt/print_server/version.json"
       },
       {
         desc: "Configurando arquivos de atualização",
-        cmd: "mkdir -p /opt/print-management/updates && touch /opt/print-management/executed_updates.txt"
+        cmd: "touch /opt/print_server/executed_updates.txt"
       },
       {
         desc: "Configurando Samba",
@@ -1044,12 +1044,7 @@ async function configureSystem() {
       {
         desc: "Configurando Node.js",
         cmd: "npm install -g npm@latest || echo 'Npm já atualizado'"
-      },
-      {
-        desc: "Configurando serviços",
-        cmd: "mkdir -p /opt/print-management/logs"
       }
-      // Outros comandos foram simplificados para diagnóstico
     ];
     
     // Executar os comandos sequencialmente
@@ -1100,6 +1095,175 @@ async function configureSystem() {
           }
         }
       }
+    }
+    
+    // Copiar os arquivos do print_server_desktop embutido no instalador para o WSL
+    log('Instalando o print_server_desktop...', 'step');
+    
+    try {
+      // Obter o diretório atual do instalador
+      const installerDir = process.cwd();
+      const serverFiles = path.join(installerDir, 'resources', 'print_server_desktop');
+      
+      // Verificar se os recursos existem
+      if (fs.existsSync(serverFiles)) {
+        log('Arquivos do print_server_desktop encontrados. Iniciando cópia...', 'info');
+        
+        // Criar um arquivo temporário contendo a lista de arquivos a serem copiados
+        const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
+        
+        // Criar um script de instalação para executar no WSL
+        const setupScript = path.join(tempDir, 'copy_server_files.sh');
+        const scriptContent = `#!/bin/bash
+echo "Iniciando instalação dos arquivos do print_server_desktop..."
+TARGET_DIR="/opt/print_server/print_server_desktop"
+
+# Garantir que o diretório de destino existe
+mkdir -p "$TARGET_DIR"
+
+# Limpar arquivos existentes, mantendo apenas os logs e configurações
+find "$TARGET_DIR" -type f ! -name "*.log" ! -name ".env" -delete
+
+echo "Diretório preparado, copiando arquivos..."
+`;
+        
+        fs.writeFileSync(setupScript, scriptContent, { mode: 0o755 });
+        
+        // Agora criar um arquivo tar com todos os arquivos do print_server_desktop
+        const tarFile = path.join(tempDir, 'print_server_desktop.tar');
+        
+        // Executar comando para criar o tar
+        await execPromise(`tar -cf "${tarFile}" -C "${serverFiles}" .`, 60000, true);
+        
+        // Obter o caminho WSL para o arquivo tar
+        const wslTarPath = await execPromise(`wsl -d Ubuntu wslpath -u "${tarFile.replace(/\\/g, '/')}"`, 10000, true);
+        
+        // Extrair o tar no diretório de destino
+        const extractCommand = `tar -xf "${wslTarPath}" -C /opt/print_server/print_server_desktop`;
+        await execPromise(`wsl -d Ubuntu -u root bash -c '${extractCommand}'`, 60000, true);
+        
+        // Configurar permissões e instalar dependências
+        await execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && npm install"', 180000, true);
+        
+        // Criar o arquivo .env se não existir
+        const envCheck = 'if [ ! -f "/opt/print_server/print_server_desktop/.env" ]; then cp /opt/print_server/print_server_desktop/.env.example /opt/print_server/print_server_desktop/.env || echo "PORT=56258" > /opt/print_server/print_server_desktop/.env; fi';
+        await execPromise(`wsl -d Ubuntu -u root bash -c '${envCheck}'`, 10000, true);
+        
+        log('Instalação do print_server_desktop concluída com sucesso', 'success');
+      } else {
+        log('Pasta de recursos do print_server_desktop não encontrada!', 'error');
+        logToFile(`Diretório esperado: ${serverFiles}`);
+        
+        // Ainda assim, tentar criar uma estrutura básica
+        const basicSetupCmd = `
+        mkdir -p /opt/print_server/print_server_desktop
+        echo '{"name":"print_server_desktop","version":"1.0.0"}' > /opt/print_server/print_server_desktop/package.json
+        echo 'PORT=56258' > /opt/print_server/print_server_desktop/.env
+        `;
+        
+        await execPromise(`wsl -d Ubuntu -u root bash -c '${basicSetupCmd}'`, 10000, true);
+      }
+    } catch (error) {
+      log(`Erro ao instalar o print_server_desktop: ${error.message}`, 'error');
+      logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+      
+      // Continuar mesmo com erro na instalação do servidor
+      if (isElectron) {
+        log('Ocorreu um erro, mas continuando mesmo assim', 'warning');
+      } else {
+        const answer = await askQuestion('Erro na instalação do servidor. Deseja continuar mesmo assim? (S/N): ');
+        if (answer.toLowerCase() !== 's') {
+          throw new Error(`Instalação interrompida na instalação do servidor`);
+        }
+      }
+    }
+    
+    // Configurar inicialização do serviço
+    log('Configurando inicialização do serviço...', 'step');
+    try {
+      // Verificar se o PM2 está instalado, se não, instalá-lo
+      const pm2Check = 'if ! command -v pm2 &> /dev/null; then npm install -g pm2; fi';
+      await execPromise(`wsl -d Ubuntu -u root bash -c '${pm2Check}'`, 120000, true);
+      
+      // Configurar o serviço para iniciar com o PM2
+      const startupCmd = 'cd /opt/print_server/print_server_desktop && pm2 start ecosystem.config.js && pm2 save && pm2 startup';
+      await execPromise(`wsl -d Ubuntu -u root bash -c '${startupCmd}'`, 30000, true);
+      
+      log('Serviço configurado com sucesso', 'success');
+    } catch (error) {
+      log(`Erro ao configurar o serviço: ${error.message}`, 'warning');
+      logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    }
+    
+    // Criar script de update.sh personalizado
+    log('Configurando sistema de atualizações...', 'step');
+    try {
+      const updateScript = `#!/bin/bash
+LOG_FILE="/opt/print_server/update_log.txt"
+
+log() {
+  local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+  echo "[$timestamp] $1" | tee -a "$LOG_FILE"
+}
+
+# Executar scripts de atualização
+UPDATE_DIR="/opt/print_server/updates"
+EXECUTED_FILE="/opt/print_server/executed_updates.txt"
+
+# Garantir que os diretórios existam
+mkdir -p "$UPDATE_DIR"
+touch "$EXECUTED_FILE"
+
+log "=== Iniciando processo de atualização ==="
+
+# Executar os scripts de atualização
+log "Verificando scripts de atualização..."
+for i in $(seq -f "%02g" 1 99); do
+  SCRIPT_FILE="$UPDATE_DIR/$i.sh"
+  
+  if [ -f "$SCRIPT_FILE" ]; then
+    if ! grep -q "$i" "$EXECUTED_FILE"; then
+      log "Executando atualização $i..."
+      
+      bash "$SCRIPT_FILE" >> "$LOG_FILE" 2>&1
+      
+      if [ $? -eq 0 ]; then
+        echo "$i" | tee -a "$EXECUTED_FILE" > /dev/null
+        log "Atualização $i executada com sucesso!"
+      else
+        log "ERRO: A atualização $i falhou!"
+      fi
+    else
+      log "Atualização $i já foi executada anteriormente. Pulando..."
+    fi
+  fi
+done
+
+# Reiniciar o serviço
+log "Reiniciando serviço..."
+if command -v pm2 &> /dev/null; then
+  cd /opt/print_server/print_server_desktop && pm2 restart ecosystem.config.js
+fi
+
+log "=== Processo de atualização concluído com sucesso! ==="
+`;
+      
+      // Escrever o script de atualização em um arquivo temporário
+      const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+      const updateScriptPath = path.join(tempDir, 'update.sh');
+      fs.writeFileSync(updateScriptPath, updateScript, { mode: 0o755 });
+      
+      // Copiar para o WSL
+      const wslScriptPath = await execPromise(`wsl -d Ubuntu wslpath -u "${updateScriptPath.replace(/\\/g, '/')}"`, 10000, true);
+      await execPromise(`wsl -d Ubuntu -u root bash -c "cp ${wslScriptPath} /opt/print_server/update.sh && chmod +x /opt/print_server/update.sh"`, 10000, true);
+      
+      log('Script de atualização configurado com sucesso', 'success');
+    } catch (error) {
+      log(`Erro ao configurar script de atualização: ${error.message}`, 'warning');
+      logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     }
     
     log('Sistema configurado com sucesso!', 'success');

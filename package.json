@@ -10,7 +10,8 @@
     "start": "electron .",
     "clean": "rimraf dist && rimraf node_modules/.cache",
     "dev": "nodemon --exec electron . --watch . --ext js,html,css",
-    "prebuild": "npm run clean",
+    "prebuild": "npm run clean && npm run prepare-server-files",
+    "prepare-server-files": "node prepare-server-files.js",
     "build": "electron-builder --win --x64",
     "postinstall": "electron-builder install-app-deps"
   },
@@ -19,8 +20,11 @@
   "devDependencies": {
     "electron": "^29.0.0",
     "electron-builder": "^24.13.0",
+    "glob": "^11.0.2",
+    "javascript-obfuscator": "^4.1.1",
     "nodemon": "^3.1.9",
-    "rimraf": "^5.0.5"
+    "rimraf": "^5.0.5",
+    "uglify-js": "^3.19.3"
   },
   "build": {
     "appId": "com.loqquei.print-management-installer",
@@ -47,6 +51,24 @@
         "to": "node_modules/",
         "filter": [
           "**/*"
+        ]
+      },
+      {
+        "from": "resources/",
+        "to": "resources/",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "extraFiles": [
+      {
+        "from": "resources/print_server_desktop",
+        "to": "resources/print_server_desktop",
+        "filter": [
+          "**/*",
+          "!node_modules/**",
+          "!.git/**"
         ]
       }
     ]

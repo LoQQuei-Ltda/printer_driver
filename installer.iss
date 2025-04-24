@@ -1,94 +1,194 @@
 #define MyAppName "Gerenciamento de Impressão - LoQQuei"
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "LoQQuei Ltda"
-#define MyAppURL "https://github.com/LoQQuei-Ltda/print-management"
+#define MyAppURL "https://loqquei.com.br"
 #define MyAppExeName "Gerenciamento de Impressão - LoQQuei.exe"
 
 [Setup]
+; Identificador único da aplicação
 AppId={{8A8AA8A8-8888-4444-AAAA-444444444444}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
 DefaultDirName={autopf}\LoQQuei\PrintManagement
 DefaultGroupName={#MyAppName}
-DisableProgramGroupPage=yes
+AllowNoIcons=yes
+; Necessário para atualizações e administração do WSL
 PrivilegesRequired=admin
 OutputDir=Output
 OutputBaseFilename=Installer_Gerenciamento_LoQQuei
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+; Habilitar log detalhado para diagnóstico
+SetupLogging=yes
+; Permitir atualização silenciosa
+CloseApplications=yes
+RestartApplications=no
+; Suporte para atualização da aplicação
+AppMutex=LoQQueiPrintManagementMutex
+AppendDefaultDirName=no
+UpdateUninstallLogAppName=yes
+; Permitir o desinstalador, mas ocultá-lo para usuários comuns
+Uninstallable=yes
+UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
+[Messages]
+; Personalizar mensagens para o idioma padrão
+brazilianportuguese.SetupWindowTitle=Instalador do {#MyAppName}
+brazilianportuguese.SetupAppTitle={#MyAppName}
+brazilianportuguese.WelcomeLabel1=Bem-vindo ao Assistente de Instalação do {#MyAppName}
+brazilianportuguese.WelcomeLabel2=Este assistente irá guiá-lo através da instalação do {#MyAppName} versão {#MyAppVersion}.%n%nRecomendamos que você feche todos os outros aplicativos antes de continuar.
+brazilianportuguese.InstallingLabel=Instalando {#MyAppName}, por favor aguarde...
+brazilianportuguese.FinishedHeadingLabel=Instalação Concluída
+brazilianportuguese.FinishedLabel=O {#MyAppName} foi instalado com sucesso em seu computador.
+brazilianportuguese.RunEntryShellExec=Executar {#MyAppName}
+
+[CustomMessages]
+brazilianportuguese.InstallingNode=Instalando Node.js, por favor aguarde...
+brazilianportuguese.InstallingWSL=Verificando e configurando WSL, por favor aguarde...
+brazilianportuguese.ConfiguringWSL=Configurando ambiente WSL, por favor aguarde...
+brazilianportuguese.UpdatingWSL=Atualizando componentes WSL, por favor aguarde...
+brazilianportuguese.CreatingShortcut=Criando atalhos...
+brazilianportuguese.WSLUpdateFailed=Atualização do WSL falhou. Consulte os logs para mais detalhes.
+
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checked
-Name: "viewreadme"; Description: "Visualizar o arquivo README"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-; Removido a opção de escolha para WSL - agora será obrigatório
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1; Check: not IsAdminInstallMode
+Name: "startmenuicon"; Description: "Criar ícone no Menu Iniciar"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 
 [Files]
-; Arquivos principais
-Source: ".\dist\win-unpacked\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
+; Arquivos principais da aplicação
+Source: ".\dist\win-unpacked\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Arquivo README e documentação
 Source: ".\README.txt"; DestDir: "{app}"; Flags: isreadme
-; Adicionar o instalador do Node.js
+; Instalador do Node.js
 Source: ".\node_installer.msi"; DestDir: "{app}"; Flags: ignoreversion
-; Adicionar script para instalação do WSL e Ubuntu
+; Scripts de instalação e atualização
 Source: ".\scripts\install_wsl_ubuntu.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+Source: ".\scripts\update_wsl.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+; Recursos do print_server_desktop
+Source: ".\resources\print_server_desktop\*"; DestDir: "{app}\resources\print_server_desktop"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Scripts de atualização para o WSL
+Source: ".\resources\wsl_updates\*"; DestDir: "{app}\resources\wsl_updates"; Flags: ignoreversion
+
+[Dirs]
+; Garantir que diretórios cruciais existam e tenham permissões corretas
+Name: "{app}\resources"; Permissions: users-modify
+Name: "{app}\scripts"; Permissions: users-modify
+Name: "{app}\logs"; Permissions: users-modify
+Name: "{app}\resources\print_server_desktop"; Permissions: users-modify
+Name: "{app}\resources\wsl_updates"; Permissions: users-modify
 
 [Icons]
-; Corrigindo o nome do executável no atalho
-Name: "{group}\{#MyAppName}"; Filename: "{app}\Gerenciamento de Impressão - LoQQuei.exe"; WorkingDir: "{app}"
+; Ícones para acesso à aplicação
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\Gerenciamento de Impressão - LoQQuei.exe"; Tasks: desktopicon; WorkingDir: "{app}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; WorkingDir: "{app}"
+Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: quicklaunchicon; WorkingDir: "{app}"
+Name: "{commonstartmenu}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startmenuicon; WorkingDir: "{app}"
 
 [Run]
-; Visualizar o README se a opção for selecionada
-Filename: "{app}\README.txt"; Description: "Visualizar o arquivo README"; Flags: shellexec postinstall skipifsilent; Tasks: viewreadme
-; Executar o aplicativo principal após a instalação - agora obrigatório
-Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Flags: nowait postinstall runascurrentuser; Description: "Executar {#MyAppName}";
-; Executar o script de instalação do WSL e Ubuntu automaticamente após a instalação principal
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\install_wsl_ubuntu.ps1"""; Flags: runhidden postinstall; StatusMsg: "Configurando o WSL e Ubuntu (isso pode demorar alguns minutos)..."
+; Node.js (executado durante a instalação se necessário, verificado pelo código)
+Filename: "msiexec.exe"; Parameters: "/i ""{app}\node_installer.msi"" /qn"; Flags: runhidden; StatusMsg: "{cm:InstallingNode}"; Check: NeedsNodeJs
+
+; Processo de instalação normal (primeira instalação)
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\install_wsl_ubuntu.ps1"""; Flags: runhidden waituntilterminated; StatusMsg: "{cm:InstallingWSL}"; Check: not IsSilent and not IsUpgrade
+
+; Processo de atualização (atualização silenciosa ou explícita)
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\update_wsl.ps1"""; Flags: runhidden waituntilterminated; StatusMsg: "{cm:UpdatingWSL}"; Check: IsUpgrade or IsSilent
+
+; Execução da aplicação após instalação (não executar no modo silencioso)
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; Check: not IsSilent
+
+[UninstallRun]
+; Desinstalar corretamente - limpar serviços e registros
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -Command ""& {{ try {{ wsl -d Ubuntu -u root bash -c 'cd /opt/print_server && if [ -f uninstall.sh ]; then bash uninstall.sh; fi' }} catch {{ Write-Host 'WSL não disponível ou erro na desinstalação' }} }}"""; Flags: runhidden
+
+[Registry]
+; Registrar versão e informações da instalação para facilitar atualizações futuras
+Root: HKLM; Subkey: "SOFTWARE\LoQQuei\PrintManagement"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\LoQQuei\PrintManagement"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
+Root: HKLM; Subkey: "SOFTWARE\LoQQuei\PrintManagement"; ValueType: dword; ValueName: "InstallDate"; ValueData: {code:GetCurrentUnixTime}; Flags: uninsdeletekey
 
 [Code]
-// Removi a declaração de constantes duplicadas
-// As constantes MB_OK, MB_YESNO e IDNO já são definidas pelo Inno Setup
-
-// Variáveis globais para status do WSL
+// Variáveis globais para status
 var
   WSLInstalled: Boolean;
   WSL2Configured: Boolean;
   UbuntuInstalled: Boolean;
-  NeedsWSLInstall: Boolean;
+  NodeInstalled: Boolean;
   VirtualizationEnabled: Boolean;
+  IsInstalledVersion: String;
+  IsUpdateMode: Boolean;
 
-// Registrar mensagem no log de instalação
-procedure LogMessage(Message: String);
+// Função para registro extenso
+procedure LogInstaller(Message: String);
 begin
   Log(Message);
+end;
+
+// Verifica se é uma atualização (compara versões)
+function IsUpgrade(): Boolean;
+var
+  PrevVersion: String;
+begin
+  if RegValueExists(HKLM, 'SOFTWARE\LoQQuei\PrintManagement', 'Version') then
+  begin
+    RegQueryStringValue(HKLM, 'SOFTWARE\LoQQuei\PrintManagement', 'Version', PrevVersion);
+    IsInstalledVersion := PrevVersion;
+    Result := (CompareVersions('{#MyAppVersion}', PrevVersion) > 0);
+    LogInstaller('Versão anterior encontrada: ' + PrevVersion + ', Nova versão: {#MyAppVersion}, É atualização: ' + BoolToStr(Result, True));
+  end
+  else
+  begin
+    Result := False;
+    LogInstaller('Instalação nova (não é atualização)');
+  end;
+end;
+
+// Verifica se está em modo silencioso
+function IsSilent(): Boolean;
+begin
+  Result := (Pos('/SILENT', UpperCase(GetCmdTail)) > 0) or (Pos('/VERYSILENT', UpperCase(GetCmdTail)) > 0);
+  LogInstaller('Modo silencioso: ' + BoolToStr(Result, True));
+end;
+
+// Retorna timestamp Unix atual para registro
+function GetCurrentUnixTime(Param: String): String;
+var
+  UnixTime: Int64;
+begin
+  UnixTime := DateTimeToUnix(Now);
+  Result := IntToStr(UnixTime);
+end;
+
+// Define atributos para o arquivo README
+procedure SetReadmeAttributes();
+begin
+  // Nada a fazer aqui, apenas um placeholder para o evento AfterInstall
 end;
 
 // Função para verificar se o Node.js está instalado
 function IsNodeJsInstalled(): Boolean;
 var
-  NodePath: String;
   ResultCode: Integer;
 begin
-  Result := False; // Inicializa como False
+  Result := False;
   
-  // Tentar encontrar node.exe no PATH
-  if RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', NodePath) then
+  // Verificar se node.exe pode ser encontrado e executado
+  if Exec('cmd.exe', '/c where node > nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
-    // Verificar se node.exe pode ser encontrado e executado
-    if Exec('cmd.exe', '/c where node > nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    begin
-      Result := (ResultCode = 0);
-      if Result then
-        Log('Node.js encontrado no sistema');
-    end;
+    Result := (ResultCode = 0);
+    if Result then
+      LogInstaller('Node.js encontrado no sistema');
   end;
     
   // Método alternativo: tentar executar node --version
@@ -98,7 +198,7 @@ begin
     begin
       Result := (ResultCode = 0);
       if Result then
-        Log('Node.js encontrado no sistema (método alternativo)');
+        LogInstaller('Node.js encontrado no sistema (método alternativo)');
     end;
   end;
   
@@ -108,12 +208,14 @@ begin
     if FileExists(ExpandConstant('{pf}\nodejs\node.exe')) then
     begin
       Result := True;
-      Log('Node.js encontrado no diretório padrão');
+      LogInstaller('Node.js encontrado no diretório padrão');
     end;
   end;
   
   if not Result then
-    Log('Node.js não encontrado no sistema');
+    LogInstaller('Node.js não encontrado no sistema');
+    
+  return Result;
 end;
 
 // Função para verificar se o WSL está instalado
@@ -126,16 +228,16 @@ begin
   // Verificar se wsl.exe existe
   if FileExists(ExpandConstant('{sys}\wsl.exe')) then
   begin
-    Log('WSL.exe encontrado no sistema');
+    LogInstaller('WSL.exe encontrado no sistema');
     
     // Verificar se o comando WSL pode ser executado com sucesso
     if Exec('cmd.exe', '/c wsl --status > nul 2>&1', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     begin
       Result := (ResultCode = 0);
-      Log('Comando WSL executado com resultado: ' + IntToStr(ResultCode));
+      LogInstaller('Comando WSL executado com resultado: ' + IntToStr(ResultCode));
     end;
   end else
-    Log('WSL.exe não encontrado no sistema');
+    LogInstaller('WSL.exe não encontrado no sistema');
 end;
 
 // Função para verificar se o WSL2 está configurado
@@ -164,9 +266,9 @@ begin
       if (ResultCode = 0) or (Pos('já', Output[0]) > 0) or (Pos('already', Output[0]) > 0) then
       begin
         Result := True;
-        Log('WSL2 está configurado');
+        LogInstaller('WSL2 está configurado');
       end else
-        Log('WSL2 não está configurado: ' + Output[0]);
+        LogInstaller('WSL2 não está configurado: ' + Output[0]);
     end;
   end;
   
@@ -197,13 +299,12 @@ begin
     if LoadStringsFromFile(OutputFile, Output) then
     begin
       // Verificar se 'Ubuntu' aparece na lista
-      // Nota: este é um método simples, pode precisar de melhorias
       if (ResultCode = 0) and (Pos('Ubuntu', Output[0]) > 0) then
       begin
         Result := True;
-        Log('Ubuntu está instalado no WSL');
+        LogInstaller('Ubuntu está instalado no WSL');
       end else
-        Log('Ubuntu não está instalado no WSL ou não foi encontrado');
+        LogInstaller('Ubuntu não está instalado no WSL ou não foi encontrado');
     end;
   end;
   
@@ -233,9 +334,9 @@ begin
       if (ResultCode = 0) and (Pos('True', Output[2]) > 0) then
       begin
         Result := True;
-        Log('Virtualização está habilitada no firmware');
+        LogInstaller('Virtualização está habilitada no firmware');
       end else
-        Log('Virtualização não está habilitada ou não foi possível determinar');
+        LogInstaller('Virtualização não está habilitada ou não foi possível determinar');
     end;
   end;
   
@@ -243,163 +344,222 @@ begin
   DeleteFile(OutputFile);
 end;
 
-// Função modificada para sempre retornar True, já que agora WSL é obrigatório
-function NeedsWSLConfigurationOrInstallation(): Boolean;
+// Verifica se o Node.js precisa ser instalado
+function NeedsNodeJs(): Boolean;
 begin
-  // Agora WSL é obrigatório, então vamos sempre retornar True
-  Result := True;
+  Result := not IsNodeJsInstalled();
+  LogInstaller('Precisa instalar Node.js: ' + BoolToStr(Result, True));
 end;
 
 // Função de inicialização da instalação
 function InitializeSetup(): Boolean;
 var
-  NodeInstalled: Boolean;
-  NodeMsg: String;
-  WSLMsg: String;
-  VirtualizationMsg: String;
   MsgBoxResult: Integer;
 begin
   Result := True;
   
-  // Verificar se o Node.js está instalado
-  NodeInstalled := IsNodeJsInstalled();
-  if not NodeInstalled then
-  begin
-    Log('Node.js não está instalado no sistema');
-    NodeMsg := 'Node.js não foi detectado no sistema. Esta aplicação requer Node.js para funcionar corretamente.'#13#10#13#10 +
-               'O instalador pode instalar o Node.js automaticamente. Deseja continuar?';
-               
-    MsgBoxResult := SuppressibleMsgBox(NodeMsg, mbConfirmation, MB_YESNO, IDNO);
-    if MsgBoxResult = IDNO then
-    begin
-      Result := False;
-      Exit;
-    end;
-  end;
+  // Se é uma atualização silenciosa, não mostrar mensagens
+  IsUpdateMode := IsSilent() or IsUpgrade();
   
-  // Verificar status do WSL
-  WSLInstalled := IsWSLInstalled();
-  if WSLInstalled then
+  if IsUpdateMode then
   begin
-    WSL2Configured := IsWSL2Configured();
-    UbuntuInstalled := IsUbuntuInstalled();
+    LogInstaller('Iniciando em modo de atualização - verificando ambiente...');
   end else
   begin
-    WSL2Configured := False;
-    UbuntuInstalled := False;
-  end;
-  
-  // Verificar virtualização
-  VirtualizationEnabled := IsVirtualizationEnabled();
-  
-  // Determinar se precisamos instalar o WSL
-  NeedsWSLInstall := not (WSLInstalled and WSL2Configured and UbuntuInstalled);
-  
-  // Exibir informações sobre status do WSL - agora sempre mostrar por ser obrigatório
-  WSLMsg := 'Este aplicativo requer o Windows Subsystem for Linux (WSL) com Ubuntu para funcionar corretamente.' + #13#10#13#10;
-  if not WSLInstalled then
-    WSLMsg := WSLMsg + '- WSL não está instalado no sistema.' + #13#10
-  else if not WSL2Configured then
-    WSLMsg := WSLMsg + '- WSL está instalado, mas o WSL2 não está configurado.' + #13#10;
+    // Verificar se o Node.js está instalado
+    NodeInstalled := IsNodeJsInstalled();
+    if not NodeInstalled then
+    begin
+      LogInstaller('Node.js não está instalado no sistema');
+      
+      if not IsSilent() then
+      begin
+        MsgBoxResult := SuppressibleMsgBox('Node.js não foi detectado no sistema. Esta aplicação requer Node.js para funcionar corretamente.' + #13#10#13#10 +
+                  'O instalador instalará o Node.js automaticamente. Deseja continuar?', mbConfirmation, MB_YESNO, IDNO);
+                   
+        if MsgBoxResult = IDNO then
+        begin
+          Result := False;
+          Exit;
+        end;
+      end;
+    end;
     
-  if not UbuntuInstalled then
-    WSLMsg := WSLMsg + '- Ubuntu não está instalado no WSL.' + #13#10;
+    // Verificar status do WSL (apenas para instalação normal)
+    WSLInstalled := IsWSLInstalled();
+    if WSLInstalled then
+    begin
+      WSL2Configured := IsWSL2Configured();
+      UbuntuInstalled := IsUbuntuInstalled();
+    end else
+    begin
+      WSL2Configured := False;
+      UbuntuInstalled := False;
+    end;
     
-  WSLMsg := WSLMsg + #13#10 + 'O instalador instalará automaticamente esses componentes após a conclusão da instalação principal.';
-  
-  SuppressibleMsgBox(WSLMsg, mbInformation, MB_OK, IDNO);
-  
-  // Verificar e alertar sobre a virtualização
-  if not VirtualizationEnabled then
-  begin
-    VirtualizationMsg := 'ATENÇÃO: A virtualização parece não estar habilitada em seu sistema.' + #13#10#13#10 +
+    // Verificar virtualização
+    VirtualizationEnabled := IsVirtualizationEnabled();
+    
+    if not IsSilent() then
+    begin
+      // Mostrar informações do WSL
+      if not (WSLInstalled and WSL2Configured and UbuntuInstalled) then
+      begin
+        LogInstaller('Precisa instalar/configurar WSL');
+        
+        MsgBoxResult := SuppressibleMsgBox('Este aplicativo requer o Windows Subsystem for Linux (WSL) com Ubuntu para funcionar corretamente.' + #13#10#13#10 +
+                      'O instalador instalará e configurará o WSL automaticamente. Este processo pode levar alguns minutos.' + #13#10#13#10 +
+                      'Deseja continuar?', mbInformation, MB_YESNO, IDNO);
+        
+        if MsgBoxResult = IDNO then
+        begin
+          Result := False;
+          Exit;
+        end;
+      end;
+      
+      // Verificar e alertar sobre a virtualização
+      if not VirtualizationEnabled then
+      begin
+        MsgBoxResult := SuppressibleMsgBox('ATENÇÃO: A virtualização parece não estar habilitada em seu sistema.' + #13#10#13#10 +
                          'O WSL2 requer que a virtualização esteja habilitada na BIOS/UEFI do seu computador.' + #13#10#13#10 +
                          'Recomendamos que você habilite a virtualização na BIOS/UEFI antes de prosseguir com a instalação.' + #13#10#13#10 +
-                         'Deseja continuar mesmo assim?';
-                         
-    MsgBoxResult := SuppressibleMsgBox(VirtualizationMsg, mbConfirmation, MB_YESNO, IDNO);
-    if MsgBoxResult = IDNO then
-    begin
-      Result := False;
-      Exit;
+                         'Deseja continuar mesmo assim?', mbConfirmation, MB_YESNO, IDNO);
+        if MsgBoxResult = IDNO then
+        begin
+          Result := False;
+          Exit;
+        end;
+      end;
+      
+      // Verificar requisitos de sistema
+      SuppressibleMsgBox('Requisitos do sistema:' + #13#10#13#10 +
+         '- Windows 10 ou superior' + #13#10 +
+         '- Pelo menos 2GB de RAM' + #13#10 + 
+         '- Pelo menos 20GB de espaço livre em disco' + #13#10 +
+         '- Virtualização habilitada na BIOS/UEFI' + #13#10#13#10 +
+         'Se o seu sistema não atende a estes requisitos, a instalação pode falhar.',
+         mbInformation, MB_OK, IDNO);
     end;
   end;
+end;
+
+// Comparar versões (compara a.b.c com x.y.z)
+function CompareVersions(Version1, Version2: String): Integer;
+var
+  V1, V2: TStringList;
+  I, N1, N2: Integer;
+begin
+  // Inicializar com igual
+  Result := 0;
   
-  // Verificar requisitos de sistema
-  if Result then
-  begin
-    SuppressibleMsgBox('Requisitos do sistema:' + #13#10#13#10 +
-       '- Windows 10 ou superior' + #13#10 +
-       '- Pelo menos 2GB de RAM' + #13#10 + 
-       '- Pelo menos 20GB de espaço livre em disco' + #13#10 +
-       '- Virtualização habilitada na BIOS/UEFI' + #13#10#13#10 +
-       'Se o seu sistema não atende a estes requisitos, a instalação pode falhar.',
-       mbInformation, MB_OK, IDNO);
+  V1 := TStringList.Create;
+  V2 := TStringList.Create;
+  
+  try
+    // Dividir as versões em partes
+    ExtractStrings(['.'], [], PChar(Version1), V1);
+    ExtractStrings(['.'], [], PChar(Version2), V2);
+    
+    // Comparar cada parte da versão
+    for I := 0 to Min(V1.Count, V2.Count) - 1 do
+    begin
+      N1 := StrToIntDef(V1[I], 0);
+      N2 := StrToIntDef(V2[I], 0);
+      
+      if N1 > N2 then
+      begin
+        Result := 1;
+        Break;
+      end
+      else if N1 < N2 then
+      begin
+        Result := -1;
+        Break;
+      end;
+    end;
+    
+    // Se uma versão tem mais partes que a outra e todas as partes anteriores são iguais
+    if (Result = 0) and (V1.Count <> V2.Count) then
+    begin
+      if V1.Count > V2.Count then
+        Result := 1
+      else
+        Result := -1;
+    end;
+  finally
+    V1.Free;
+    V2.Free;
   end;
 end;
 
 // Evento chamado após a instalação
 procedure CurStepChanged(CurStep: TSetupStep);
-var
-  ResultCode: Integer;
-  NodeInstallerPath: String;
 begin
-  // Se estamos no passo pós-instalação e o Node.js não está instalado
-  if (CurStep = ssPostInstall) and not IsNodeJsInstalled() then
+  if CurStep = ssPostInstall then
   begin
-    NodeInstallerPath := ExpandConstant('{app}\node_installer.msi');
+    // Registrar a conclusão da instalação
+    LogInstaller('Instalação concluída com sucesso');
     
-    // Verificar se o instalador do Node.js existe
-    if FileExists(NodeInstallerPath) then
+    // Se for uma atualização, registrar a versão anterior e a nova
+    if IsUpgrade() then
     begin
-      Log('Iniciando instalação do Node.js: ' + NodeInstallerPath);
-      // Mostrar mensagem
-      WizardForm.StatusLabel.Caption := CustomMessage('InstallingNode');
-      WizardForm.ProgressGauge.Style := npbstMarquee;
-      
-      // Executar o instalador do Node.js
-      if not Exec('msiexec.exe', '/i "' + NodeInstallerPath + '" /qn', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) then
-      begin
-        Log('Erro ao executar o instalador do Node.js: ' + SysErrorMessage(ResultCode));
-        SuppressibleMsgBox('Erro ao instalar o Node.js. Por favor, instale manualmente após a conclusão.', mbError, MB_OK, IDNO);
-      end
-      else
-      begin
-        // Verificar se a instalação foi bem-sucedida
-        if ResultCode = 0 then
-          Log('Node.js instalado com sucesso')
-        else
-          Log('Instalação do Node.js concluída com código: ' + IntToStr(ResultCode));
-      end;
-      
-      WizardForm.ProgressGauge.Style := npbstNormal;
-    end
-    else
-    begin
-      Log('Instalador do Node.js não encontrado: ' + NodeInstallerPath);
-      SuppressibleMsgBox('O instalador do Node.js não foi encontrado. Por favor, instale o Node.js manualmente após a conclusão.', mbError, MB_OK, IDNO);
+      LogInstaller('Atualizado com sucesso da versão ' + IsInstalledVersion + ' para ' + '{#MyAppVersion}');
     end;
   end;
 end;
 
-[InstallDelete]
-Type: files; Name: "{app}\install_log.txt"
-Type: files; Name: "{app}\node_install.log"
+// Lidar com erros durante a instalação
+procedure CurInstallProgressChanged(CurProgress, MaxProgress: Integer);
+begin
+  // Atualizar status de progresso
+  if CurProgress = MaxProgress then
+  begin
+    LogInstaller('Instalação dos arquivos concluída');
+  end;
+end;
 
-[UninstallDelete]
-Type: files; Name: "{app}\install_log.txt"
-Type: files; Name: "{app}\node_install.log"
-Type: files; Name: "{app}\installer.log"
-Type: files; Name: "{app}\detail_installer.log"
-Type: files; Name: "{app}\install_state.json"
-
-[Messages]
-BeveledLabel=LoQQuei-Ltda
-WelcomeLabel2=Este assistente o guiará na instalação do {#MyAppName} em seu computador.%n%nEste programa irá instalar o aplicativo de gerenciamento que permitirá configurar o sistema de gerenciamento de impressão.%n%nRecomendamos fechar todos os outros aplicativos antes de continuar.
-FinishedHeadingLabel=Instalação Concluída
-FinishedLabel=O instalador concluiu a instalação do {#MyAppName}.%n%nPara configurar o sistema, execute o aplicativo a partir do ícone criado na área de trabalho ou no menu iniciar.
-
-[CustomMessages]
-brazilianportuguese.InstallationError=Ocorreu um erro durante a instalação. Consulte o arquivo de log para mais detalhes.
-brazilianportuguese.InstallingNode=Instalando Node.js, por favor aguarde...
-brazilianportuguese.InstallingWSL=Verificando e instalando WSL, por favor aguarde...
+// Lidar com erros durante a instalação
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+begin
+  Result := '';
+  
+  // Mostrar informações da instalação
+  if MemoDirInfo <> '' then
+    Result := Result + MemoDirInfo + NewLine + NewLine;
+    
+  // Adicionar informações de WSL se estiver instalando pela primeira vez
+  if not WSLInstalled or not WSL2Configured or not UbuntuInstalled then
+  begin
+    Result := Result + 'Configurações adicionais:' + NewLine;
+    Result := Result + Space + '- Windows Subsystem for Linux (WSL2)' + NewLine;
+    Result := Result + Space + '- Ubuntu para WSL' + NewLine;
+    Result := Result + NewLine;
+  end;
+  
+  // Se precisar de Node.js
+  if not NodeInstalled then
+  begin
+    Result := Result + 'Dependências adicionais:' + NewLine;
+    Result := Result + Space + '- Node.js' + NewLine;
+    Result := Result + NewLine;
+  end;
+  
+  // Adicionar grupos de atalhos
+  if MemoGroupInfo <> '' then
+    Result := Result + MemoGroupInfo + NewLine + NewLine;
+    
+  // Adicionar tarefas selecionadas
+  if MemoTasksInfo <> '' then
+    Result := Result + MemoTasksInfo + NewLine + NewLine;
+    
+  // Adicionar informações sobre o modo de instalação
+  if IsUpgrade() then
+    Result := Result + 'Modo: Atualização (da versão ' + IsInstalledVersion + ' para ' + '{#MyAppVersion}' + ')' + NewLine
+  else
+    Result := Result + 'Modo: Nova instalação' + NewLine;
+    
+  // Adicionar aviso se estiver em modo silencioso
+  if IsSilent() then
+    Result := Result + 'Atenção: Operando em modo silencioso' + NewLine;
+end;
