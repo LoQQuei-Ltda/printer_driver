@@ -135,8 +135,8 @@ class PrintManager {
     document.addEventListener('click', (event) => {
       const printButton = event.target.closest('.action-button');
       if (printButton) {
-        const fileId = parseInt(printButton.getAttribute('data-file-id'), 10);
-        if (!isNaN(fileId)) {
+        const fileId = printButton.getAttribute('data-file-id');
+        if (fileId) {
           this.showPrintModal(fileId);
         }
       }
@@ -144,8 +144,8 @@ class PrintManager {
       // Delete buttons (event delegation)
       const deleteButton = event.target.closest('.delete-button');
       if (deleteButton) {
-        const fileId = parseInt(deleteButton.getAttribute('data-file-id'), 10);
-        if (!isNaN(fileId)) {
+        const fileId = deleteButton.getAttribute('data-file-id');
+        if (fileId) {
           this.confirmDeleteFile(fileId);
         }
       }
@@ -295,8 +295,6 @@ class PrintManager {
       logoImg.style.marginRight = '8px';
       
       this.dom.appLogo.appendChild(logoImg);
-      
-      console.log(`Logo atualizado para: ${logoImg.src}`);
     }
   }
   
@@ -310,7 +308,6 @@ class PrintManager {
     }
     
     favicon.href = `../assets/icon/${theme}.ico`;
-    console.log(`Favicon atualizado: ${favicon.href}`);
   }
   
   // Alternar tabs
@@ -559,6 +556,10 @@ class PrintManager {
   renderFileList() {
     if (!this.dom.filesContainer) return;
     
+    this.state.files = this.state.files.sort((a, b) => {
+      return new Date(a.date) - new Date(b.date);
+    });
+
     let filesHTML = '';
     
     this.state.files.forEach(file => {
@@ -637,17 +638,14 @@ class PrintManager {
       return;
     }
     
-    // Garantir que fileId seja um número
-    fileId = parseInt(fileId, 10);
     this.state.selectedFileId = fileId;
     
     // Encontrar arquivo
     const file = this.state.files.find(f => f.id === fileId);
-    
     if (file && this.dom.printModal) {
       // Atualizar informações do modal
       if (this.dom.printInfo) {
-        this.dom.printInfo.textContent = `Imprimir "${file.filename}" em:`;
+        this.dom.printInfo.textContent = `Imprimir arquivo "${file.filename}" em:`;
       }
       
       // Atualizar lista de impressoras
@@ -691,7 +689,7 @@ class PrintManager {
       }
       
       if (response.success) {
-        alert(`Documento enviado para impressão com sucesso.\nID do trabalho: ${response.jobId}`);
+        alert(`${response.message}\nId do documento: ${response.fileId}\nId da impressora: ${response.printerId}`);
         this.closePrintModal();
         this.loadFileList(); // Atualizar lista após impressão
       } else {

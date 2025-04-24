@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Configuração
-const PARALLELISM = 100; 
+const PARALLELISM = 50;
 const CONNECTION_TIMEOUT = 200;
 const MAX_EXECUTION_TIME = 5 * 60 * 1000;
 

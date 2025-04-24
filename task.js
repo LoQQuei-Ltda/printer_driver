@@ -18,6 +18,9 @@ module.exports = {
 
     schedule.scheduleJob(ruleForZeroSecond, async () => {
         await printSync();
+    });
+
+    schedule.scheduleJob('*/5 * * * *', async () => {
         await printersSync();
     });
 

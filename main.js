@@ -26,7 +26,7 @@ const appConfig = {
   apiPrincipalServiceUrl: 'http://localhost:80/api/v1',
   apiLocalUrl: 'http://localhost:56258/api',
   autoStart: true,
-  // minimizeOnBlur: true,
+  minimizeOnBlur: true, // Minimiza ao clicar fora da janela
   dataPath: path.join(app.getPath('userData'), 'appData'),
   userDataFile: path.join(app.getPath('userData'), 'user.json'),
   windowPrefsFile: path.join(app.getPath('userData'), 'window_prefs.json'),
@@ -482,7 +482,7 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile('view/index.html');
-  // mainWindow.webContents.openDevTools(); // remover
+  mainWindow.webContents.openDevTools(); // remover
 
   // Maximizar a janela se for a preferência do usuário
   if (prefs.isMaximized) {
@@ -1341,7 +1341,7 @@ ipcMain.on('listar-arquivos', async (event) => {
 
     if (response.status === 200) {
       files = response.data?.data.sort((a, b) => {
-        return new Date(a.date) - new Date(b.date);
+        return new Date(b.date) - new Date(a.date);
       });
     } else {
       files = [];
@@ -1383,7 +1383,6 @@ ipcMain.on('listar-impressoras', async (event) => {
     } else {
       printers = [];
     }
-
     event.reply('impressoras-response', { success: true, printers });
   } catch (error) {
     console.error('Erro ao listar impressoras:', error);
@@ -1407,15 +1406,30 @@ ipcMain.on('imprimir-arquivo', async (event, { fileId, printerId }) => {
       return;
     }
 
-    // Aqui você faria a chamada para a API para imprimir o arquivo
-    // Simulando uma resposta por enquanto
-    const resultado = {
-      success: true,
-      jobId: Math.floor(Math.random() * 10000),
-      message: 'Arquivo enviado para impressão com sucesso'
-    };
+    let response
+    try {
+      response = await axios.post(`${appConfig.apiLocalUrl}/print`, {
+        fileId: fileId,
+        assetId: printerId
+      });
+    } catch (error) {
+      console.log(error?.response?.data);
+    }
 
-    event.reply('impressao-response', resultado);
+    if (!response || response.status !== 200) {
+      event.reply('impressao-response', {
+        success: false,
+        message: 'Erro ao enviar arquivo para impressão'
+      });
+      return;
+    }
+
+    event.reply('impressao-response', { 
+      success: true,
+      fileId: fileId,
+      printerId: printerId,
+      message: 'Arquivo enviado para impressão com sucesso!'
+    });
   } catch (error) {
     console.error('Erro ao imprimir arquivo:', error);
     event.reply('impressao-response', {
