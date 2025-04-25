@@ -77,7 +77,7 @@ Source: ".\scripts\update_wsl.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversi
 ; Recursos do print_server_desktop
 Source: ".\resources\print_server_desktop\*"; DestDir: "{app}\resources\print_server_desktop"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Scripts de atualização para o WSL
-Source: ".\resources\wsl_updates\*"; DestDir: "{app}\resources\wsl_updates"; Flags: ignoreversion
+Source: ".\resources\print_server_desktop\updates\*"; DestDir: "{app}\resources\print_server_desktop\updates"; Flags: ignoreversion
 
 [Dirs]
 ; Garantir que diretórios cruciais existam e tenham permissões corretas
@@ -85,7 +85,7 @@ Name: "{app}\resources"; Permissions: users-modify
 Name: "{app}\scripts"; Permissions: users-modify
 Name: "{app}\logs"; Permissions: users-modify
 Name: "{app}\resources\print_server_desktop"; Permissions: users-modify
-Name: "{app}\resources\wsl_updates"; Permissions: users-modify
+Name: "{app}\resources\print_server_desktop\updates"; Permissions: users-modify
 
 [Icons]
 ; Ícones para acesso à aplicação
@@ -135,6 +135,99 @@ begin
   Log(Message);
 end;
 
+// Função para obter o timestamp atual (simplificado, sem usar DateTimeToUnix)
+// Função para obter o timestamp atual (versão muito simplificada)
+function GetCurrentUnixTime(Param: String): String;
+begin
+  // Usar o contador de milissegundos do sistema - não é um timestamp Unix real
+  // mas serve para a finalidade de registro
+  Result := IntToStr(GetTickCount div 1000);
+end;
+
+// Comparar versões (compara a.b.c com x.y.z)
+function CompareVersions(Version1, Version2: String): Integer;
+var
+  V1Major, V1Minor, V1Build: Integer;
+  V2Major, V2Minor, V2Build: Integer;
+  Temp: String;
+  DotPos: Integer;
+begin
+  // Inicializar com igual
+  Result := 0;
+  
+  // Extrair Major.Minor.Build da primeira versão
+  Temp := Version1;
+  DotPos := Pos('.', Temp);
+  if DotPos > 0 then
+  begin
+    V1Major := StrToIntDef(Copy(Temp, 1, DotPos-1), 0);
+    Delete(Temp, 1, DotPos);
+    
+    DotPos := Pos('.', Temp);
+    if DotPos > 0 then
+    begin
+      V1Minor := StrToIntDef(Copy(Temp, 1, DotPos-1), 0);
+      Delete(Temp, 1, DotPos);
+      V1Build := StrToIntDef(Temp, 0);
+    end else
+    begin
+      V1Minor := StrToIntDef(Temp, 0);
+      V1Build := 0;
+    end;
+  end else
+  begin
+    V1Major := StrToIntDef(Temp, 0);
+    V1Minor := 0;
+    V1Build := 0;
+  end;
+  
+  // Extrair Major.Minor.Build da segunda versão
+  Temp := Version2;
+  DotPos := Pos('.', Temp);
+  if DotPos > 0 then
+  begin
+    V2Major := StrToIntDef(Copy(Temp, 1, DotPos-1), 0);
+    Delete(Temp, 1, DotPos);
+    
+    DotPos := Pos('.', Temp);
+    if DotPos > 0 then
+    begin
+      V2Minor := StrToIntDef(Copy(Temp, 1, DotPos-1), 0);
+      Delete(Temp, 1, DotPos);
+      V2Build := StrToIntDef(Temp, 0);
+    end else
+    begin
+      V2Minor := StrToIntDef(Temp, 0);
+      V2Build := 0;
+    end;
+  end else
+  begin
+    V2Major := StrToIntDef(Temp, 0);
+    V2Minor := 0;
+    V2Build := 0;
+  end;
+  
+  // Comparar Major
+  if V1Major > V2Major then
+    Result := 1
+  else if V1Major < V2Major then
+    Result := -1
+  else begin
+    // Se Major é igual, comparar Minor
+    if V1Minor > V2Minor then
+      Result := 1
+    else if V1Minor < V2Minor then
+      Result := -1
+    else begin
+      // Se Minor é igual, comparar Build
+      if V1Build > V2Build then
+        Result := 1
+      else if V1Build < V2Build then
+        Result := -1;
+    end;
+  end;
+end;
+
 // Verifica se é uma atualização (compara versões)
 function IsUpgrade(): Boolean;
 var
@@ -145,7 +238,10 @@ begin
     RegQueryStringValue(HKLM, 'SOFTWARE\LoQQuei\PrintManagement', 'Version', PrevVersion);
     IsInstalledVersion := PrevVersion;
     Result := (CompareVersions('{#MyAppVersion}', PrevVersion) > 0);
-    LogInstaller('Versão anterior encontrada: ' + PrevVersion + ', Nova versão: {#MyAppVersion}, É atualização: ' + BoolToStr(Result, True));
+    if Result then
+      LogInstaller('Versão anterior encontrada: ' + PrevVersion + ', Nova versão: {#MyAppVersion}, É atualização: Sim')
+    else
+      LogInstaller('Versão anterior encontrada: ' + PrevVersion + ', Nova versão: {#MyAppVersion}, É atualização: Não');
   end
   else
   begin
@@ -158,16 +254,10 @@ end;
 function IsSilent(): Boolean;
 begin
   Result := (Pos('/SILENT', UpperCase(GetCmdTail)) > 0) or (Pos('/VERYSILENT', UpperCase(GetCmdTail)) > 0);
-  LogInstaller('Modo silencioso: ' + BoolToStr(Result, True));
-end;
-
-// Retorna timestamp Unix atual para registro
-function GetCurrentUnixTime(Param: String): String;
-var
-  UnixTime: Int64;
-begin
-  UnixTime := DateTimeToUnix(Now);
-  Result := IntToStr(UnixTime);
+  if Result then
+    LogInstaller('Modo silencioso: Sim')
+  else
+    LogInstaller('Modo silencioso: Não');
 end;
 
 // Define atributos para o arquivo README
@@ -348,7 +438,10 @@ end;
 function NeedsNodeJs(): Boolean;
 begin
   Result := not IsNodeJsInstalled();
-  LogInstaller('Precisa instalar Node.js: ' + BoolToStr(Result, True));
+  if Result then
+    LogInstaller('Precisa instalar Node.js: Sim')
+  else
+    LogInstaller('Precisa instalar Node.js: Não');
 end;
 
 // Função de inicialização da instalação
@@ -441,55 +534,6 @@ begin
          'Se o seu sistema não atende a estes requisitos, a instalação pode falhar.',
          mbInformation, MB_OK, IDNO);
     end;
-  end;
-end;
-
-// Comparar versões (compara a.b.c com x.y.z)
-function CompareVersions(Version1, Version2: String): Integer;
-var
-  V1, V2: TStringList;
-  I, N1, N2: Integer;
-begin
-  // Inicializar com igual
-  Result := 0;
-  
-  V1 := TStringList.Create;
-  V2 := TStringList.Create;
-  
-  try
-    // Dividir as versões em partes
-    ExtractStrings(['.'], [], PChar(Version1), V1);
-    ExtractStrings(['.'], [], PChar(Version2), V2);
-    
-    // Comparar cada parte da versão
-    for I := 0 to Min(V1.Count, V2.Count) - 1 do
-    begin
-      N1 := StrToIntDef(V1[I], 0);
-      N2 := StrToIntDef(V2[I], 0);
-      
-      if N1 > N2 then
-      begin
-        Result := 1;
-        Break;
-      end
-      else if N1 < N2 then
-      begin
-        Result := -1;
-        Break;
-      end;
-    end;
-    
-    // Se uma versão tem mais partes que a outra e todas as partes anteriores são iguais
-    if (Result = 0) and (V1.Count <> V2.Count) then
-    begin
-      if V1.Count > V2.Count then
-        Result := 1
-      else
-        Result := -1;
-    end;
-  finally
-    V1.Free;
-    V2.Free;
   end;
 end;
 

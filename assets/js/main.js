@@ -33,6 +33,7 @@ class PrintManager {
       navItems: document.querySelectorAll('.nav-item[data-tab]'),
       tabContents: document.querySelectorAll('.tab-content'),
       logoutButton: document.getElementById('logoutButton'),
+      printersUpdateButton: document.getElementById('printersUpdateButton'),
       manualSettingsButton: document.getElementById('manualSettingsButton'),
       
       // System elements
@@ -107,6 +108,10 @@ class PrintManager {
     // Logout
     if (this.dom.logoutButton) {
       this.dom.logoutButton.addEventListener('click', () => this.logout());
+    }
+
+    if (this.dom.printersUpdateButton) {
+      this.dom.printersUpdateButton.addEventListener('click', () => this.printersUpdate());
     }
 
     if (this.dom.manualSettingsButton) {
@@ -186,6 +191,29 @@ class PrintManager {
     // Receive installation logs
     ipcRenderer.on('installation-log', (event, data) => {
       this.addLogEntry(data.message, data.type);
+    });
+    
+    ipcRenderer.on('navegar-para', (event, { secao }) => {
+      console.log(`Navegando para seção: ${secao}`);
+      
+      switch(secao) {
+        case 'arquivos':
+          // Mostrar a tab de impressão
+          this.switchTab('print');
+          // Recarregar a lista de arquivos
+          this.loadFileList();
+          break;
+        case 'impressoras':
+          // Mostrar a tab de configurações
+          this.switchTab('system');
+          break;
+        case 'configuracoes':
+          // Mostrar a tab de configurações
+          this.switchTab('system');
+          break;
+        default:
+          console.log(`Seção desconhecida: ${secao}`);
+      }
     });
     
     // Window resize handler
@@ -734,6 +762,21 @@ class PrintManager {
     });
   }
   
+  printersUpdate() {
+    setImmediate(() => ipcRenderer.send('atualizar-impressoras'));
+
+    alert('Atualização de impressoras iniciada...');
+
+    ipcRenderer.once('exclusao-response', (event, response) => {
+      if (response.success.message) {
+        alert(response);
+        this.loadPrinterList(); // Recarregar a lista após exclusão
+      } else {
+        alert(`Erro ao excluir arquivo: ${response.message}`);
+      }
+    });
+  }
+
   openManualSettings() {
     ipcRenderer.send('open-manual-settings');
   }

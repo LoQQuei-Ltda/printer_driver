@@ -6,6 +6,8 @@ const execAsync = util.promisify(exec);
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const https = require('https');
 
 // Configuração
 const PARALLELISM = 50;
@@ -75,7 +77,10 @@ module.exports = {
                 if (printer.mac_address) {
                     const rawMac = printer.mac_address;
                     const normalizedMac = normalizeMAC(rawMac);
-                    console.log(`- ${printer.name}: Original=${rawMac}, Normalizado=${normalizedMac}`);
+                    const protocol = printer.protocol || 'socket';
+                    const port = printer.port || getDefaultPort(protocol);
+                    
+                    console.log(`- ${printer.name}: Original=${rawMac}, Normalizado=${normalizedMac}, Driver=${printer.driver || 'generic'}, Protocolo=${protocol}, Porta=${port}`);
                 }
             });
 
@@ -102,7 +107,12 @@ module.exports = {
 
             for (const printer of printersData) {
                 const { id, name, mac_address, ip_address: externalIp } = printer;
-                console.log(`\nProcessando impressora: ${name} (MAC: ${mac_address})`);
+                // Usar os valores recebidos da API, com fallbacks para os valores padrão
+                const driver = printer.driver || 'generic';  
+                const protocol = printer.protocol || 'socket';
+                const port = printer.port || getDefaultPort(protocol);
+                
+                console.log(`\nProcessando impressora: ${name} (MAC: ${mac_address}, Driver: ${driver}, Protocolo: ${protocol}, Porta: ${port})`);
 
                 // Se não tiver MAC, não podemos descobrir o IP
                 if (!mac_address) {
@@ -116,6 +126,8 @@ module.exports = {
                 console.log(`MAC normalizado: ${normalizedMac}`);
                 
                 let internalIp = null;
+                let portOpen = false;
+                let ippPath = null;
 
                 // Verificar se já temos um IP salvo para este MAC e testar
                 // Tentar obter um IP salvo com várias normalizações possíveis
@@ -123,13 +135,32 @@ module.exports = {
                 
                 if (storedIp) {
                     console.log(`IP anterior encontrado para ${name}: ${storedIp}`);
-                    const isConnected = await testPrinterConnection(storedIp, printer.port || 9100);
                     
-                    if (isConnected) {
-                        console.log(`IP anterior está respondendo: ${storedIp}`);
-                        internalIp = storedIp;
+                    // Se for protocolo IPP/IPPS, precisamos verificar o endpoint
+                    if (['ipp', 'ipps'].includes(protocol.toLowerCase())) {
+                        try {
+                            const ippResult = await detectIppEndpoint(protocol, storedIp, port);
+                            if (ippResult.valid) {
+                                console.log(`Endpoint IPP válido encontrado em ${storedIp}:${port}${ippResult.path}`);
+                                internalIp = storedIp;
+                                portOpen = true;
+                                ippPath = ippResult.path;
+                            } else {
+                                console.log(`Nenhum endpoint IPP válido encontrado em ${storedIp}:${port}`);
+                            }
+                        } catch (error) {
+                            console.warn(`Erro ao verificar endpoint IPP em ${storedIp}:`, error.message);
+                        }
                     } else {
-                        console.log(`IP anterior não está respondendo, iniciando nova descoberta`);
+                        // Para outros protocolos, apenas verificar se a porta está aberta
+                        const isConnected = await testPrinterConnection(storedIp, port);
+                        if (isConnected) {
+                            console.log(`IP anterior está respondendo na porta ${port}: ${storedIp}`);
+                            internalIp = storedIp;
+                            portOpen = true;
+                        } else {
+                            console.log(`IP anterior não está respondendo na porta ${port}, iniciando nova descoberta`);
+                        }
                     }
                 }
 
@@ -142,12 +173,29 @@ module.exports = {
                     if (foundIP) {
                         console.log(`IP encontrado na tabela ARP após scan: ${foundIP}`);
                         
-                        // Verificar porta da impressora
-                        const isConnected = await testPrinterConnection(foundIP, printer.port || 9100);
-                        if (isConnected) {
-                            internalIp = foundIP;
+                        // Verificar porta da impressora ou endpoint IPP
+                        if (['ipp', 'ipps'].includes(protocol.toLowerCase())) {
+                            try {
+                                const ippResult = await detectIppEndpoint(protocol, foundIP, port);
+                                if (ippResult.valid) {
+                                    console.log(`Endpoint IPP válido encontrado em ${foundIP}:${port}${ippResult.path}`);
+                                    internalIp = foundIP;
+                                    portOpen = true;
+                                    ippPath = ippResult.path;
+                                } else {
+                                    console.log(`Nenhum endpoint IPP válido encontrado em ${foundIP}:${port}`);
+                                }
+                            } catch (error) {
+                                console.warn(`Erro ao verificar endpoint IPP em ${foundIP}:`, error.message);
+                            }
                         } else {
-                            console.log(`Porta ${printer.port || 9100} fechada em ${foundIP}`);
+                            const isConnected = await testPrinterConnection(foundIP, port);
+                            if (isConnected) {
+                                internalIp = foundIP;
+                                portOpen = true;
+                            } else {
+                                console.log(`Porta ${port} fechada em ${foundIP}`);
+                            }
                         }
                     }
                     
@@ -156,15 +204,12 @@ module.exports = {
                         for (const network of localNetworks) {
                             console.log(`Escaneando rede ${network.network}/${network.cidr} por dispositivos com porta aberta...`);
                             
-                            // Tentar primeiro a porta da impressora
-                            const printerPort = printer.port || 9100;
-                            
-                            // Scan de portas
+                            // Tentar a porta específica da impressora
                             const openPortDevices = await scanNetworkForOpenPort(
                                 network.network, 
                                 network.cidr, 
-                                printerPort, 
-                                printer.protocol
+                                port, 
+                                protocol
                             );
                             
                             // Para cada dispositivo encontrado, verificar MAC address
@@ -181,7 +226,24 @@ module.exports = {
                                     
                                     if (normalizedDeviceMac === normalizedMac) {
                                         console.log(`MAC correspondente encontrado em ${ip}!`);
+                                        
+                                        // Se for IPP/IPPS, verificar endpoint
+                                        if (['ipp', 'ipps'].includes(protocol.toLowerCase())) {
+                                            try {
+                                                const ippResult = await detectIppEndpoint(protocol, ip, port);
+                                                if (ippResult.valid) {
+                                                    console.log(`Endpoint IPP válido encontrado em ${ip}:${port}${ippResult.path}`);
+                                                    ippPath = ippResult.path;
+                                                } else {
+                                                    console.log(`Nenhum endpoint IPP válido encontrado em ${ip}:${port}, mas a porta está aberta`);
+                                                }
+                                            } catch (error) {
+                                                console.warn(`Erro ao verificar endpoint IPP em ${ip}:`, error.message);
+                                            }
+                                        }
+                                        
                                         internalIp = ip;
+                                        portOpen = true;
                                         break;
                                     }
                                 }
@@ -202,12 +264,32 @@ module.exports = {
                         
                         // Verificar se o IP externo funciona na rede local
                         if (externalIp) {
-                            const isConnected = await testPrinterConnection(externalIp, printer.port || 9100);
-                            if (isConnected) {
-                                console.log(`IP externo ${externalIp} está acessível na rede local!`);
-                                internalIp = externalIp;
-                                macToIpMap[normalizedMac] = internalIp;
-                                macIpMapChanged = true;
+                            // Se for IPP/IPPS, verificar endpoint
+                            if (['ipp', 'ipps'].includes(protocol.toLowerCase())) {
+                                try {
+                                    const ippResult = await detectIppEndpoint(protocol, externalIp, port);
+                                    if (ippResult.valid) {
+                                        console.log(`Endpoint IPP válido encontrado no IP externo ${externalIp}:${port}${ippResult.path}`);
+                                        internalIp = externalIp;
+                                        portOpen = true;
+                                        ippPath = ippResult.path;
+                                        macToIpMap[normalizedMac] = internalIp;
+                                        macIpMapChanged = true;
+                                    } else {
+                                        console.log(`Nenhum endpoint IPP válido encontrado no IP externo ${externalIp}:${port}`);
+                                    }
+                                } catch (error) {
+                                    console.warn(`Erro ao verificar endpoint IPP no IP externo ${externalIp}:`, error.message);
+                                }
+                            } else {
+                                const isConnected = await testPrinterConnection(externalIp, port);
+                                if (isConnected) {
+                                    console.log(`IP externo ${externalIp} está acessível na rede local!`);
+                                    internalIp = externalIp;
+                                    portOpen = true;
+                                    macToIpMap[normalizedMac] = internalIp;
+                                    macIpMapChanged = true;
+                                }
                             }
                         }
                         
@@ -222,11 +304,23 @@ module.exports = {
                 // Criar versão atualizada da impressora com o IP interno
                 const updatedPrinter = {
                     ...printer,
-                    ip_address: internalIp
+                    ip_address: internalIp,
+                    // Incluir informações sobre a disponibilidade da porta
+                    connectivity: {
+                        port: {
+                            open: portOpen,
+                            number: port
+                        }
+                    }
                 };
+                
+                // Se encontramos um caminho IPP válido, incluí-lo
+                if (ippPath) {
+                    updatedPrinter.path = ippPath;
+                }
 
                 updatedPrinters.push(updatedPrinter);
-                console.log(`Impressora ${name} atualizada com IP interno: ${internalIp}`);
+                console.log(`Impressora ${name} atualizada com IP interno: ${internalIp}, porta ${port} ${portOpen ? 'aberta' : 'fechada'}${ippPath ? ', caminho IPP: ' + ippPath : ''}`);
             }
 
             // Salvar o mapeamento MAC->IP se foi alterado
@@ -316,6 +410,111 @@ module.exports = {
         }
     }
 };
+
+/**
+ * Retorna a porta padrão para um protocolo
+ * @param {string} protocol - Protocolo
+ * @returns {number} Porta padrão
+ */
+function getDefaultPort(protocol) {
+    switch (protocol?.toLowerCase()) {
+        case 'ipp':
+        case 'ipps':
+            return 631;
+        case 'lpd':
+            return 515;
+        case 'http':
+            return 80;
+        case 'https':
+            return 443;
+        case 'socket':
+        default:
+            return 9100;
+    }
+}
+
+/**
+ * Detecta o endpoint IPP válido em um servidor
+ * @param {string} protocol - Protocolo (ipp ou ipps)
+ * @param {string} ip - Endereço IP
+ * @param {number} port - Porta
+ * @returns {Promise<{valid: boolean, path: string|null, error: string|null}>}
+ */
+async function detectIppEndpoint(protocol, ip, port = 631) {
+    // Lista de caminhos comuns para endpoints IPP
+    const commonPaths = [
+        '/ipp/print',
+        '/ipp',
+        '/printer',
+        '/printers/printer',
+        '',
+        '/IPP/Print',
+        '/print'
+    ];
+    
+    console.log(`Verificando endpoints ${protocol} em ${ip}:${port}`);
+    
+    for (const path of commonPaths) {
+        const fullPath = path || '/';
+        console.log(`Testando caminho: ${fullPath}`);
+        
+        try {
+            const isValid = await testEndpoint(ip, port, fullPath, protocol === 'ipps');
+            
+            if (isValid) {
+                return { valid: true, path: fullPath };
+            }
+        } catch (error) {
+            console.warn(`Erro ao testar ${fullPath}: ${error.message}`);
+        }
+    }
+    
+    return { valid: false, path: null, error: 'Nenhum endpoint IPP válido encontrado' };
+}
+
+/**
+ * Testa se um endpoint HTTP/HTTPS está respondendo
+ * @param {string} host - Endereço IP ou hostname
+ * @param {number} port - Porta
+ * @param {string} path - Caminho para testar
+ * @param {boolean} secure - Usar HTTPS em vez de HTTP
+ * @returns {Promise<boolean>} true se o endpoint estiver respondendo
+ */
+function testEndpoint(host, port, path, secure = false) {
+    return new Promise((resolve, reject) => {
+        const options = {
+            hostname: host,
+            port: port,
+            path: path,
+            method: 'GET',
+            timeout: 3000,
+            rejectUnauthorized: false // Aceitar certificados autoassinados
+        };
+        
+        const client = secure ? https : http;
+        
+        const req = client.request(options, (res) => {
+            // Alguns servidores IPP retornam códigos diferentes, mas ainda são válidos
+            // 200 OK, 400 Bad Request (mas respondendo), etc.
+            if (res.statusCode < 500) {
+                resolve(true);
+            } else {
+                resolve(false);
+            }
+        });
+        
+        req.on('error', (error) => {
+            resolve(false);
+        });
+        
+        req.on('timeout', () => {
+            req.destroy();
+            resolve(false);
+        });
+        
+        req.end();
+    });
+}
 
 /**
  * Busca um IP armazenado para um MAC usando várias normalizações possíveis
@@ -450,6 +649,7 @@ async function scanNetworkForOpenPort(networkBase, cidr, port, protocol) {
     
     // Adicionar portas alternativas com base no protocolo
     if (protocol === 'ipp' && port !== 631) portsToCheck.push(631);
+    if (protocol === 'ipps' && port !== 631) portsToCheck.push(631);
     if (protocol === 'lpd' && port !== 515) portsToCheck.push(515);
     if (protocol === 'socket' && port !== 9100) portsToCheck.push(9100);
     

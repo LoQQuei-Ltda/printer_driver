@@ -3,10 +3,12 @@
  */
 
 const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, shell, nativeImage, screen } = require('electron');
+const { printersSync } = require('./tasks/printers');
 const { execFile, exec } = require('child_process');
 const installer = require('./installer');
 const AppUpdater = require('./updater');
 const { initTask } = require('./task');
+const { initAPI } = require('./api');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
@@ -15,6 +17,7 @@ const fs = require('fs');
 let mainWindow;
 let tray = null;
 let updater = null;
+let apiServer = null;
 let isQuitting = false;
 let loginWindow = null;
 let currentTheme = 'dark';
@@ -28,6 +31,7 @@ const appConfig = {
   autoStart: true,
   minimizeOnBlur: true, // Minimiza ao clicar fora da janela
   dataPath: path.join(app.getPath('userData'), 'appData'),
+  desktopApiPort: 56257,
   userDataFile: path.join(app.getPath('userData'), 'user.json'),
   windowPrefsFile: path.join(app.getPath('userData'), 'window_prefs.json'),
   defaultWidth: 360,
@@ -822,6 +826,8 @@ app.whenReady().then(async () => {
   if (isAuthenticated()) {
     createMainWindow();
 
+    apiServer = initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated);
+
     updater = new AppUpdater(mainWindow);
 
     setTimeout(() => {
@@ -845,6 +851,12 @@ app.whenReady().then(async () => {
 // Evento quando o aplicativo está pronto para fechar
 app.on('before-quit', function () {
   isQuitting = true;
+
+  if (apiServer) {
+    apiServer.close(() => {
+      console.log('Servidor API encerrado com sucesso');
+    });
+  }
 });
 
 // Manter o aplicativo em execução quando todas as janelas forem fechadas
@@ -964,6 +976,8 @@ ipcMain.on('login', async (event, credentials) => {
       }
       createMainWindow();
 
+      apiServer = initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated);
+
       event.reply('login-response', { success: true });
     } else {
       console.log('Falha na autenticação:', response.data);
@@ -1002,6 +1016,13 @@ ipcMain.on('logout', (event) => {
 
     if (mainWindow) {
       mainWindow.close();
+    }
+
+    if (apiServer) {
+      apiServer.close(() => {
+        console.log('Servidor API encerrado durante logout');
+      });
+      apiServer = null;
     }
 
     createLoginWindow();
@@ -1481,6 +1502,30 @@ ipcMain.on('excluir-arquivo', async (event, { fileId }) => {
       success: false,
       message: 'Erro ao excluir arquivo'
     });
+  }
+});
+
+// Atualiza impressoras manualmente
+ipcMain.on('atualizar-impressoras', async (event) => {
+  try {
+    await printersSync();
+
+    event.reply('atualizar-impressoras-response', { 
+      success: true,
+      message: 'Impressoras atualizadas com sucesso!'
+    });
+  } catch (error) {
+    console.error('Erro ao atualizar impressoras:', error);
+    event.reply('atualizar-impressoras-response', {
+      success: false,
+      message: 'Erro ao atualizar impressoras!'
+    });
+  }
+});
+
+ipcMain.on('navegar-para', (event, dados) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('navegar-para', dados);
   }
 });
 

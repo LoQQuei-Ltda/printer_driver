@@ -279,7 +279,7 @@ log "Processo de atualização concluído com sucesso!"
 }
 
 # Diretório com os scripts de atualização no Windows
-$wslUpdatesDir = Join-Path $PSScriptRoot "..\resources\wsl_updates"
+$wslUpdatesDir = Join-Path $PSScriptRoot "..\resources\print_server_desktop\updates"
 
 # Verificar se o diretório existe
 if (Test-Path $wslUpdatesDir) {
