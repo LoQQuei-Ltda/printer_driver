@@ -136,12 +136,14 @@ begin
 end;
 
 // Função para obter o timestamp atual (simplificado, sem usar DateTimeToUnix)
-// Função para obter o timestamp atual (versão muito simplificada)
 function GetCurrentUnixTime(Param: String): String;
+var
+  Year, Month, Day: Word;
 begin
-  // Usar o contador de milissegundos do sistema - não é um timestamp Unix real
-  // mas serve para a finalidade de registro
-  Result := IntToStr(GetTickCount div 1000);
+  // Obtém apenas a data atual (sem a hora) e faz um cálculo simples
+  DecodeDate(Date, Year, Month, Day);
+  // Calcula um valor aproximado com base na data
+  Result := IntToStr((Year - 2000) * 10000 + Month * 100 + Day);
 end;
 
 // Comparar versões (compara a.b.c com x.y.z)
