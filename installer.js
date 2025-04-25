@@ -613,225 +613,401 @@ echo "Configuração de usuário concluída"
   }
 }
 
-// Executar os comandos no WSL diretamente para instalar a aplicação
-async function configureSystem() {
-  verification.log('Configurando o sistema no WSL...', 'header');
+// Instalação dos pacotes necessários no WSL com melhor tratamento de erros
+async function installRequiredPackages() {
+  verification.log('Instalando pacotes necessários...', 'header');
   
   try {
-    const needsConfiguration = await verification.shouldConfigureSystem(installState);
-    if (!needsConfiguration) {
-      verification.log('Sistema já está configurado e funcional!', 'success');
+    // Lista de pacotes necessários
+    const requiredPackages = [
+      'nano', 'samba', 'cups', 'cups-pdf', 'postgresql', 'postgresql-contrib',
+      'ufw', 'npm', 'jq', 'net-tools', 'avahi-daemon', 'avahi-utils',
+      'avahi-discover', 'hplip', 'hplip-gui', 'printer-driver-all'
+    ];
+    
+    // Atualizando repositórios primeiro - aumentar timeout para 5 minutos
+    verification.log('Atualizando repositórios...', 'step');
+    try {
+      await verification.execPromise('wsl -d Ubuntu -u root apt clean', 120000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root apt update', 300000, true);
+    } catch (updateError) {
+      verification.log(`Erro ao atualizar repositórios: ${updateError.message || 'Erro desconhecido'}`, 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(updateError)}`);
+      
+      // Tente resolver problemas comuns
+      verification.log('Tentando corrigir problemas do apt...', 'step');
+      await verification.execPromise('wsl -d Ubuntu -u root apt --fix-broken install -y', 120000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root apt update', 300000, true);
+    }
+    
+    // Dividir a instalação em grupos menores
+    const packageGroups = [
+      ['nano', 'jq', 'net-tools'],
+      ['ufw'],
+      ['samba'],
+      ['cups', 'cups-pdf'],
+      ['postgresql', 'postgresql-contrib'],
+      ['npm'],
+      ['avahi-daemon', 'avahi-utils', 'avahi-discover'],
+      ['hplip', 'hplip-gui', 'printer-driver-all']
+    ];
+    
+    // Instalar cada grupo separadamente
+    for (let i = 0; i < packageGroups.length; i++) {
+      const group = packageGroups[i];
+      verification.log(`Instalando grupo ${i+1}/${packageGroups.length}: ${group.join(', ')}`, 'step');
+      
+      try {
+        // Usar timeout de 10 minutos para cada grupo
+        await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${group.join(' ')}`, 600000, true);
+        verification.log(`Grupo ${i+1} instalado com sucesso`, 'success');
+      } catch (groupError) {
+        try {
+          await verification.execPromise('wsl -d Ubuntu -u root dpkg --configure -a -y', 6000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root apt --fix-broken install -y', 6000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root apt clean', 6000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root apt update', 6000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root apt upgrade -y', 60000, true);
+        } catch (error) {
+          await verification.log('Error: ' + error);
+          await verification.logToFile('Error: ' + error);
+        }
+
+        verification.log(`Erro ao instalar grupo ${i+1}: ${groupError.message || 'Erro desconhecido'}`, 'warning');
+        verification.logToFile(`Detalhes do erro: ${JSON.stringify(groupError)}`);
+        
+        // Tentar instalar um por um se o grupo falhar
+        for (const pkg of group) {
+          try {
+            verification.log(`Tentando instalar ${pkg} individualmente...`, 'step');
+            await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${pkg}`, 300000, true);
+            verification.log(`Pacote ${pkg} instalado com sucesso`, 'success');
+          } catch (pkgError) {
+            verification.log(`Erro ao instalar ${pkg}: ${pkgError.message || 'Erro desconhecido'}`, 'warning');
+            // Continuar para o próximo pacote
+          }
+        }
+      }
+      
+      // Pausa breve entre grupos para dar folga ao sistema
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    
+    verification.log('Instalação de pacotes concluída com sucesso!', 'success');
+    return true;
+  } catch (error) {
+    const errorMessage = error.message || error.toString() || 'Erro desconhecido';
+    verification.log(`Erro ao instalar pacotes: ${errorMessage}`, 'error');
+    verification.logToFile(`Detalhes completos do erro: ${JSON.stringify(error)}`);
+    
+    // Mesmo com erro, retornar true para continuar a instalação
+    verification.log('Continuando instalação mesmo com erros nos pacotes...', 'warning');
+    return true;
+  }
+}
+
+// Configurar o Samba
+async function configureSamba() {
+  verification.log('Configurando Samba...', 'step');
+  
+  try {
+    // Criar arquivo de configuração do Samba
+    const smbContent = `[global]
+workgroup = WORKGROUP
+security = user
+map to guest = bad user
+
+[print_server]
+path = /srv/print_server
+public = yes
+writable = yes
+browseable = yes
+guest ok = yes
+`;
+
+    // Criar arquivo temporário
+    const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    const smbConfigPath = path.join(tempDir, 'smb.conf');
+    fs.writeFileSync(smbConfigPath, smbContent);
+    
+    // Obter caminho WSL para o arquivo
+    const wslPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${smbConfigPath.replace(/\\/g, '/')}"`, 10000, true);
+    
+    // Copiar para o WSL
+    await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/samba`, 10000, true);
+    await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslPath}" /etc/samba/smb.conf`, 10000, true);
+    
+    // Criar diretório compartilhado
+    await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /srv/print_server', 10000, true);
+    await verification.execPromise('wsl -d Ubuntu -u root chmod -R 0777 /srv/print_server', 10000, true);
+    
+    // Reiniciar serviço
+    await verification.execPromise('wsl -d Ubuntu -u root systemctl restart smbd', 30000, true);
+    
+    verification.log('Samba configurado com sucesso', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao configurar Samba: ${error.message}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Configurar o CUPS
+async function configureCups() {
+  verification.log('Configurando CUPS...', 'step');
+  
+  try {
+    // Criar arquivo de configuração do CUPS
+    const cupsContent = `Listen 0.0.0.0:631
+WebInterface Yes
+ServerAlias *
+<Location />
+  Order allow,deny
+  Allow all
+</Location>
+<Location /admin>
+  Order allow,deny
+  Allow all
+</Location>
+`;
+
+    // Criar arquivo temporário
+    const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    const cupsConfigPath = path.join(tempDir, 'cupsd.conf');
+    fs.writeFileSync(cupsConfigPath, cupsContent);
+    
+    // Obter caminho WSL para o arquivo
+    const wslPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${cupsConfigPath.replace(/\\/g, '/')}"`, 10000, true);
+    
+    // Copiar para o WSL
+    await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/cups`, 10000, true);
+    await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslPath}" /etc/cups/cupsd.conf`, 10000, true);
+    
+    // Configurar para acesso remoto
+    await verification.execPromise('wsl -d Ubuntu -u root cupsctl --remote-any', 15000, true);
+    
+    // Reiniciar serviço
+    await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups', 30000, true);
+    
+    verification.log('CUPS configurado com sucesso', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao configurar CUPS: ${error.message}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Configurar o Firewall
+async function configureFirewall() {
+  verification.log('Configurando regras de firewall...', 'step');
+  
+  try {
+    // Verificar status atual do firewall
+    const firewallStatus = await verification.checkFirewallRules();
+    
+    if (firewallStatus.configured) {
+      verification.log('Firewall já está configurado corretamente', 'success');
       return true;
     }
     
-    // CRUCIAL: Garantir que o WSL esteja acessível
-    verification.log('Verificando se o Ubuntu está instalado...', 'step');
-    const ubuntuInstalled = await verification.checkUbuntuInstalled();
-    if (!ubuntuInstalled) {
-      verification.log('Ubuntu não está instalado. Instalando agora...', 'step');
-      const installResult = await installUbuntu();
-      if (!installResult) {
-        verification.log('Falha ao instalar o Ubuntu', 'error');
-        return false;
-      }
-    }
-    
-    // Definir os comandos a serem executados sequencialmente
-    const commands = [
-      {
-        desc: "Atualizando pacotes",
-        cmd: "DEBIAN_FRONTEND=noninteractive apt update && DEBIAN_FRONTEND=noninteractive apt upgrade -y"
-      },
-      {
-        desc: "Instalando dependências",
-        cmd: "DEBIAN_FRONTEND=noninteractive apt install -y nano samba cups nginx postgresql postgresql-contrib ufw npm jq"
-      },
-      {
-        desc: "Criando estrutura de diretórios",
-        cmd: "mkdir -p /opt/print_server/print_server_desktop"
-      },
-      {
-        desc: "Criando diretórios para logs e atualizações",
-        cmd: "mkdir -p /opt/print_server/logs /opt/print_server/updates /opt/print_server/print_server_desktop/logs"
-      },
-      {
-        desc: "Configurando Git",
-        cmd: "git config --global pull.rebase false && git config --global status.showUntrackedFiles no"
-      },
-      {
-        desc: "Salvando informações de instalação",
-        cmd: "echo '{\"install_date\": \"'$(date +%Y-%m-%d)'\", \"version\": \"1.0.0\"}' > /opt/print_server/version.json"
-      },
-      {
-        desc: "Configurando arquivos de atualização",
-        cmd: "touch /opt/print_server/executed_updates.txt"
-      },
-      {
-        desc: "Configurando Samba",
-        cmd: "mkdir -p /etc/samba && echo '[global]\\nworkgroup = WORKGROUP\\nsecurity = user\\nmap to guest = bad user\\n[print_server]\\npath = /srv/print_server\\npublic = yes\\nwritable = yes\\nbrowseable = yes\\nguest ok = yes' > /etc/samba/smb.conf && mkdir -p /srv/print_server && chmod -R 0777 /srv/print_server"
-      },
-      {
-        desc: "Configurando CUPS",
-        cmd: "mkdir -p /etc/cups && echo 'Listen 0.0.0.0:631\\nWebInterface Yes' > /etc/cups/cupsd.conf"
-      },
-      {
-        desc: "Configurando Node.js",
-        cmd: "npm install -g npm@latest || echo 'Npm já atualizado'"
-      }
+    // Definir as portas necessárias
+    const ports = [
+      { port: 137, protocol: 'udp' },
+      { port: 138, protocol: 'udp' },
+      { port: 22, protocol: 'tcp' },
+      { port: 139, protocol: 'tcp' },
+      { port: 445, protocol: 'tcp' },
+      { port: 631, protocol: 'tcp' },
+      { port: 56257, protocol: 'tcp' },
+      { port: 56258, protocol: 'tcp' },
+      { port: 56259, protocol: 'tcp' }
     ];
     
-    // Executar os comandos sequencialmente
-    for (let i = 0; i < commands.length; i++) {
-      const command = commands[i];
-      verification.log(`${i+1}/${commands.length}: ${command.desc}...`, 'step');
-      
-      // Tentar executar o comando com até 3 tentativas
-      let success = false;
-      let attempts = 0;
-      
-      while (!success && attempts < 3) {
-        attempts++;
-        try {
-          // Executar comando com timeout adequado
-          await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${command.cmd}"`, 300000, true);
-          verification.log(`${command.desc} concluído com sucesso (tentativa ${attempts})`, 'success');
-          success = true;
-        } catch (error) {
-          if (attempts < 3) {
-            verification.log(`Erro na tentativa ${attempts}, tentando novamente...`, 'warning');
-            verification.logToFile(`Comando: ${command.cmd}`);
-            verification.logToFile(`Erro: ${JSON.stringify(error)}`);
-            
-            // Aguardar antes de tentar novamente
-            await new Promise(resolve => setTimeout(resolve, 5000));
-          } else {
-            verification.log(`Falha após ${attempts} tentativas: ${command.desc}`, 'error');
-            verification.logToFile(`Comando final: ${command.cmd}`);
-            verification.logToFile(`Erro final: ${JSON.stringify(error)}`);
-          }
-        }
-      }
-      
-      // Se todas as tentativas falharam
-      if (!success) {
-        // Em ambiente Electron, continuamos automaticamente
-        if (isElectron) {
-          verification.log('Ocorreu um erro, mas continuando mesmo assim', 'warning');
-        } else {
-          // Perguntar se deve continuar
-          const answer = await askQuestion('Ocorreu um erro. Deseja continuar mesmo assim? (S/N): ');
-          if (answer.toLowerCase() !== 's') {
-            throw new Error(`Instalação interrompida em: ${command.desc}`);
-          }
-        }
-      }
+    // Adicionar as regras
+    for (const { port, protocol } of ports) {
+      verification.log(`Configurando porta ${port}/${protocol}...`, 'step');
+      await verification.execPromise(`wsl -d Ubuntu -u root ufw allow ${port}/${protocol}`, 10000, true);
     }
     
-    // Copiar os arquivos do print_server_desktop embutido no instalador para o WSL
-    verification.log('Instalando o print_server_desktop...', 'step');
+    // Ativar o firewall
+    verification.log('Ativando firewall...', 'step');
+    await verification.execPromise('wsl -d Ubuntu -u root ufw --force enable', 20000, true);
     
-    try {
-      // Obter o diretório atual do instalador
-      const installerDir = process.cwd();
-      const serverFiles = path.join(installerDir, 'resources', 'print_server_desktop');
-      
-      // Verificar se os recursos existem
-      if (fs.existsSync(serverFiles)) {
-        verification.log('Arquivos do print_server_desktop encontrados. Iniciando cópia...', 'info');
-        
-        // Criar um arquivo temporário contendo a lista de arquivos a serem copiados
-        const tempDir = path.join(os.tmpdir(), 'wsl-setup');
-        if (!fs.existsSync(tempDir)) {
-          fs.mkdirSync(tempDir, { recursive: true });
-        }
-        
-        // Criar um script de instalação para executar no WSL
-        const setupScript = path.join(tempDir, 'copy_server_files.sh');
-        const scriptContent = `#!/bin/bash
-echo "Iniciando instalação dos arquivos do print_server_desktop..."
-TARGET_DIR="/opt/print_server/print_server_desktop"
+    verification.log('Firewall configurado com sucesso', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao configurar firewall: ${error.message}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
 
-# Garantir que o diretório de destino existe
-mkdir -p "$TARGET_DIR"
-
-# Limpar arquivos existentes, mantendo apenas os logs e configurações
-find "$TARGET_DIR" -type f ! -name "*.log" ! -name ".env" -delete
-
-echo "Diretório preparado, copiando arquivos..."
-`;
-        
-        fs.writeFileSync(setupScript, scriptContent, { mode: 0o755 });
-        
-        // Agora criar um arquivo tar com todos os arquivos do print_server_desktop
-        const tarFile = path.join(tempDir, 'print_server_desktop.tar');
-        
-        // Executar comando para criar o tar
-        await verification.execPromise(`tar -cf "${tarFile}" -C "${serverFiles}" .`, 60000, true);
-        
-        // Obter o caminho WSL para o arquivo tar
-        const wslTarPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${tarFile.replace(/\\/g, '/')}"`, 10000, true);
-        
-        // Extrair o tar no diretório de destino
-        const extractCommand = `tar -xf "${wslTarPath}" -C /opt/print_server/print_server_desktop`;
-        await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${extractCommand}'`, 60000, true);
-        
-        // Configurar permissões e instalar dependências
-        await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && npm install"', 180000, true);
-        
-        // Criar o arquivo .env se não existir
-        const envCheck = 'if [ ! -f "/opt/print_server/print_server_desktop/.env" ]; then cp /opt/print_server/print_server_desktop/.env.example /opt/print_server/print_server_desktop/.env || echo "PORT=56258" > /opt/print_server/print_server_desktop/.env; fi';
-        await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${envCheck}'`, 10000, true);
-        
-        verification.log('Instalação do print_server_desktop concluída com sucesso', 'success');
-      } else {
-        verification.log('Pasta de recursos do print_server_desktop não encontrada!', 'error');
-        verification.logToFile(`Diretório esperado: ${serverFiles}`);
-        
-        // Ainda assim, tentar criar uma estrutura básica
-        const basicSetupCmd = `
-        mkdir -p /opt/print_server/print_server_desktop
-        echo '{"name":"print_server_desktop","version":"1.0.0"}' > /opt/print_server/print_server_desktop/package.json
-        echo 'PORT=56258' > /opt/print_server/print_server_desktop/.env
-        `;
-        
-        await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${basicSetupCmd}'`, 10000, true);
-      }
-    } catch (error) {
-      verification.log(`Erro ao instalar o print_server_desktop: ${error.message}`, 'error');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-      
-      // Continuar mesmo com erro na instalação do servidor
-      if (isElectron) {
-        verification.log('Ocorreu um erro, mas continuando mesmo assim', 'warning');
-      } else {
-        const answer = await askQuestion('Erro na instalação do servidor. Deseja continuar mesmo assim? (S/N): ');
-        if (answer.toLowerCase() !== 's') {
-          throw new Error(`Instalação interrompida na instalação do servidor`);
-        }
-      }
+// Configurar banco de dados PostgreSQL
+async function setupDatabase() {
+  verification.log('Configurando banco de dados PostgreSQL...', 'step');
+  
+  try {
+    // Verificar se já está configurado
+    const dbStatus = await verification.checkDatabaseConfiguration();
+    
+    if (dbStatus.configured) {
+      verification.log('Banco de dados já está configurado', 'success');
+      return true;
     }
     
-    // Configurar inicialização do serviço
-    verification.log('Configurando inicialização do serviço...', 'step');
-    try {
-      // Verificar se o PM2 está instalado, se não, instalá-lo
-      const pm2Check = 'if ! command -v pm2 &> /dev/null; then npm install -g pm2; fi';
-      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${pm2Check}'`, 120000, true);
-      
-      // Configurar o serviço para iniciar com o PM2
-      const startupCmd = 'cd /opt/print_server/print_server_desktop && pm2 start ecosystem.config.js && pm2 save && pm2 startup';
-      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${startupCmd}'`, 30000, true);
-      
-      verification.log('Serviço configurado com sucesso', 'success');
-    } catch (error) {
-      verification.log(`Erro ao configurar o serviço: ${error.message}`, 'warning');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    // Parâmetros do banco de dados
+    const DB_DATABASE = 'print_server';
+    const DB_USER = 'print_user';
+    const DB_PASSWORD = 'print_user';
+    
+    // Verificar se o serviço está rodando
+    if (!dbStatus.postgresRunning) {
+      verification.log('Iniciando serviço PostgreSQL...', 'step');
+      await verification.execPromise('wsl -d Ubuntu -u root systemctl start postgresql', 30000, true);
     }
     
-    // Criar script de update.sh personalizado
-    verification.log('Configurando sistema de atualizações...', 'step');
+    // Criar banco de dados
+    verification.log('Criando banco de dados...', 'step');
     try {
-      const updateScript = `#!/bin/bash
+      await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE ${DB_DATABASE}"`, 15000, true);
+    } catch (dbError) {
+      // Verificar se é porque o banco já existe
+      const dbExists = await verification.execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_DATABASE}'"`, 10000, true);
+      if (dbExists.trim() !== '1') {
+        throw new Error(`Erro ao criar banco de dados: ${dbError.message}`);
+      }
+      verification.log('Banco de dados já existe', 'info');
+    }
+    
+    // Criar usuário
+    verification.log('Criando usuário do banco...', 'step');
+    try {
+      await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}'"`, 15000, true);
+    } catch (userError) {
+      // Verificar se é porque o usuário já existe
+      const userExists = await verification.execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'"`, 10000, true);
+      if (userExists.trim() !== '1') {
+        throw new Error(`Erro ao criar usuário: ${userError.message}`);
+      }
+      verification.log('Usuário já existe', 'info');
+    }
+    
+    // Conceder privilégios
+    verification.log('Concedendo privilégios...', 'step');
+    await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_DATABASE} TO ${DB_USER}"`, 15000, true);
+    
+    // Tornar o usuário superusuário
+    verification.log('Configurando permissões avançadas...', 'step');
+    await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "ALTER USER ${DB_USER} WITH SUPERUSER"`, 15000, true);
+    
+    verification.log('Banco de dados configurado com sucesso', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao configurar banco de dados: ${error.message}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Copiar o software para o diretório /opt/
+async function copySoftwareToOpt() {
+  verification.log('Copiando software para o diretório /opt/...', 'header');
+  
+  try {
+    // Verificar se o diretório já existe
+    try {
+      const dirCheck = await verification.execPromise('wsl -d Ubuntu -u root test -d /opt/print_server && echo "exists"', 10000, true);
+      if (dirCheck.trim() === 'exists') {
+        verification.log('Diretório /opt/print_server já existe', 'info');
+      }
+    } catch (checkError) {
+      // Criar estrutura de diretórios
+      verification.log('Criando estrutura de diretórios...', 'step');
+      await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/print_server/print_server_desktop', 15000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/print_server/logs', 10000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/print_server/updates', 10000, true);
+    }
+    
+    // Criar arquivo de versão
+    verification.log('Criando arquivo de versão...', 'step');
+    await verification.execPromise('wsl -d Ubuntu -u root bash -c \'echo "{\\"install_date\\": \\"`date +%Y-%m-%d`\\", \\"version\\": \\"1.0.0\\"}" > /opt/print_server/version.json\'', 10000, true);
+    
+    // Criar arquivo de atualizações executadas
+    await verification.execPromise('wsl -d Ubuntu -u root touch /opt/print_server/executed_updates.txt', 10000, true);
+    
+    // Obter o diretório atual do instalador
+    const installerDir = process.cwd();
+    const serverFiles = path.join(installerDir, 'resources', 'print_server_desktop');
+    
+    // Verificar se os recursos existem
+    if (fs.existsSync(serverFiles)) {
+      verification.log('Arquivos do print_server_desktop encontrados. Iniciando cópia...', 'info');
+      
+      // Criar diretório temporário
+      const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+      // Criar arquivo tar com todos os arquivos
+      const tarFile = path.join(tempDir, 'print_server_desktop.tar');
+      
+      // Executar comando para criar o tar
+      await verification.execPromise(`tar -cf "${tarFile}" -C "${serverFiles}" .`, 60000, true);
+      
+      // Obter caminho WSL para o arquivo tar
+      const wslTarPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${tarFile.replace(/\\/g, '/')}"`, 10000, true);
+      
+      // Extrair o tar no diretório de destino
+      const extractCommand = `tar -xf "${wslTarPath}" -C /opt/print_server/print_server_desktop`;
+      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${extractCommand}'`, 60000, true);
+      
+      // Configurar permissões e instalar dependências
+      await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && npm install"', 180000, true);
+      
+      // Criar arquivo .env se não existir
+      const envCheck = 'if [ ! -f "/opt/print_server/print_server_desktop/.env" ]; then cp /opt/print_server/print_server_desktop/.env.example /opt/print_server/print_server_desktop/.env || echo "PORT=56258" > /opt/print_server/print_server_desktop/.env; fi';
+      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${envCheck}'`, 10000, true);
+      
+      verification.log('Software copiado para /opt/ com sucesso', 'success');
+    } else {
+      verification.log('Pasta de recursos do print_server_desktop não encontrada!', 'error');
+      verification.logToFile(`Diretório esperado: ${serverFiles}`);
+      
+      // Criar estrutura básica de qualquer forma
+      const basicSetupCmd = `
+      mkdir -p /opt/print_server/print_server_desktop
+      echo '{"name":"print_server_desktop","version":"1.0.0"}' > /opt/print_server/print_server_desktop/package.json
+      echo 'PORT=56258' > /opt/print_server/print_server_desktop/.env
+      `;
+      
+      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${basicSetupCmd}'`, 10000, true);
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao copiar software: ${error.message}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Configurar script de atualização
+async function setupUpdateScript() {
+  verification.log('Configurando sistema de atualizações...', 'step');
+  
+  try {
+    // Criar script de atualização
+    const updateScript = `#!/bin/bash
 LOG_FILE="/opt/print_server/update_log.txt"
 
 log() {
@@ -880,20 +1056,195 @@ fi
 
 log "=== Processo de atualização concluído com sucesso! ==="
 `;
+    
+    // Escrever script de atualização em um arquivo temporário
+    const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+    const updateScriptPath = path.join(tempDir, 'update.sh');
+    fs.writeFileSync(updateScriptPath, updateScript, { mode: 0o755 });
+    
+    // Copiar para o WSL
+    const wslScriptPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${updateScriptPath.replace(/\\/g, '/')}"`, 10000, true);
+    await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cp ${wslScriptPath} /opt/print_server/update.sh && chmod +x /opt/print_server/update.sh"`, 10000, true);
+    
+    verification.log('Script de atualização configurado com sucesso', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao configurar script de atualização: ${error.message}`, 'warning');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Configurar e iniciar PM2
+async function setupPM2() {
+  verification.log('Configurando serviço com PM2...', 'step');
+  
+  try {
+    // Verificar se o PM2 está instalado
+    const pm2Check = 'if ! command -v pm2 &> /dev/null; then npm install -g pm2; fi';
+    await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${pm2Check}'`, 120000, true);
+    
+    // Configurar serviço para iniciar com PM2
+    const startupCmd = 'cd /opt/print_server/print_server_desktop && pm2 start ecosystem.config.js && pm2 save && pm2 startup';
+    await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${startupCmd}'`, 30000, true);
+    
+    verification.log('Serviço configurado com PM2', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao configurar PM2: ${error.message}`, 'warning');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Instalar drivers adicionais se necessário
+async function installDrivers() {
+  verification.log('Verificando e instalando drivers...', 'step');
+  
+  try {
+    // Verificar se diretório de drivers existe
+    const checkDrivers = 'if [ -d "/opt/print_server/print_server_desktop/drivers" ]; then echo "exists"; fi';
+    const driversExist = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${checkDrivers}'`, 10000, true);
+    
+    if (driversExist.trim() === 'exists') {
+      verification.log('Instalando drivers...', 'step');
+      // Instalar todos os pacotes .deb no diretório de drivers
+      const installDriversCmd = 'for deb in /opt/print_server/print_server_desktop/drivers/*.deb; do [ -f "$deb" ] && dpkg -i --force-all "$deb" || true; done';
+      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${installDriversCmd}'`, 120000, true);
       
-      // Escrever o script de atualização em um arquivo temporário
-      const tempDir = path.join(os.tmpdir(), 'wsl-setup');
-      const updateScriptPath = path.join(tempDir, 'update.sh');
-      fs.writeFileSync(updateScriptPath, updateScript, { mode: 0o755 });
+      verification.log('Drivers instalados', 'success');
+    } else {
+      verification.log('Diretório de drivers não encontrado, pulando...', 'info');
+    }
+    
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao instalar drivers: ${error.message}`, 'warning');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Limpeza do sistema
+async function systemCleanup() {
+  verification.log('Realizando limpeza do sistema...', 'step');
+  
+  try {
+    // Executar comandos de limpeza
+    await verification.execPromise('wsl -d Ubuntu -u root apt autoclean -y', 60000, true);
+    await verification.execPromise('wsl -d Ubuntu -u root apt autoremove -y', 60000, true);
+    await verification.execPromise('wsl -d Ubuntu -u root journalctl --vacuum-time=7d', 30000, true);
+    
+    verification.log('Limpeza do sistema concluída', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro durante limpeza do sistema: ${error.message}`, 'warning');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Executar migrações de banco de dados
+async function setupMigrations() {
+  verification.log('Verificando e executando migrações do banco de dados...', 'step');
+  
+  try {
+    // Verificar se script de migração existe
+    const migrationCheck = 'if [ -f "/opt/print_server/print_server_desktop/db/migrate.sh" ]; then echo "exists"; fi';
+    const migrationExists = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${migrationCheck}'`, 10000, true);
+    
+    if (migrationExists.trim() === 'exists') {
+      verification.log('Executando script de migração...', 'step');
+      await verification.execPromise('wsl -d Ubuntu -u root chmod +x /opt/print_server/print_server_desktop/db/migrate.sh', 10000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && ./db/migrate.sh"', 60000, true);
       
-      // Copiar para o WSL
-      const wslScriptPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${updateScriptPath.replace(/\\/g, '/')}"`, 10000, true);
-      await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cp ${wslScriptPath} /opt/print_server/update.sh && chmod +x /opt/print_server/update.sh"`, 10000, true);
+      verification.log('Migrações executadas com sucesso', 'success');
+    } else {
+      verification.log('Script de migração não encontrado, pulando...', 'info');
+    }
+    
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao executar migrações: ${error.message}`, 'warning');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Configuração completa do sistema
+async function configureSystem() {
+  verification.log('Configurando o sistema no WSL...', 'header');
+  
+  try {
+    // Verificar se o sistema já está configurado
+    const needsConfiguration = await verification.shouldConfigureSystem(installState);
+    if (!needsConfiguration) {
+      verification.log('Sistema já está configurado e funcional!', 'success');
+      return true;
+    }
+    
+    // Verificar se o Ubuntu está instalado e acessível
+    verification.log('Verificando se o Ubuntu está instalado...', 'step');
+    const ubuntuInstalled = await verification.checkUbuntuInstalled();
+    if (!ubuntuInstalled) {
+      verification.log('Ubuntu não está instalado. Instalando agora...', 'step');
+      const installResult = await installUbuntu();
+      if (!installResult) {
+        verification.log('Falha ao instalar o Ubuntu', 'error');
+        return false;
+      }
+    }
+    
+    // Instalar pacotes
+    await installRequiredPackages();
+    
+    // Configurar Samba e CUPS
+    await configureSamba();
+    await configureCups();
+    
+    // Copiar software
+    await copySoftwareToOpt();
+    
+    // Configurar firewall
+    await configureFirewall();
+    
+    // Configurar banco de dados
+    await setupDatabase();
+    
+    // Configurar script de atualização
+    await setupUpdateScript();
+    
+    // Instalar drivers
+    await installDrivers();
+    
+    // Executar migrações
+    await setupMigrations();
+    
+    // Configurar PM2
+    await setupPM2();
+    
+    // Limpeza do sistema
+    await systemCleanup();
+    
+    // Verificar se a API está respondendo
+    verification.log('Verificando se a API está respondendo...', 'step');
+    const apiHealth = await verification.checkApiHealth();
+    
+    if (!apiHealth) {
+      verification.log('API não está respondendo, tentando reiniciar o serviço...', 'warning');
+      await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && pm2 restart ecosystem.config.js"', 30000, true);
       
-      verification.log('Script de atualização configurado com sucesso', 'success');
-    } catch (error) {
-      verification.log(`Erro ao configurar script de atualização: ${error.message}`, 'warning');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+      // Aguardar inicialização
+      verification.log('Aguardando inicialização do serviço...', 'info');
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      
+      // Verificar novamente
+      const apiCheck = await verification.checkApiHealth();
+      if (apiCheck) {
+        verification.log('API está respondendo após reinicialização', 'success');
+      } else {
+        verification.log('API ainda não está respondendo, pode ser necessário verificar os logs', 'warning');
+      }
     }
     
     verification.log('Sistema configurado com sucesso!', 'success');
@@ -1109,6 +1460,35 @@ async function installSystem() {
       }
       return { success: false, message: 'Falha ao configurar o sistema' };
     }
+    
+    // Verificar API final
+    verification.log('Verificando se a API está respondendo...', 'step');
+    const apiHealth = await verification.checkApiHealth();
+    
+    if (!apiHealth) {
+      verification.log('API não está respondendo. Tentando reiniciar o serviço...', 'warning');
+      try {
+        await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && pm2 restart all"', 30000, true);
+        
+        // Aguardar inicialização do serviço
+        verification.log('Aguardando inicialização do serviço...', 'info');
+        await new Promise(resolve => setTimeout(resolve, 15000));
+        
+        // Verificar novamente
+        const apiRecheckHealth = await verification.checkApiHealth();
+        if (!apiRecheckHealth) {
+          verification.log('API ainda não está respondendo após reinicialização.', 'warning');
+          verification.log('Verifique os logs do sistema para mais detalhes.', 'warning');
+        } else {
+          verification.log('API está respondendo corretamente após reinicialização!', 'success');
+        }
+      } catch (error) {
+        verification.log(`Erro ao reiniciar serviço: ${error.message}`, 'error');
+        verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+      }
+    } else {
+      verification.log('API está respondendo corretamente!', 'success');
+    }
 
     // Informações de acesso
     verification.log('Instalação concluída com sucesso!', 'success');
@@ -1116,8 +1496,8 @@ async function installSystem() {
 
     try {
       // Obter o IP local
-      const localIp = (await verification.execPromise('wsl -d Ubuntu hostname -I', 10000, true)).trim();
-      verification.log(`Acesse http://${localIp} em um navegador para utilizar o sistema.`, 'info');
+      const localIp = (await verification.execPromise('wsl -d Ubuntu hostname -I', 10000, true)).trim().split(' ')[0];
+      verification.log(`Acesse http://${localIp}:56257 em um navegador para utilizar o sistema.`, 'info');
     } catch (error) {
       verification.log('Não foi possível determinar o endereço IP. Por favor, verifique as configurações de rede.', 'warning');
       verification.logToFile(`Detalhes do erro ao obter IP: ${JSON.stringify(error)}`);
@@ -1125,7 +1505,7 @@ async function installSystem() {
 
     verification.log('Para administrar o sistema:', 'info');
     verification.log('1. Acesse o WSL usando o comando "wsl" no Prompt de Comando ou PowerShell.', 'info');
-    verification.log('2. Navegue até /opt/print-management para acessar os arquivos do sistema.', 'info');
+    verification.log('2. Navegue até /opt/print_server para acessar os arquivos do sistema.', 'info');
 
     if (!isElectron) {
       await askQuestion('Pressione ENTER para finalizar a instalação...');
@@ -1165,38 +1545,22 @@ async function installSystem() {
   }
 }
 
-// Configurar a função de perguntas personalizada (usado pelo Electron)
-function setCustomAskQuestion(fn) {
-  customAskQuestion = fn;
-}
-
-// Se for executado diretamente
-if (require.main === module) {
-  installSystem().catch(async (error) => {
-    console.error(`Erro fatal: ${error.message || error}`);
-    verification.logToFile(`Erro fatal na execução principal: ${JSON.stringify(error)}`);
-
-    try {
-      if (!isElectron) {
-        await askQuestion('Pressione ENTER para sair...');
-      }
-    } catch (e) {
-      // Ignorar erros na saída
-    } finally {
-      closeReadlineIfNeeded();
-      process.exit(1);
-    }
-  });
-} else {
-  // Se for importado como módulo
-  module.exports = {
-    installSystem,
-    verification, // Exportar o módulo de verificação completo
-    log: verification.log,
-    clearScreen,
-    checkWSLStatusDetailed: verification.checkWSLStatusDetailed,
-    askQuestion,
-    setCustomAskQuestion,
-    configureDefaultUser
-  };
+module.exports = {
+  installDrivers,
+  installRequiredPackages,
+  installSystem,
+  installUbuntu,
+  installWSLLegacy,
+  installWSLModern,
+  configureDefaultUser,
+  configureSamba,
+  configureCups,
+  setupDatabase,
+  configureFirewall,
+  copySoftwareToOpt,
+  setupUpdateScript,
+  setupMigrations,
+  setupPM2,
+  systemCleanup,
+  
 }

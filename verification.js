@@ -8,6 +8,7 @@ const { exec } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const axios = require("axios");
 
 // Cores para o console
 const colors = {
@@ -270,11 +271,11 @@ async function checkVirtualization() {
     } catch (error) {
       log("Erro ao verificar virtualização", "warning");
       logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-
-      log("Não foi possível verificar o status da virtualização. Continuando mesmo assim...", "warning");
-      return true;
     }
   }
+
+  log("Não foi possível verificar o status da virtualização. Continuando mesmo assim...", "warning");
+  return true;
 }
 
 // Verificação detalhada do WSL - verifica se está realmente instalado e funcionando
@@ -487,31 +488,292 @@ async function checkUbuntuInstalled() {
   }
 }
 
+// Verifica se um pacote específico está instalado no Ubuntu
+async function checkPackageInstalled(packageName) {
+  try {
+    const output = await execPromise(`wsl -d Ubuntu -u root dpkg -l ${packageName}`, 10000, true);
+    
+    return output.includes('ii');
+  } catch (error) {
+    return false;
+  }
+}
+
+// Verifica vários pacotes de uma vez
+async function checkPackagesInstalled(packageNames) {
+  const results = {};
+  for (const pkg of packageNames) {
+    results[pkg] = await checkPackageInstalled(pkg);
+  }
+  return results;
+}
+
+// Verifica se um serviço específico está em execução
+async function checkServiceRunning(serviceName) {
+  try {
+    const output = await execPromise(`wsl -d Ubuntu -u root systemctl is-active ${serviceName}`, 10000, true);
+    return output.trim() === 'active';
+  } catch (error) {
+    return false; // Serviço não está em execução ou erro
+  }
+}
+
+// Verifica vários serviços de uma vez
+async function checkServicesRunning(serviceNames) {
+  const results = {};
+  for (const service of serviceNames) {
+    results[service] = await checkServiceRunning(service);
+  }
+  return results;
+}
+
+// Verifica se a API está em execução e respondendo na porta 56257
+async function checkApiHealth() {
+  log("Verificando se a API está respondendo...", "step");
+  
+  try {
+    // Método 1: Usar curl dentro do WSL
+    try {
+      const output = await execPromise(`wsl -d Ubuntu -u root curl -s -o /dev/null -w "%{http_code}" http://localhost:56257/api`, 10000, true);
+      if (output.trim() === '200') {
+        log("API está respondendo corretamente (via curl)", "success");
+        return true;
+      }
+    } catch (error) {
+      log("API não respondeu via curl, tentando com axios...", "warning");
+    }
+    
+    // Método 2: Usar axios diretamente
+    try {
+      const response = await axios.get('http://localhost:56257/api', { timeout: 5000 });
+      if (response.status === 200) {
+        log("API está respondendo corretamente (via axios)", "success");
+        return true;
+      }
+    } catch (error) {
+      log("API não está respondendo via axios", "warning");
+    }
+    
+    log("API não está respondendo em nenhum método", "error");
+    return false;
+  } catch (error) {
+    log("Erro ao verificar a API", "error");
+    logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Verifica se as regras de firewall estão configuradas corretamente
+async function checkFirewallRules() {
+  log("Verificando regras de firewall...", "step");
+  
+  try {
+    const output = await execPromise(`wsl -d Ubuntu -u root ufw status | grep -E '(137|138|139|445|631|56257|56258|56259)'`, 10000, true);
+    
+    // Verificar se todas as portas necessárias estão permitidas
+    const requiredPorts = [
+      { port: 137, protocol: 'udp' },
+      { port: 138, protocol: 'udp' },
+      { port: 22, protocol: 'tcp' },
+      { port: 139, protocol: 'tcp' },
+      { port: 445, protocol: 'tcp' },
+      { port: 631, protocol: 'tcp' },
+      { port: 56257, protocol: 'tcp' },
+      { port: 56258, protocol: 'tcp' },
+      { port: 56259, protocol: 'tcp' }
+    ];
+    
+    const missingPorts = [];
+    
+    for (const {port, protocol} of requiredPorts) {
+      if (!output.includes(port.toString())) {
+        missingPorts.push(`${port}/${protocol}`);
+      }
+    }
+    
+    if (missingPorts.length === 0) {
+      log("Regras de firewall configuradas corretamente", "success");
+    } else {
+      log(`Portas não configuradas no firewall: ${missingPorts.join(', ')}`, "warning");
+    }
+    
+    return {
+      configured: missingPorts.length === 0,
+      missingPorts
+    };
+  } catch (error) {
+    log("Erro ao verificar regras de firewall", "warning");
+    return {
+      configured: false,
+      missingPorts: null,
+      error: error.message
+    };
+  }
+}
+
+// Verifica a configuração do banco de dados
+async function checkDatabaseConfiguration() {
+  log("Verificando configuração do banco de dados...", "step");
+  
+  try {
+    // Verificar se o PostgreSQL está em execução
+    const postgresRunning = await checkServiceRunning('postgresql');
+    if (!postgresRunning) {
+      log("Serviço PostgreSQL não está em execução", "warning");
+      return {
+        configured: false,
+        error: 'Serviço PostgreSQL não está em execução'
+      };
+    }
+    
+    // Verificar se banco de dados e usuário existem
+    // Assumindo que o banco se chama 'print_server'
+    const checkDb = await execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='print_server'"`, 10000, true);
+    
+    if (checkDb.trim() === '1') {
+      log("Banco de dados PostgreSQL está configurado corretamente", "success");
+    } else {
+      log("Banco de dados 'print_server' não encontrado", "warning");
+    }
+    
+    return {
+      configured: checkDb.trim() === '1',
+      postgresRunning
+    };
+  } catch (error) {
+    log("Erro ao verificar configuração do banco de dados", "warning");
+    logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return {
+      configured: false,
+      error: error.message
+    };
+  }
+}
+
+// Realiza uma verificação abrangente de todas as configurações do software
+async function checkSoftwareConfigurations() {
+  log("Verificando configurações completas do software...", "header");
+  
+  // Pacotes necessários
+  const requiredPackages = [
+    'nano', 'samba', 'cups', 'cups-pdf', 'postgresql', 'postgresql-contrib',
+    'ufw', 'npm', 'jq', 'net-tools', 'avahi-daemon', 'avahi-utils',
+    'avahi-discover', 'hplip', 'hplip-gui', 'printer-driver-all'
+  ];
+  
+  // Serviços necessários
+  const requiredServices = [
+    'smbd', 'cups', 'postgresql', 'avahi-daemon', 'ufw'
+  ];
+  
+  // Verificar pacotes
+  log("Verificando pacotes instalados...", "step");
+  const packagesStatus = await checkPackagesInstalled(requiredPackages);
+  const missingPackages = Object.keys(packagesStatus).filter(pkg => !packagesStatus[pkg]);
+  
+  if (missingPackages.length === 0) {
+    log("Todos os pacotes necessários estão instalados", "success");
+  } else {
+    log(`Pacotes faltando: ${missingPackages.join(', ')}`, "warning");
+  }
+  
+  // Verificar serviços
+  log("Verificando serviços em execução...", "step");
+  const servicesStatus = await checkServicesRunning(requiredServices);
+  const inactiveServices = Object.keys(servicesStatus).filter(svc => !servicesStatus[svc]);
+  
+  if (inactiveServices.length === 0) {
+    log("Todos os serviços necessários estão em execução", "success");
+  } else {
+    log(`Serviços inativos: ${inactiveServices.join(', ')}`, "warning");
+  }
+  
+  // Verificar firewall
+  const firewallStatus = await checkFirewallRules();
+  
+  // Verificar banco de dados
+  const dbStatus = await checkDatabaseConfiguration();
+  
+  // Verificar API
+  const apiHealth = await checkApiHealth();
+  
+  // Verificar se /opt/print_server existe
+  let optDirExists = false;
+  try {
+    const output = await execPromise(`wsl -d Ubuntu -u root test -d /opt/print_server && echo "exists"`, 10000, true);
+    optDirExists = output.trim() === 'exists';
+    
+    if (optDirExists) {
+      log("Diretório /opt/print_server encontrado", "success");
+    } else {
+      log("Diretório /opt/print_server não encontrado", "warning");
+    }
+  } catch (error) {
+    log("Erro ao verificar diretório /opt/print_server", "warning");
+    optDirExists = false;
+  }
+  
+  // Verificar processos PM2
+  let pm2Running = false;
+  try {
+    const output = await execPromise(`wsl -d Ubuntu -u root bash -c "command -v pm2 && pm2 list | grep print_server"`, 10000, true);
+    pm2Running = output.includes('online');
+    
+    if (pm2Running) {
+      log("Serviço print_server está em execução via PM2", "success");
+    } else {
+      log("Serviço print_server não está em execução via PM2", "warning");
+    }
+  } catch (error) {
+    log("PM2 não encontrado ou erro ao verificar processos", "warning");
+    pm2Running = false;
+  }
+  
+  const fullyConfigured = missingPackages.length === 0 && 
+                    inactiveServices.length === 0 && 
+                    firewallStatus.configured && 
+                    dbStatus.configured && 
+                    apiHealth && 
+                    optDirExists && 
+                    pm2Running;
+                    
+  if (fullyConfigured) {
+    log("Sistema está totalmente configurado e operacional!", "success");
+  } else {
+    log("Sistema requer configuração adicional", "warning");
+  }
+  
+  return {
+    packagesStatus: {
+      allInstalled: missingPackages.length === 0,
+      missing: missingPackages
+    },
+    servicesStatus: {
+      allRunning: inactiveServices.length === 0,
+      inactive: inactiveServices
+    },
+    firewallStatus,
+    dbStatus,
+    apiHealth,
+    optDirExists,
+    pm2Running,
+    fullyConfigured
+  };
+}
 
 // Verifica se o sistema já está completamente configurado ou se precisa de configuração
 async function shouldConfigureSystem(installState) {
   // Se o estado diz que já está configurado, verifica explicitamente
-  if (installState.systemConfigured) {
+  if (installState && installState.systemConfigured) {
     log("Verificando se o sistema realmente está configurado...", "step");
 
-    // Testar explicitamente se o Ubuntu existe e está acessível
-    try {
-      const distributions = await execPromise("wsl --list --verbose", 10000, true);
-      const cleanedDistributions = distributions.replace(/\x00/g, "").trim();
-      const lines = cleanedDistributions.split("\n").slice(1);
-      const ubuntuExists = lines.some((line) => line.toLowerCase().includes("ubuntu"));
-      if (!ubuntuExists) {
-        log("Ubuntu não encontrado apesar do estado indicar configuração completa", "warning");
-        // Corrigir o estado
-        return true; // Precisamos configurar
-      }
-
-      // Verificar se está acessível
-      await execPromise('wsl -d Ubuntu -u root echo "Verificação de sistema"', 15000, true);
+    // Verificar abrangentemente o sistema
+    const softwareStatus = await checkSoftwareConfigurations();
+    if (softwareStatus.fullyConfigured) {
       log("Sistema previamente configurado e funcional", "success");
       return false; // Não precisa configurar
-    } catch (error) {
-      log("Sistema marcado como configurado, mas não está acessível", "warning");
+    } else {
+      log("Sistema marcado como configurado, mas apresenta problemas", "warning");
       return true; // Precisamos configurar
     }
   }
@@ -532,17 +794,23 @@ async function checkSystemStatus(installState) {
     ubuntuInstalled: false,
     systemConfigured: false,
     needsConfiguration: true,
+    softwareStatus: null
   };
 
   // Verificar se o Ubuntu está instalado, se WSL estiver ok
   if (results.wslStatus.installed && results.wslStatus.wsl2) {
     results.ubuntuInstalled = await checkUbuntuInstalled();
+    
+    // Verificar software apenas se Ubuntu estiver instalado
+    if (results.ubuntuInstalled) {
+      results.softwareStatus = await checkSoftwareConfigurations();
+      results.systemConfigured = results.softwareStatus.fullyConfigured;
+    }
   }
 
   // Verificar se o sistema precisa ser configurado
   if (installState && results.wslStatus.installed && results.wslStatus.wsl2 && results.ubuntuInstalled) {
-    results.needsConfiguration = await shouldConfigureSystem(installState);
-    results.systemConfigured = !results.needsConfiguration;
+    results.needsConfiguration = !results.systemConfigured;
   }
 
   log("Verificação do sistema concluída", "success");
@@ -562,6 +830,16 @@ module.exports = {
   checkUbuntuInstalled,
   shouldConfigureSystem,
   checkSystemStatus,
+  
+  // Novas funções de verificação detalhada
+  checkPackageInstalled,
+  checkPackagesInstalled,
+  checkServiceRunning,
+  checkServicesRunning,
+  checkApiHealth,
+  checkFirewallRules,
+  checkDatabaseConfiguration,
+  checkSoftwareConfigurations,
 
   // Funções auxiliares
   log,
