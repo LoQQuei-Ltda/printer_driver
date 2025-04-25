@@ -13,8 +13,7 @@
     "prebuild": "npm run clean && npm run prepare-server-files",
     "prepare-server-files": "node prepare-server-files.js",
     "build": "electron-builder --win --x64",
-    "postinstall": "electron-builder install-app-deps",
-    "install": "node install.js"
+    "postinstall": "electron-builder install-app-deps"
   },
   "author": "LoQQuei-Ltda",
   "license": "MIT",
