@@ -64,6 +64,16 @@
               <i class="fas fa-cog"></i>
               <span>Sistema</span>
             </div>
+            <div class="nav-item" id="autoPrintToggleButton">
+              <i class="fas fa-print"></i>
+              <span>Impressão Automática</span>
+              <div class="toggle-container">
+                <label class="theme-toggle" style="margin-left: auto;">
+                  <input type="checkbox" id="autoPrintToggle">
+                  <span class="slider"></span>
+                </label>
+              </div>
+            </div>
             <div class="nav-item" id="printersUpdateButton">
               <i class="fas fa-retweet"></i>
               <span>Atualizar impressoras com o servidor principal</span>
@@ -154,7 +164,32 @@
       </div>
     </div>
   </div>
-
+  <div id="autoPrintModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3 class="modal-title">Configurar Impressão Automática</h3>
+        <button class="modal-close" id="autoPrintModalCloseBtn">
+          <i class="fas fa-times"></i>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p>Selecione a impressora padrão para impressão automática:</p>
+        <select id="defaultPrinterSelect" class="select-input">
+          <option value="">Carregando impressoras...</option>
+        </select>
+        <p class="modal-info" style="margin-top: 12px; font-size: 13px; color: var(--text-secondary);">
+          Quando ativada, a impressão automática enviará os novos documentos diretamente para esta impressora sem necessidade de interação.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button id="cancelAutoPrintButton" class="btn-secondary">Cancelar</button>
+        <button id="saveAutoPrintButton" class="btn-primary">
+          <i class="fas fa-save"></i> Salvar
+        </button>
+      </div>
+    </div>
+  </div>
+  
   <!-- Scripts -->
   <script src="../assets/js/main.js"></script>
 </body>

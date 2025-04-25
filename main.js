@@ -101,7 +101,6 @@ if (setupWSL) {
   return;
 }
 
-
 // Função para verificar privilégios de administrador
 async function checkAdminPrivileges() {
   try {
@@ -275,6 +274,44 @@ async function setupEnvironment() {
     console.error('Erro ao configurar ambiente:', error);
     isInstallingComponents = false;
     return false;
+  }
+}
+
+function saveAutoPrintConfig(config) {
+  try {
+    const userData = getUserData();
+    
+    if (!userData) return false;
+    
+    // Adicionar configurações de impressão automática
+    userData.autoPrintEnabled = config.enabled;
+    userData.defaultPrinterId = config.enabled ? config.printerId : null;
+    
+    // Salvar dados do usuário
+    saveUserData(userData);
+    
+    updateTrayMenu();
+
+    return true;
+  } catch (error) {
+    console.error('Erro ao salvar configurações de impressão automática:', error);
+    return false;
+  }
+}
+
+function getAutoPrintConfig() {
+  try {
+    const userData = getUserData();
+    
+    if (!userData) return null;
+    
+    return {
+      enabled: userData.autoPrintEnabled || false,
+      printerId: userData.defaultPrinterId || null
+    };
+  } catch (error) {
+    console.error('Erro ao obter configurações de impressão automática:', error);
+    return null;
   }
 }
 
@@ -486,7 +523,7 @@ function createMainWindow() {
   });
 
   mainWindow.loadFile('view/index.html');
-  mainWindow.webContents.openDevTools(); // remover
+  // mainWindow.webContents.openDevTools(); // remover
 
   // Maximizar a janela se for a preferência do usuário
   if (prefs.isMaximized) {
@@ -719,11 +756,13 @@ function createInstallationWindow() {
 function createTray() {
   // Usar o ícone de acordo com o tema atual
   const iconPath = path.join(__dirname, `assets/icon/${currentTheme}.ico`);
-  console.log(iconPath);
 
   // Criar o ícone na bandeja
   try {
     tray = new Tray(iconPath);
+
+    const autoPrintConfig = getAutoPrintConfig();
+    const isAutoPrintEnabled = autoPrintConfig?.enabled || false;
 
     const contextMenu = Menu.buildFromTemplate([
       {
@@ -736,6 +775,13 @@ function createTray() {
           } else {
             createLoginWindow();
           }
+        }
+      },
+      { type: 'separator' },
+      {
+        label: isAutoPrintEnabled ? 'Desativar Impressão Automática' : 'Ativar Impressão Automática',
+        click: function () {
+          toggleAutoPrintFromTray();
         }
       },
       { type: 'separator' },
@@ -767,6 +813,102 @@ function createTray() {
     });
   } catch (error) {
     console.error('Erro ao criar ícone na bandeja:', error);
+  }
+}
+
+function updateTrayMenu() {
+  if (!tray || tray.isDestroyed()) return;
+
+  // Obter o estado da impressão automática
+  const autoPrintConfig = getAutoPrintConfig();
+  const isAutoPrintEnabled = autoPrintConfig?.enabled || false;
+
+  // Recriar o menu com o estado atualizado
+  const contextMenu = Menu.buildFromTemplate([
+    {
+      label: 'Abrir Sistema de Gerenciamento de Impressão',
+      click: function () {
+        if (mainWindow) {
+          mainWindow.show();
+        } else if (isAuthenticated()) {
+          createMainWindow();
+        } else {
+          createLoginWindow();
+        }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: isAutoPrintEnabled ? 'Desativar Impressão Automática' : 'Ativar Impressão Automática',
+      click: function () {
+        toggleAutoPrintFromTray();
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Sair',
+      click: function () {
+        isQuitting = true;
+        app.quit();
+      }
+    }
+  ]);
+
+  tray.setContextMenu(contextMenu);
+}
+
+function toggleAutoPrintFromTray() {
+  // Obter configuração atual
+  const autoPrintConfig = getAutoPrintConfig();
+  const isAutoPrintEnabled = autoPrintConfig?.enabled || false;
+
+  if (isAutoPrintEnabled) {
+    // Desativar impressão automática
+    saveAutoPrintConfig({
+      enabled: false,
+      printerId: null
+    });
+
+    // Atualizar interface se a janela estiver aberta
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('update-auto-print-state', {
+        enabled: false,
+        printerId: null
+      });
+    }
+
+    // Atualizar menu da bandeja
+    updateTrayMenu();
+  } else {
+    // Ativar impressão automática - precisa mostrar a interface
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      // Mostrar a janela
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+
+      // Enviar mensagem para abrir o modal de configuração
+      setTimeout(() => {
+        mainWindow.webContents.send('show-auto-print-modal');
+      }, 500);
+    } else if (isAuthenticated()) {
+      // Criar a janela principal
+      createMainWindow();
+
+      // Agendar a abertura do modal após a janela estar pronta
+      mainWindow.once('ready-to-show', () => {
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.show();
+            mainWindow.focus();
+            mainWindow.webContents.send('show-auto-print-modal');
+          }
+        }, 1000);
+      });
+    } else {
+      // Usuário não está autenticado, abrir tela de login
+      createLoginWindow();
+    }
   }
 }
 
@@ -946,6 +1088,32 @@ ipcMain.on('update-app-icon', (event, { theme }) => {
     console.log(`Ícone da aplicação atualizado para: ${theme}`);
   } else {
     console.error(`Ícone não encontrado: ${iconPath}`);
+  }
+});
+
+ipcMain.on('save-auto-print-config', (event, config) => {
+  const success = saveAutoPrintConfig(config);
+  
+  updateTrayMenu();
+
+  event.reply('save-auto-print-config-response', {
+    success: success,
+    config: config
+  });
+
+  console.log('Configurações de impressão automática salvas:', success, config);
+});
+
+// Obter configurações de impressão automática
+ipcMain.on('get-auto-print-config', (event) => {
+  const config = getAutoPrintConfig();
+  
+  event.reply('auto-print-config', config);
+});
+
+ipcMain.on('show-auto-print-modal', (event) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('show-auto-print-modal');
   }
 });
 
@@ -1531,6 +1699,7 @@ ipcMain.on('navegar-para', (event, dados) => {
 
 module.exports = {
   userData: getUserData(),
+  getAutoPrintConfig,
   appConfig
 };
 

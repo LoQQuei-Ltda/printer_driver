@@ -8,44 +8,81 @@ const { printersSync } = require('./tasks/printers');
 
 // Função de verificação de atualização
 const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
+  // Usar uma variável local para tracking em vez de depender apenas da variável global
+  let localUpdateInProgress = false;
+  
   try {
     // Evitar verificação se já houver uma em andamento
-    if (global.isUpdateInProgress) return;
+    if (global.isUpdateInProgress) {
+      console.log('Verificação de atualização já em andamento, pulando');
+      return;
+    }
     
     // Marcar que estamos verificando
     global.isUpdateInProgress = true;
+    localUpdateInProgress = true;
+    
+    if (!appConfig || !appConfig.apiPrincipalServiceUrl) {
+      console.error('Configuração inválida: apiPrincipalServiceUrl não definida');
+      return;
+    }
     
     const updateUrl = `${appConfig.apiPrincipalServiceUrl}/desktop/update`;
     const currentVersion = app.getVersion();
     
     // Informar que estamos verificando (se não for silencioso)
     if (!silent && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('update-status', { 
-        status: 'checking',
-        message: 'Verificando atualizações...' 
-      });
+      try {
+        mainWindow.webContents.send('update-status', {
+          status: 'checking',
+          message: 'Verificando atualizações...'
+        });
+      } catch (windowError) {
+        console.error('Erro ao enviar mensagem para a janela:', windowError);
+        // Continuar com a verificação mesmo se não puder notificar a janela
+      }
     }
     
     console.log(`Verificando atualizações em: ${updateUrl}`);
     
-    // Consultar API de atualização
-    const response = await axios.get(updateUrl, {
-      params: { currentVersion: currentVersion }
-    });
+    // Consultar API de atualização com timeout e tratamento de erros melhorado
+    let response;
+    try {
+      response = await axios.get(updateUrl, {
+        params: { currentVersion },
+        timeout: 15000 // 15 segundos de timeout
+      });
+    } catch (requestError) {
+      console.error('Falha na requisição de atualização:', requestError.message);
+      
+      if (!silent && mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send('update-status', {
+            status: 'check-error',
+            message: 'Não foi possível conectar ao servidor de atualizações'
+          });
+        } catch (windowError) {
+          console.error('Erro ao enviar status de erro:', windowError);
+        }
+      }
+      return; // Retornar sem lançar erro
+    }
     
     // Validar resposta
-    if (!response.data || !response.data.data) {
+    if (!response || !response.data || !response.data.data) {
       console.log('Resposta de atualização inválida');
       
       if (!silent && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('update-status', { 
-          status: 'check-error',
-          message: 'Resposta de atualização inválida' 
-        });
+        try {
+          mainWindow.webContents.send('update-status', {
+            status: 'check-error',
+            message: 'Resposta de atualização inválida'
+          });
+        } catch (windowError) {
+          console.error('Erro ao enviar status de erro:', windowError);
+        }
       }
-      
-      global.isUpdateInProgress = false;
-      return;
+      return; // Retornar sem lançar erro
     }
     
     const updateInfo = response.data.data;
@@ -55,65 +92,97 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
       console.log('Dados de atualização incompletos');
       
       if (!silent && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('update-status', { 
-          status: 'check-error',
-          message: 'Informações de atualização incompletas' 
-        });
+        try {
+          mainWindow.webContents.send('update-status', {
+            status: 'check-error',
+            message: 'Informações de atualização incompletas'
+          });
+        } catch (windowError) {
+          console.error('Erro ao enviar status de erro:', windowError);
+        }
       }
+      return; // Retornar sem lançar erro
+    }
+    
+    // Comparar versões com verificação adicional de erro
+    let versionComparison;
+    try {
+      versionComparison = compareVersions(updateInfo.version, currentVersion);
+    } catch (versionError) {
+      console.error('Erro ao comparar versões:', versionError);
       
-      global.isUpdateInProgress = false;
-      return;
+      if (!silent && mainWindow && !mainWindow.isDestroyed()) {
+        try {
+          mainWindow.webContents.send('update-status', {
+            status: 'check-error',
+            message: 'Erro ao verificar versões'
+          });
+        } catch (windowError) {
+          console.error('Erro ao enviar status de erro:', windowError);
+        }
+      }
+      return; // Retornar sem lançar erro
     }
     
     // Comparar versões
-    if (compareVersions(updateInfo.version, currentVersion) <= 0) {
+    if (versionComparison <= 0) {
       console.log('Nenhuma atualização disponível');
       
       if (!silent && mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send('update-status', { 
-          status: 'up-to-date',
-          message: 'Seu aplicativo está atualizado!' 
-        });
+        try {
+          mainWindow.webContents.send('update-status', {
+            status: 'up-to-date',
+            message: 'Seu aplicativo está atualizado!'
+          });
+        } catch (windowError) {
+          console.error('Erro ao enviar status de atualizado:', windowError);
+        }
       }
-      
-      global.isUpdateInProgress = false;
       return;
     }
-    
-    // Atualização disponível
+
     console.log(`Atualização disponível: ${updateInfo.version}`);
     
     if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('update-status', { 
-        status: 'update-available',
-        version: updateInfo.version,
-        updateUrl: updateInfo.updateUrl,
-        notes: updateInfo.releaseNotes || `Nova versão ${updateInfo.version} disponível`
-      });
+      try {
+        mainWindow.webContents.send('update-status', {
+          status: 'update-available',
+          version: updateInfo.version,
+          updateUrl: updateInfo.updateUrl,
+          notes: updateInfo.releaseNotes || `Nova versão ${updateInfo.version} disponível`
+        });
+      } catch (windowError) {
+        console.error('Erro ao enviar status de atualização disponível:', windowError);
+      }
     }
     
-    // Salvar informações da atualização para uso posterior
     global.pendingUpdate = updateInfo;
-    global.isUpdateInProgress = false;
     
   } catch (error) {
-    console.error('Erro ao verificar atualizações:', error);
+    console.error('Erro não tratado ao verificar atualizações:', error);
     
     if (!silent && mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('update-status', { 
-        status: 'check-error',
-        message: 'Erro ao verificar atualizações' 
-      });
+      try {
+        mainWindow.webContents.send('update-status', {
+          status: 'check-error',
+          message: 'Erro ao verificar atualizações'
+        });
+      } catch (windowError) {
+        console.error('Erro ao enviar status de erro:', windowError);
+      }
     }
-    
-    global.isUpdateInProgress = false;
+  } finally {
+    if (localUpdateInProgress) {
+      global.isUpdateInProgress = false;
+    }
+    console.log('Verificação de atualização finalizada');
   }
 };
 
 module.exports = {
   initTask: async () => {
-    await printSync();
-    await printersSync();
+    // printSync();
+    // printersSync();
 
     const mainModule = require('./main');
 

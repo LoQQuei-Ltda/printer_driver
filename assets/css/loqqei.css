@@ -17,7 +17,7 @@
     --text-color: #212529;
     --text-secondary: #6c757d;
     --border-color: #dee2e6;
-    
+
     /* Dark theme colors */
     --dark-bg: #1e1e1e;
     --dark-content: #2d2d2d;
@@ -489,7 +489,7 @@ body:not(.dark-theme) .file-meta {
 }
 
 .btn-delete {
-    background-color: rgba(220, 53, 69, 0.2); 
+    background-color: rgba(220, 53, 69, 0.2);
     color: #ff6b6b;
     border: none;
     cursor: pointer;
@@ -801,6 +801,7 @@ input:checked+.slider:before {
 
 /* Media queries para responsividade */
 @media (max-width: 767px) {
+
     /* No modo mobile, o sidebar fica fora da tela */
     .sidebar {
         position: fixed;
@@ -810,45 +811,45 @@ input:checked+.slider:before {
         transition: left 0.3s ease;
         z-index: 1000;
     }
-    
+
     .sidebar.show {
         left: 0;
     }
-    
+
     /* Overlay visível quando o sidebar estiver ativo */
     .sidebar-overlay.show {
         display: block;
     }
-    
+
     /* O botão de menu hamburger fica visível */
     .sidebar-toggle {
         display: flex;
     }
-    
+
     /* Content area ocupa toda a largura */
     .content-area {
         width: 100%;
         margin-left: 0;
     }
-    
+
     /* Ajustes para o cabeçalho em mobile */
     .content-header {
         flex-direction: column;
         align-items: flex-start;
         gap: 12px;
     }
-    
+
     /* Os botões de ação flutuam para a direita */
     .content-header button {
         align-self: flex-end;
     }
-    
+
     /* Ajustes para os itens de arquivo em modo mobile */
     .file-item {
         flex-direction: column;
         align-items: flex-start;
     }
-    
+
     .file-actions {
         margin-left: 0;
         margin-top: 12px;
@@ -856,35 +857,108 @@ input:checked+.slider:before {
         display: flex;
         justify-content: space-between;
     }
-    
-    .btn-print, .btn-delete {
+
+    .btn-print,
+    .btn-delete {
         flex: 1;
     }
-    
+
     .btn-print {
         margin-left: 8px;
         justify-content: center;
     }
-    
+
     .btn-delete {
         justify-content: center;
     }
 }
 
 @media (min-width: 768px) {
+
     /* Em telas maiores, o sidebar sempre fica visível */
     .sidebar {
         position: static;
         left: 0;
     }
-    
+
     /* Ocultar o botão de toggle em telas grandes */
     .sidebar-toggle {
         display: none;
     }
-    
+
     /* O overlay não é necessário em telas grandes */
     .sidebar-overlay {
         display: none !important;
     }
+}
+
+/* Estilos para o botão de impressão automática */
+.toggle-container {
+    margin-left: auto;
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    padding: 10px 16px;
+    color: var(--text-color);
+    cursor: pointer;
+    position: relative;
+    gap: 12px;
+    transition: background-color 0.2s ease;
+}
+
+/* Estilo específico para o toggle de impressão automática */
+#autoPrintToggleButton {
+    justify-content: space-between;
+}
+
+#autoPrintToggleButton .theme-toggle {
+    width: 36px;
+    height: 18px;
+}
+
+#autoPrintToggleButton .slider:before {
+    height: 14px;
+    width: 14px;
+    left: 2px;
+    bottom: 2px;
+}
+
+#autoPrintToggleButton input:checked+.slider:before {
+    transform: translateX(18px);
+}
+
+/* Estilo para destaque quando ativado */
+#autoPrintToggleButton.active {
+    background-color: rgba(255, 87, 34, 0.08);
+}
+
+#autoPrintToggleButton.active span {
+    color: var(--color-primary);
+    font-weight: 500;
+}
+
+/* Ajuste para o modal */
+.modal-info {
+    background-color: rgba(var(--color-primary-rgb), 0.08);
+    padding: 10px;
+    border-radius: 4px;
+}
+
+/* Pequeno indicador de status */
+.auto-print-status {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-left: 8px;
+}
+
+.auto-print-status.enabled {
+    background-color: var(--color-success);
+}
+
+.auto-print-status.disabled {
+    background-color: var(--color-gray);
 }

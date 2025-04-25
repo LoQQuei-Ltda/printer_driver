@@ -1,6 +1,6 @@
 {
   "name": "print-management-installer",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "Instalador do Sistema de Gerenciamento de Impressão",
   "main": "main.js",
   "updateConfig": {
@@ -13,7 +13,8 @@
     "prebuild": "npm run clean && npm run prepare-server-files",
     "prepare-server-files": "node prepare-server-files.js",
     "build": "electron-builder --win --x64",
-    "postinstall": "electron-builder install-app-deps"
+    "postinstall": "electron-builder install-app-deps",
+    "install": "node install.js"
   },
   "author": "LoQQuei-Ltda",
   "license": "MIT",
@@ -29,8 +30,10 @@
   "build": {
     "appId": "com.loqquei.print-management-installer",
     "productName": "Gerenciamento de Impressão - LoQQuei",
+    "icon": "assets/icon/icon.ico",
     "win": {
       "target": "nsis",
+      "icon": "assets/icon/icon.ico",
       "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {

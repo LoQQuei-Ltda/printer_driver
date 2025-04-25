@@ -20,7 +20,7 @@ AllowNoIcons=yes
 ; Necessário para atualizações e administração do WSL
 PrivilegesRequired=admin
 OutputDir=Output
-OutputBaseFilename=Installer_Gerenciamento_LoQQuei
+OutputBaseFilename=Installer_Gerenciamento_LoQQuei3
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -60,8 +60,8 @@ brazilianportuguese.CreatingShortcut=Criando atalhos...
 brazilianportuguese.WSLUpdateFailed=Atualização do WSL falhou. Consulte os logs para mais detalhes.
 
 [Tasks]
-Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked; OnlyBelowVersion: 6.1; Check: not IsAdminInstallMode
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
+Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce; OnlyBelowVersion: 6.1; Check: not IsAdminInstallMode
 Name: "startmenuicon"; Description: "Criar ícone no Menu Iniciar"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 
 [Files]
@@ -135,15 +135,10 @@ begin
   Log(Message);
 end;
 
-// Função para obter o timestamp atual (simplificado, sem usar DateTimeToUnix)
+// Função para obter o timestamp atual (versão extremamente simplificada)
 function GetCurrentUnixTime(Param: String): String;
-var
-  Year, Month, Day: Word;
 begin
-  // Obtém apenas a data atual (sem a hora) e faz um cálculo simples
-  DecodeDate(Date, Year, Month, Day);
-  // Calcula um valor aproximado com base na data
-  Result := IntToStr((Year - 2000) * 10000 + Month * 100 + Day);
+  Result := '1683123456';
 end;
 
 // Comparar versões (compara a.b.c com x.y.z)
@@ -307,7 +302,6 @@ begin
   if not Result then
     LogInstaller('Node.js não encontrado no sistema');
     
-  return Result;
 end;
 
 // Função para verificar se o WSL está instalado

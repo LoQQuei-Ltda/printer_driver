@@ -3,17 +3,22 @@
  * Este módulo fornece endpoints para controlar a aplicação remotamente
  */
 
-const express = require('express');
 const cors = require('cors');
+const axios = require('axios');
+const express = require('express');
 const bodyParser = require('body-parser');
 
 function initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated) {
     const app = express();
-
+    
     // Middlewares
     app.use(cors());
     app.use(bodyParser.json());
     app.use(bodyParser.urlencoded({ extended: true }));
+    app.use(async (request, response, next) => {
+        console.log(`API ${request.method} ${request.path}`);
+        next();
+    });
 
     // Middleware para verificar autenticação
     const checkAuth = (request, response, next) => {
@@ -25,15 +30,90 @@ function initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated) {
         }
         next();
     };
+    
+    const { getAutoPrintConfig } = require('./main');
 
     // Endpoint para abrir a aplicação na seção de arquivos para impressão
     app.get('/api/file', checkAuth, (request, response) => {
         try {
+            const fileId = request.query.fileId;
+            
+
+            // Verificar se a impressão automática está habilitada
+            const autoPrintConfig = getAutoPrintConfig();
+
+            if (autoPrintConfig && autoPrintConfig.enabled && autoPrintConfig.printerId && fileId) {
+                // Imprimir automaticamente
+                console.log(`Impressão automática do arquivo ${fileId} na impressora ${autoPrintConfig.printerId}`);
+
+                // Fazer a requisição para a API local
+                axios.post(`${appConfig.apiLocalUrl}/print`, {
+                    fileId: fileId,
+                    assetId: autoPrintConfig.printerId
+                })
+                    .then(printResponse => {
+                        if (printResponse.status === 200) {
+                            console.log(`Arquivo ${fileId} enviado automaticamente para impressão na impressora ${autoPrintConfig.printerId}`);
+
+                            // Mostrar notificação
+                            if (mainWindow) {
+                                mainWindow.webContents.send('auto-print-notification', {
+                                    success: true,
+                                    fileId: fileId,
+                                    printerId: autoPrintConfig.printerId,
+                                    message: 'Arquivo enviado para impressão automaticamente!'
+                                });
+                            }
+
+                            return response.status(200).json({
+                                success: true,
+                                message: 'Arquivo enviado para impressão automaticamente',
+                                fileId: fileId,
+                                printerId: autoPrintConfig.printerId
+                            });
+                        } else {
+                            console.error('Erro ao enviar arquivo para impressão:', error);
+                            throw new Error('Erro ao enviar arquivo para impressão');
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Erro na impressão automática:', error);
+
+                        // Mostrar notificação de erro
+                        if (mainWindow) {
+                            mainWindow.webContents.send('auto-print-notification', {
+                                success: false,
+                                message: 'Erro ao enviar arquivo para impressão automática'
+                            });
+                        }
+
+                        // Mesmo em caso de erro, abrir a aplicação para tratamento manual
+                        if (!mainWindow || mainWindow.isDestroyed()) {
+                            createMainWindow();
+                        } else {
+                            if (mainWindow.isMinimized()) mainWindow.restore();
+                            mainWindow.show();
+                            mainWindow.focus();
+                        }
+
+                        // Navegar para a seção de arquivos
+                        mainWindow.webContents.send('navegar-para', { secao: 'arquivos' });
+
+                        return response.status(200).json({
+                            success: false,
+                            message: 'Erro na impressão automática, aplicação aberta para tratamento manual',
+                            error: error.message
+                        });
+                    });
+
+                return;
+            }
+
+            // Comportamento padrão (sem impressão automática)
             if (!mainWindow || mainWindow.isDestroyed()) {
                 createMainWindow();
             } else {
                 if (mainWindow.isMinimized()) mainWindow.restore();
-
                 mainWindow.show();
                 mainWindow.focus();
             }
@@ -63,7 +143,7 @@ function initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated) {
     });
 
     // Iniciar o servidor
-    const server = app.listen(appConfig.desktopApiPort, () => {
+    const server = app.listen(appConfig.desktopApiPort, '0.0.0.0', () => {
         console.log(`API do Sistema de Gerenciamento de Impressão rodando na porta ${appConfig.desktopApiPort}`);
     });
 
