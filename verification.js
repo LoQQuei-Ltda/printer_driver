@@ -385,29 +385,108 @@ async function checkWSLStatusDetailed() {
   }
 }
 
-// Verificar se o Ubuntu está instalado no WSL
+/**
+ * Verifica se o Ubuntu está instalado no WSL com tratamento robusto para erros
+ */
 async function checkUbuntuInstalled() {
   log("Verificando se o Ubuntu está instalado no WSL...", "step");
-
+  
   try {
-    const distributions = await execPromise("wsl --list --verbose", 10000, true);
-    const cleanedDistributions = distributions.replace(/\x00/g, "").trim();
-    const lines = cleanedDistributions.split("\n").slice(1);
-    const hasUbuntu = lines.some((line) => line.toLowerCase().includes("ubuntu"));
-
-    if (hasUbuntu) {
-      log("Ubuntu já está instalado no WSL", "success");
-      return true;
+    // Tentar o método detalhado primeiro
+    try {
+      const distributions = await execPromise("wsl --list --verbose", 10000, true);
+      const cleanedDistributions = distributions.replace(/\x00/g, "").trim();
+      const lines = cleanedDistributions.split("\n").filter(line => line.trim());
+      
+      // Verificar se há mais de uma linha (além do cabeçalho)
+      if (lines.length > 1) {
+        const hasUbuntu = lines.slice(1).some((line) => line.toLowerCase().includes("ubuntu"));
+        if (hasUbuntu) {
+          log("Ubuntu já está instalado no WSL", "success");
+          return true;
+        } else {
+          log("Há distribuições WSL instaladas, mas nenhuma Ubuntu", "warning");
+          return false;
+        }
+      } else {
+        log("Nenhuma distribuição WSL encontrada (lista vazia)", "warning");
+        return false;
+      }
+    } catch (listError) {
+      // Verificar se o erro é por falta de distribuições
+      let stdout = "";
+      if (listError.stdout) {
+        stdout = typeof listError.stdout === 'string' ? listError.stdout : listError.stdout.toString();
+      }
+      
+      if (stdout && (
+          stdout.includes("não tem distribuições") || 
+          stdout.includes("no distributions") ||
+          stdout.replace(/\x00/g, '').includes("o tem distribui")
+      )) {
+        log("WSL está instalado, mas sem distribuições", "warning");
+        return false;
+      }
+      
+      // Se não for o erro específico de "não tem distribuições", tentar método alternativo
+      log("Erro na listagem detalhada, tentando método alternativo...", "warning");
+      try {
+        const simpleList = await execPromise("wsl --list", 10000, true);
+        const cleanedSimpleList = typeof simpleList === 'string' ? simpleList : simpleList.toString();
+        const hasUbuntu = cleanedSimpleList.toLowerCase().includes('ubuntu');
+        
+        if (hasUbuntu) {
+          log("Ubuntu encontrado via listagem simples", "success");
+          return true;
+        } else {
+          log("Ubuntu não encontrado via listagem simples", "warning");
+          return false;
+        }
+      } catch (simpleListError) {
+        // Verificar novamente o erro por falta de distribuições
+        let simpleStdout = "";
+        if (simpleListError.stdout) {
+          simpleStdout = typeof simpleListError.stdout === 'string' ? 
+            simpleListError.stdout : simpleListError.stdout.toString();
+        }
+        
+        if (simpleStdout && (
+            simpleStdout.includes("não tem distribuições") || 
+            simpleStdout.includes("no distributions") ||
+            simpleStdout.replace(/\x00/g, '').includes("o tem distribui")
+        )) {
+          log("Confirmado: WSL não tem distribuições instaladas", "warning");
+          return false;
+        }
+        
+        // Último recurso - tentar método com PowerShell
+        log("Tentando verificar Ubuntu com PowerShell...", "warning");
+        try {
+          const psCommand = 'powershell -Command "(Get-ChildItem HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss | ForEach-Object { $_.GetValue(\'DistributionName\') })" 2>nul';
+          const psOutput = await execPromise(psCommand, 10000, true);
+          const hasUbuntu = psOutput.toLowerCase().includes('ubuntu');
+          
+          if (hasUbuntu) {
+            log("Ubuntu encontrado via PowerShell registry check", "success");
+            return true;
+          } else {
+            log("Ubuntu não encontrado via PowerShell registry check", "warning");
+            return false;
+          }
+        } catch (psError) {
+          log("Todos os métodos de verificação falharam", "error");
+          logToFile(`Detalhes do erro final: ${JSON.stringify(psError)}`);
+          return false;
+        }
+      }
     }
-
-    log("Ubuntu não está instalado no WSL", "warning");
-    return false;
   } catch (error) {
     log(`Erro ao verificar distribuições WSL: ${error.message}`, "warning");
     logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     return false;
   }
 }
+
 
 // Verifica se o sistema já está completamente configurado ou se precisa de configuração
 async function shouldConfigureSystem(installState) {

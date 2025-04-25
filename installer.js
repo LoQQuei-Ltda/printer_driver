@@ -297,10 +297,7 @@ async function installUbuntu() {
     verification.log('Instalando Ubuntu via WSL...', 'step');
     try {
       // Primeiro, verificar se a distribuição já foi registrada
-      const distributions = await verification.execPromise('wsl --list --verbose', 10000, true);
-      const cleanedDistributions = distributions.replace(/\x00/g, '').trim();
-      const lines = cleanedDistributions.split('\n').slice(1);
-      const ubuntuExists = lines.some(line => line.toLowerCase().includes('ubuntu'));
+      const ubuntuExists = await verification.checkUbuntuInstalled();
       
       if (!ubuntuExists) {
         verification.log('Registrando distribuição Ubuntu no WSL...', 'step');
@@ -691,7 +688,6 @@ async function configureSystem() {
       // Tentar executar o comando com até 3 tentativas
       let success = false;
       let attempts = 0;
-      let lastError = null;
       
       while (!success && attempts < 3) {
         attempts++;
@@ -701,8 +697,6 @@ async function configureSystem() {
           verification.log(`${command.desc} concluído com sucesso (tentativa ${attempts})`, 'success');
           success = true;
         } catch (error) {
-          lastError = error;
-          
           if (attempts < 3) {
             verification.log(`Erro na tentativa ${attempts}, tentando novamente...`, 'warning');
             verification.logToFile(`Comando: ${command.cmd}`);
@@ -1206,4 +1200,3 @@ if (require.main === module) {
     configureDefaultUser
   };
 }
-
