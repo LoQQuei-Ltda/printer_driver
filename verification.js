@@ -534,7 +534,7 @@ async function checkApiHealth() {
   try {
     // Método 1: Usar curl dentro do WSL
     try {
-      const output = await execPromise(`wsl -d Ubuntu -u root curl -s -o /dev/null -w "%{http_code}" http://localhost:56257/api`, 10000, true);
+      const output = await execPromise(`wsl -d Ubuntu -u root curl -s -o /dev/null -w "%{http_code}" http://localhost:56258/api`, 10000, true);
       if (output.trim() === '200') {
         log("API está respondendo corretamente (via curl)", "success");
         return true;
@@ -545,7 +545,7 @@ async function checkApiHealth() {
     
     // Método 2: Usar axios diretamente
     try {
-      const response = await axios.get('http://localhost:56257/api', { timeout: 5000 });
+      const response = await axios.get('http://localhost:56258/api', { timeout: 5000 });
       if (response.status === 200) {
         log("API está respondendo corretamente (via axios)", "success");
         return true;
@@ -568,7 +568,7 @@ async function checkFirewallRules() {
   log("Verificando regras de firewall...", "step");
   
   try {
-    const output = await execPromise(`wsl -d Ubuntu -u root ufw status | grep -E '(137|138|139|445|631|56257|56258|56259)'`, 10000, true);
+    const output = await execPromise(`wsl -d Ubuntu -u root ufw status`, 10000, true);
     
     // Verificar se todas as portas necessárias estão permitidas
     const requiredPorts = [
@@ -612,6 +612,7 @@ async function checkFirewallRules() {
 }
 
 // Verifica a configuração do banco de dados
+// Improved checkDatabaseConfiguration function for verification.js
 async function checkDatabaseConfiguration() {
   log("Verificando configuração do banco de dados...", "step");
   
@@ -620,32 +621,159 @@ async function checkDatabaseConfiguration() {
     const postgresRunning = await checkServiceRunning('postgresql');
     if (!postgresRunning) {
       log("Serviço PostgreSQL não está em execução", "warning");
-      return {
-        configured: false,
-        error: 'Serviço PostgreSQL não está em execução'
-      };
+      
+      // Tentar iniciar o serviço PostgreSQL
+      try {
+        await execPromise('wsl -d Ubuntu -u root systemctl start postgresql', 30000, true);
+        log("Serviço PostgreSQL iniciado com sucesso", "success");
+        // Aguardar um pouco para o serviço iniciar completamente
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      } catch (startError) {
+        log("Não foi possível iniciar o PostgreSQL", "error");
+        logToFile(`Detalhes do erro: ${JSON.stringify(startError)}`);
+        return {
+          configured: false,
+          error: 'Não foi possível iniciar o PostgreSQL',
+          postgresRunning: false
+        };
+      }
     }
     
-    // Verificar se banco de dados e usuário existem
-    // Assumindo que o banco se chama 'print_server'
-    const checkDb = await execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='print_server'"`, 10000, true);
+    // Definir configurações padrão para os bancos de dados
+    const configs = [{
+      name: 'print_server',
+      user: 'print_user',
+      schema: null
+    }, {
+      name: 'print_management',
+      user: 'postgres_print',
+      schema: 'print_management'
+    }];
     
-    if (checkDb.trim() === '1') {
-      log("Banco de dados PostgreSQL está configurado corretamente", "success");
-    } else {
-      log("Banco de dados 'print_server' não encontrado", "warning");
+    const results = {};
+    
+    // Verificar cada configuração de banco de dados
+    for (const config of configs) {
+      try {
+        // Verificar se o banco existe
+        const checkDb = await execPromise(
+          `wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${config.name}'"`, 
+          10000, 
+          true
+        );
+        
+        const dbExists = checkDb.trim() === '1';
+        
+        // Verificar se o usuário existe
+        const checkUser = await execPromise(
+          `wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${config.user}'"`,
+          10000,
+          true
+        );
+        
+        const userExists = checkUser.trim() === '1';
+        
+        // Verificar schema se existir
+        let schemaExists = null;
+        if (config.schema) {
+          try {
+            const checkSchema = await execPromise(
+              `wsl -d Ubuntu -u postgres psql -d ${config.name} -tAc "SELECT 1 FROM information_schema.schemata WHERE schema_name='${config.schema}'"`,
+              10000,
+              true
+            );
+            schemaExists = checkSchema.trim() === '1';
+          } catch (schemaError) {
+            schemaExists = false;
+          }
+        }
+        
+        results[config.name] = {
+          dbExists,
+          userExists,
+          schemaExists
+        };
+        
+        if (dbExists && userExists && (schemaExists !== false)) {
+          log(`Banco de dados '${config.name}' configurado corretamente`, "success");
+        } else {
+          log(`Banco de dados '${config.name}' não está completamente configurado`, "warning");
+          log(`- Banco existe: ${dbExists ? 'Sim' : 'Não'}`, "info");
+          log(`- Usuário existe: ${userExists ? 'Sim' : 'Não'}`, "info");
+          if (config.schema) {
+            log(`- Schema existe: ${schemaExists ? 'Sim' : 'Não'}`, "info");
+          }
+        }
+      } catch (configError) {
+        log(`Erro ao verificar configuração do banco '${config.name}'`, "warning");
+        logToFile(`Detalhes do erro: ${JSON.stringify(configError)}`);
+        results[config.name] = { error: configError.message || 'Erro desconhecido' };
+      }
     }
+    
+    // Verificar acesso ao PostgreSQL
+    try {
+      const accessCheck = await execPromise(
+        `wsl -d Ubuntu -u root bash -c "PGPASSWORD=root_print psql -h localhost -p 5432 -U postgres_print -d print_management -c 'SELECT 1' -q -t"`,
+        15000,
+        true
+      );
+      
+      if (accessCheck.trim() === '1') {
+        log("Conexão ao banco de dados está funcional", "success");
+        results.accessOk = true;
+      } else {
+        log("Resultado inesperado ao testar conexão", "warning");
+        results.accessOk = false;
+      }
+    } catch (accessError) {
+      log("Não foi possível estabelecer conexão com o banco de dados", "warning");
+      logToFile(`Detalhes do erro de acesso: ${JSON.stringify(accessError)}`);
+      results.accessOk = false;
+      
+      // Verificar configuração de pg_hba.conf
+      log("Verificando configuração de pg_hba.conf...", "step");
+      try {
+        const pgHbaPath = await execPromise("wsl -d Ubuntu -u postgres psql -t -c \"SHOW hba_file;\" | xargs", 10000, true);
+        log(`Arquivo pg_hba.conf: ${pgHbaPath}`, "info");
+        
+        // Verificar configuração atual
+        const pgHbaContent = await execPromise(`wsl -d Ubuntu -u root cat ${pgHbaPath}`, 10000, true);
+        logToFile(`Conteúdo de pg_hba.conf: ${pgHbaContent}`);
+        
+        // Verificar se tem linhas de acesso local
+        const hasLocalAccess = pgHbaContent.includes('127.0.0.1/32') && 
+                             (pgHbaContent.includes('trust') || pgHbaContent.includes('md5'));
+        
+        if (!hasLocalAccess) {
+          log("Configuração pg_hba.conf não possui regras para acesso local", "warning");
+        } else {
+          log("Configuração pg_hba.conf parece correta, mas ainda há problemas de acesso", "warning");
+        }
+      } catch (pgHbaError) {
+        log("Erro ao verificar configuração pg_hba.conf", "warning");
+        logToFile(`Detalhes do erro pg_hba: ${JSON.stringify(pgHbaError)}`);
+      }
+    }
+    
+    // Determinar se o banco está completamente configurado
+    const allConfigured = results.print_management && 
+                          results.print_management.dbExists && 
+                          results.print_management.userExists &&
+                          (results.print_management.schemaExists !== false) &&
+                          results.accessOk;
     
     return {
-      configured: checkDb.trim() === '1',
-      postgresRunning
+      configured: allConfigured,
+      postgresRunning: true,
+      details: results
     };
   } catch (error) {
-    log("Erro ao verificar configuração do banco de dados", "warning");
+    log("Erro geral ao verificar configuração do banco de dados", "warning");
     logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     return {
       configured: false,
-      error: error.message
+      error: error.message || 'Erro desconhecido'
     };
   }
 }
