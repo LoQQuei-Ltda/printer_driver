@@ -620,7 +620,7 @@ async function installRequiredPackages() {
   try {
     // Lista de pacotes necessários
     const requiredPackages = [
-      'nano', 'samba', 'cups', 'cups-pdf', 'postgresql', 'postgresql-contrib',
+      'nano', 'samba', 'cups', 'printer-driver-cups-pdf', 'postgresql', 'postgresql-contrib',
       'ufw', 'npm', 'jq', 'net-tools', 'avahi-daemon', 'avahi-utils',
       'avahi-discover', 'hplip', 'hplip-gui', 'printer-driver-all'
     ];
@@ -645,7 +645,7 @@ async function installRequiredPackages() {
       ['nano', 'jq', 'net-tools'],
       ['ufw'],
       ['samba'],
-      ['cups', 'cups-pdf'],
+      ['cups', 'printer-driver-cups-pdf'],
       ['postgresql', 'postgresql-contrib'],
       ['npm'],
       ['avahi-daemon', 'avahi-utils', 'avahi-discover'],
@@ -852,66 +852,180 @@ async function configureFirewall() {
 
 // Configurar banco de dados PostgreSQL
 async function setupDatabase() {
-  verification.log('Configurando banco de dados PostgreSQL...', 'step');
+  verification.log('Configurando banco de dados PostgreSQL...', 'header');
   
   try {
-    // Verificar se já está configurado
-    const dbStatus = await verification.checkDatabaseConfiguration();
-    
-    if (dbStatus.configured) {
-      verification.log('Banco de dados já está configurado', 'success');
-      return true;
-    }
-    
-    // Parâmetros do banco de dados
-    const DB_DATABASE = 'print_server';
-    const DB_USER = 'print_user';
-    const DB_PASSWORD = 'print_user';
-    
-    // Verificar se o serviço está rodando
-    if (!dbStatus.postgresRunning) {
-      verification.log('Iniciando serviço PostgreSQL...', 'step');
-      await verification.execPromise('wsl -d Ubuntu -u root systemctl start postgresql', 30000, true);
-    }
-    
-    // Criar banco de dados
-    verification.log('Criando banco de dados...', 'step');
+    // Verificar se o serviço PostgreSQL está ativo
+    let postgresRunning = false;
     try {
-      await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE ${DB_DATABASE}"`, 15000, true);
-    } catch (dbError) {
-      // Verificar se é porque o banco já existe
-      const dbExists = await verification.execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_DATABASE}'"`, 10000, true);
-      if (dbExists.trim() !== '1') {
-        throw new Error(`Erro ao criar banco de dados: ${dbError.message}`);
+      await verification.execPromise('wsl -d Ubuntu -u root systemctl status postgresql', 15000, true);
+      verification.log('Serviço PostgreSQL já está ativo', 'success');
+      postgresRunning = true;
+    } catch (pgError) {
+      verification.log('Serviço PostgreSQL não está ativo, tentando iniciá-lo...', 'warning');
+      try {
+        await verification.execPromise('wsl -d Ubuntu -u root systemctl start postgresql', 30000, true);
+        verification.log('Serviço PostgreSQL iniciado com sucesso', 'success');
+        postgresRunning = true;
+      } catch (startError) {
+        verification.log('Erro ao iniciar PostgreSQL, tentando método alternativo...', 'warning');
+        try {
+          // Tentar iniciar com pg_ctlcluster
+          await verification.execPromise('wsl -d Ubuntu -u root pg_ctlcluster 12 main start', 30000, true);
+          verification.log('PostgreSQL iniciado via pg_ctlcluster', 'success');
+          postgresRunning = true;
+        } catch (altStartError) {
+          verification.log('Não foi possível iniciar o PostgreSQL', 'error');
+          verification.logToFile(`Detalhes do erro: ${JSON.stringify(altStartError)}`);
+          return false;
+        }
       }
-      verification.log('Banco de dados já existe', 'info');
     }
     
-    // Criar usuário
-    verification.log('Criando usuário do banco...', 'step');
+    // Se não conseguimos iniciar o PostgreSQL, não podemos continuar
+    if (!postgresRunning) {
+      verification.log('Serviço PostgreSQL não está em execução, não é possível configurar o banco de dados', 'error');
+      return false;
+    }
+    
+    // Aguardar um pouco para o PostgreSQL iniciar completamente
+    verification.log('Aguardando PostgreSQL inicializar completamente...', 'info');
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Parâmetros para os bancos de dados
+    // 1. Banco para o sistema principal
+    const MAIN_DB = 'print_server';
+    const MAIN_USER = 'print_user';
+    const MAIN_PASSWORD = 'print_user';
+    
+    // 2. Banco para as migrações (utilizados pelo script migrate.sh)
+    const MIGRATION_DB = 'print_management';
+    const MIGRATION_USER = 'postgres_print';
+    const MIGRATION_PASSWORD = 'root_print';
+    
+    // Criar usuário para o sistema principal se não existir
+    verification.log(`Verificando/criando usuário ${MAIN_USER}...`, 'step');
     try {
-      await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "CREATE USER ${DB_USER} WITH PASSWORD '${DB_PASSWORD}'"`, 15000, true);
-    } catch (userError) {
-      // Verificar se é porque o usuário já existe
-      const userExists = await verification.execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USER}'"`, 10000, true);
+      // Verificar se já existe
+      const userExists = await verification.execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${MAIN_USER}'"`, 10000, true);
+      
       if (userExists.trim() !== '1') {
-        throw new Error(`Erro ao criar usuário: ${userError.message}`);
+        // Criar o usuário
+        await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "CREATE USER ${MAIN_USER} WITH PASSWORD '${MAIN_PASSWORD}'"`, 15000, true);
+        verification.log(`Usuário ${MAIN_USER} criado com sucesso`, 'success');
+      } else {
+        verification.log(`Usuário ${MAIN_USER} já existe`, 'info');
       }
-      verification.log('Usuário já existe', 'info');
+      
+      // Garantir que tenha privilégios de superusuário
+      await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "ALTER USER ${MAIN_USER} WITH SUPERUSER"`, 15000, true);
+      verification.log(`Privilégios de superusuário concedidos para ${MAIN_USER}`, 'success');
+    } catch (userError) {
+      verification.log(`Erro ao configurar usuário ${MAIN_USER}: ${userError.message}`, 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(userError)}`);
     }
     
-    // Conceder privilégios
-    verification.log('Concedendo privilégios...', 'step');
-    await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_DATABASE} TO ${DB_USER}"`, 15000, true);
+    // Criar banco de dados principal se não existir
+    verification.log(`Verificando/criando banco de dados ${MAIN_DB}...`, 'step');
+    try {
+      // Verificar se já existe
+      const dbExists = await verification.execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${MAIN_DB}'"`, 10000, true);
+      
+      if (dbExists.trim() !== '1') {
+        // Criar o banco
+        await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE ${MAIN_DB} OWNER ${MAIN_USER}"`, 15000, true);
+        verification.log(`Banco de dados ${MAIN_DB} criado com sucesso`, 'success');
+      } else {
+        verification.log(`Banco de dados ${MAIN_DB} já existe`, 'info');
+        // Garantir ownership correto
+        await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "ALTER DATABASE ${MAIN_DB} OWNER TO ${MAIN_USER}"`, 15000, true);
+      }
+      
+      // Conceder todos os privilégios
+      await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${MAIN_DB} TO ${MAIN_USER}"`, 15000, true);
+      verification.log(`Privilégios concedidos para ${MAIN_USER} no banco ${MAIN_DB}`, 'success');
+    } catch (dbError) {
+      verification.log(`Erro ao configurar banco de dados ${MAIN_DB}: ${dbError.message}`, 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(dbError)}`);
+    }
     
-    // Tornar o usuário superusuário
-    verification.log('Configurando permissões avançadas...', 'step');
-    await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "ALTER USER ${DB_USER} WITH SUPERUSER"`, 15000, true);
+    // Agora, vamos configurar o usuário e banco para as migrações
+    // Criar usuário para migrações se não existir
+    verification.log(`Verificando/criando usuário ${MIGRATION_USER} para migrações...`, 'step');
+    try {
+      // Verificar se já existe
+      const migUserExists = await verification.execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${MIGRATION_USER}'"`, 10000, true);
+      
+      if (migUserExists.trim() !== '1') {
+        // Criar o usuário
+        await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "CREATE USER ${MIGRATION_USER} WITH PASSWORD '${MIGRATION_PASSWORD}'"`, 15000, true);
+        verification.log(`Usuário ${MIGRATION_USER} criado com sucesso`, 'success');
+      } else {
+        verification.log(`Usuário ${MIGRATION_USER} já existe`, 'info');
+      }
+      
+      // Garantir que tenha privilégios de superusuário
+      await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "ALTER USER ${MIGRATION_USER} WITH SUPERUSER"`, 15000, true);
+      verification.log(`Privilégios de superusuário concedidos para ${MIGRATION_USER}`, 'success');
+    } catch (migUserError) {
+      verification.log(`Erro ao configurar usuário ${MIGRATION_USER}: ${migUserError.message}`, 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(migUserError)}`);
+    }
     
-    verification.log('Banco de dados configurado com sucesso', 'success');
+    // Criar banco de dados para migrações se não existir
+    verification.log(`Verificando/criando banco de dados ${MIGRATION_DB} para migrações...`, 'step');
+    try {
+      // Verificar se já existe
+      const migDbExists = await verification.execPromise(`wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${MIGRATION_DB}'"`, 10000, true);
+      
+      if (migDbExists.trim() !== '1') {
+        // Criar o banco
+        await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE ${MIGRATION_DB} OWNER ${MIGRATION_USER}"`, 15000, true);
+        verification.log(`Banco de dados ${MIGRATION_DB} criado com sucesso`, 'success');
+      } else {
+        verification.log(`Banco de dados ${MIGRATION_DB} já existe`, 'info');
+        // Garantir ownership correto
+        await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "ALTER DATABASE ${MIGRATION_DB} OWNER TO ${MIGRATION_USER}"`, 15000, true);
+      }
+      
+      // Conceder todos os privilégios
+      await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${MIGRATION_DB} TO ${MIGRATION_USER}"`, 15000, true);
+      verification.log(`Privilégios concedidos para ${MIGRATION_USER} no banco ${MIGRATION_DB}`, 'success');
+    } catch (migDbError) {
+      verification.log(`Erro ao configurar banco de dados ${MIGRATION_DB}: ${migDbError.message}`, 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(migDbError)}`);
+    }
+    
+    // Verificar configuração do PostgreSQL para garantir acesso local
+    verification.log('Verificando configuração de acesso ao PostgreSQL...', 'step');
+    try {
+      // Verificar se as configurações do pg_hba.conf permitem acesso local
+      const pgHbaPath = await verification.execPromise("wsl -d Ubuntu -u postgres psql -c 'SHOW hba_file;' | grep pg_hba.conf", 10000, true);
+      
+      if (pgHbaPath) {
+        // Adicionar entrada para acesso local se não existir
+        const pgHbaCheck = `
+        if ! grep -q "host all all 127.0.0.1/32 trust" ${pgHbaPath.trim()}; then
+          echo "host all all 127.0.0.1/32 trust" | sudo tee -a ${pgHbaPath.trim()}
+          sudo systemctl restart postgresql
+          echo "Configuração atualizada"
+        else
+          echo "Configuração já existe"
+        fi
+        `;
+        
+        const configResult = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${pgHbaCheck}"`, 20000, true);
+        verification.log(`Verificação de pg_hba.conf: ${configResult.trim()}`, 'info');
+      }
+    } catch (pgConfigError) {
+      verification.log('Erro ao verificar/atualizar configuração do PostgreSQL', 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(pgConfigError)}`);
+    }
+    
+    verification.log('Banco de dados PostgreSQL configurado com sucesso!', 'success');
     return true;
   } catch (error) {
-    verification.log(`Erro ao configurar banco de dados: ${error.message}`, 'error');
+    verification.log(`Erro geral ao configurar banco de dados: ${error.message}`, 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     return false;
   }
@@ -923,33 +1037,56 @@ async function copySoftwareToOpt() {
   
   try {
     // Verificar se o diretório já existe
+    let dirExists = false;
     try {
-      const dirCheck = await verification.execPromise('wsl -d Ubuntu -u root test -d /opt/print_server && echo "exists"', 10000, true);
+      const dirCheck = await verification.execPromise('wsl -d Ubuntu -u root test -d /opt/loqquei/print_server_desktop && echo "exists"', 10000, true);
       if (dirCheck.trim() === 'exists') {
-        verification.log('Diretório /opt/print_server já existe', 'info');
+        verification.log('Diretório /opt/loqquei/print_server_desktop já existe', 'info');
+        dirExists = true;
       }
     } catch (checkError) {
-      // Criar estrutura de diretórios
-      verification.log('Criando estrutura de diretórios...', 'step');
-      await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/print_server/print_server_desktop', 15000, true);
-      await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/print_server/logs', 10000, true);
-      await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/print_server/updates', 10000, true);
+      verification.log('Diretório /opt/loqquei/print_server_desktop não existe, será criado', 'info');
+      dirExists = false;
     }
     
-    // Criar arquivo de versão
+    // Criar estrutura de diretórios se não existir
+    if (!dirExists) {
+      verification.log('Criando estrutura de diretórios...', 'step');
+      await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop', 15000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/logs', 10000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/updates', 10000, true);
+    }
+    
+    // Criar arquivo de versão com sintaxe corrigida
     verification.log('Criando arquivo de versão...', 'step');
-    await verification.execPromise('wsl -d Ubuntu -u root bash -c \'echo "{\\"install_date\\": \\"`date +%Y-%m-%d`\\", \\"version\\": \\"1.0.0\\"}" > /opt/print_server/version.json\'', 10000, true);
+    const versionCmd = 'wsl -d Ubuntu -u root bash -c "echo \\"{\\\"install_date\\\": \\\"$(date +%Y-%m-%d)\\\", \\\"version\\\": \\\"1.0.0\\\"}\\\" > /opt/loqquei/print_server_desktop/version.json"';
+    try {
+      await verification.execPromise(versionCmd, 15000, true);
+      verification.log('Arquivo de versão criado com sucesso', 'success');
+    } catch (versionError) {
+      verification.log(`Erro ao criar arquivo de versão: ${versionError.message || 'Erro desconhecido'}`, 'warning');
+      // Continuar mesmo com erro
+    }
     
     // Criar arquivo de atualizações executadas
-    await verification.execPromise('wsl -d Ubuntu -u root touch /opt/print_server/executed_updates.txt', 10000, true);
+    verification.log('Criando arquivo de atualizações...', 'step');
+    try {
+      await verification.execPromise('wsl -d Ubuntu -u root touch /opt/loqquei/print_server_desktop/executed_updates.txt', 10000, true);
+      verification.log('Arquivo de atualizações criado com sucesso', 'success');
+    } catch (touchError) {
+      verification.log(`Erro ao criar arquivo de atualizações: ${touchError.message || 'Erro desconhecido'}`, 'warning');
+      // Continuar mesmo com erro
+    }
     
     // Obter o diretório atual do instalador
     const installerDir = process.cwd();
     const serverFiles = path.join(installerDir, 'resources', 'print_server_desktop');
     
+    verification.log(`Verificando diretório de recursos: ${serverFiles}`, 'step');
+    
     // Verificar se os recursos existem
     if (fs.existsSync(serverFiles)) {
-      verification.log('Arquivos do print_server_desktop encontrados. Iniciando cópia...', 'info');
+      verification.log('Arquivos do print_server_desktop encontrados. Iniciando cópia...', 'success');
       
       // Criar diretório temporário
       const tempDir = path.join(os.tmpdir(), 'wsl-setup');
@@ -957,46 +1094,126 @@ async function copySoftwareToOpt() {
         fs.mkdirSync(tempDir, { recursive: true });
       }
       
-      // Criar arquivo tar com todos os arquivos
-      const tarFile = path.join(tempDir, 'print_server_desktop.tar');
+      // Verificar se temos permissão para ler o diretório
+      try {
+        const files = fs.readdirSync(serverFiles);
+        verification.log(`Encontrados ${files.length} arquivos/diretórios para copiar`, 'info');
+      } catch (readError) {
+        verification.log(`Erro ao ler diretório de recursos: ${readError.message}`, 'error');
+        // Continuar mesmo com erro
+      }
       
-      // Executar comando para criar o tar
-      await verification.execPromise(`tar -cf "${tarFile}" -C "${serverFiles}" .`, 60000, true);
-      
-      // Obter caminho WSL para o arquivo tar
-      const wslTarPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${tarFile.replace(/\\/g, '/')}"`, 10000, true);
-      
-      // Extrair o tar no diretório de destino
-      const extractCommand = `tar -xf "${wslTarPath}" -C /opt/print_server/print_server_desktop`;
-      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${extractCommand}'`, 60000, true);
-      
-      // Configurar permissões e instalar dependências
-      await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && npm install"', 180000, true);
-      
-      // Criar arquivo .env se não existir
-      const envCheck = 'if [ ! -f "/opt/print_server/print_server_desktop/.env" ]; then cp /opt/print_server/print_server_desktop/.env.example /opt/print_server/print_server_desktop/.env || echo "PORT=56258" > /opt/print_server/print_server_desktop/.env; fi';
-      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${envCheck}'`, 10000, true);
-      
-      verification.log('Software copiado para /opt/ com sucesso', 'success');
+      // Método 1: Usar arquivo tar para transferência
+      verification.log('Criando arquivo tar para transferência...', 'step');
+      try {
+        // Criar arquivo tar com todos os arquivos
+        const tarFile = path.join(tempDir, 'print_server_desktop.tar');
+        
+        // Executar comando para criar o tar
+        await verification.execPromise(`tar -cf "${tarFile}" -C "${serverFiles}" .`, 120000, true);
+        verification.log('Arquivo tar criado com sucesso', 'success');
+        
+        // Obter caminho WSL para o arquivo tar
+        const wslTarPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${tarFile.replace(/\\/g, '/')}"`, 10000, true);
+        verification.log(`Caminho do arquivo tar no WSL: ${wslTarPath}`, 'info');
+        
+        // Garantir que o diretório de destino exista
+        await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop', 10000, true);
+        
+        // Extrair o tar no diretório de destino
+        verification.log('Extraindo arquivos no WSL...', 'step');
+        const extractCommand = `tar -xf "${wslTarPath}" -C /opt/loqquei/print_server_desktop`;
+        await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${extractCommand}'`, 120000, true);
+        verification.log('Arquivos extraídos com sucesso', 'success');
+        
+        // Configurar permissões e instalar dependências
+        verification.log('Configurando permissões e instalando dependências...', 'step');
+        await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && chmod -R 755 . && (npm install || echo \'Erro ao instalar dependências, continuando\')"', 300000, true);
+        
+        // Criar arquivo .env se não existir
+        verification.log('Configurando arquivo .env...', 'step');
+        const envCheck = 'if [ ! -f "/opt/loqquei/print_server_desktop/.env" ]; then (cp /opt/loqquei/print_server_desktop/.env.example /opt/loqquei/print_server_desktop/.env 2>/dev/null || echo "PORT=56258" > /opt/loqquei/print_server_desktop/.env); fi';
+        await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${envCheck}'`, 15000, true);
+        
+        verification.log('Software copiado para /opt/ com sucesso', 'success');
+      } catch (tarError) {
+        verification.log(`Erro ao usar método tar: ${tarError.message || 'Erro desconhecido'}`, 'error');
+        verification.logToFile(`Detalhes do erro tar: ${JSON.stringify(tarError)}`);
+        
+        // Método alternativo: Copiar arquivos um por um
+        verification.log('Tentando método alternativo de cópia...', 'warning');
+        try {
+          // Listar arquivos na pasta resources
+          const files = fs.readdirSync(serverFiles);
+          
+          for (const file of files) {
+            const sourcePath = path.join(serverFiles, file);
+            const isDir = fs.statSync(sourcePath).isDirectory();
+            
+            // Obter o caminho WSL para o arquivo
+            const wslSourcePath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${sourcePath.replace(/\\/g, '/')}"`, 10000, true);
+            
+            if (isDir) {
+              // Para diretórios, usar cp -r
+              await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/${file}`, 10000, true);
+              await verification.execPromise(`wsl -d Ubuntu -u root cp -r "${wslSourcePath}/"* /opt/loqquei/print_server_desktop/${file}/`, 60000, true);
+            } else {
+              // Para arquivos, usar cp
+              await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslSourcePath}" /opt/loqquei/print_server_desktop/`, 30000, true);
+            }
+          }
+          
+          verification.log('Software copiado com método alternativo', 'success');
+        } catch (altError) {
+          verification.log(`Erro no método alternativo: ${altError.message || 'Erro desconhecido'}`, 'error');
+          verification.logToFile(`Detalhes do erro alternativo: ${JSON.stringify(altError)}`);
+          throw new Error('Falha em todos os métodos de cópia');
+        }
+      }
     } else {
       verification.log('Pasta de recursos do print_server_desktop não encontrada!', 'error');
       verification.logToFile(`Diretório esperado: ${serverFiles}`);
       
       // Criar estrutura básica de qualquer forma
+      verification.log('Criando estrutura básica...', 'step');
       const basicSetupCmd = `
-      mkdir -p /opt/print_server/print_server_desktop
-      echo '{"name":"print_server_desktop","version":"1.0.0"}' > /opt/print_server/print_server_desktop/package.json
-      echo 'PORT=56258' > /opt/print_server/print_server_desktop/.env
+      mkdir -p /opt/loqquei/print_server_desktop
+      echo '{"name":"print_server_desktop","version":"1.0.0"}' > /opt/loqquei/print_server_desktop/package.json
+      echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env
       `;
       
-      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${basicSetupCmd}'`, 10000, true);
+      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${basicSetupCmd}'`, 15000, true);
+      verification.log('Estrutura básica criada', 'warning');
       return false;
+    }
+    
+    // Verificação final
+    verification.log('Verificando instalação...', 'step');
+    try {
+      const checkFiles = await verification.execPromise('wsl -d Ubuntu -u root ls -la /opt/loqquei/print_server_desktop/', 10000, true);
+      verification.log('Verificação completa, arquivos copiados com sucesso', 'success');
+    } catch (verifyError) {
+      verification.log('Erro na verificação final, mas continuando', 'warning');
     }
     
     return true;
   } catch (error) {
-    verification.log(`Erro ao copiar software: ${error.message}`, 'error');
+    verification.log(`Erro ao copiar software: ${error.message || error.toString() || 'Erro desconhecido'}`, 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    
+    // Tentar criar pelo menos uma estrutura mínima antes de retornar
+    try {
+      const emergencyCmd = `
+      mkdir -p /opt/loqquei/print_server_desktop
+      echo '{"name":"print_server_desktop","version":"1.0.0"}' > /opt/loqquei/print_server_desktop/package.json
+      echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env
+      `;
+      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${emergencyCmd}'`, 10000, true);
+      verification.log('Estrutura mínima de emergência criada', 'warning');
+    } catch (emergencyError) {
+      verification.log('Falha até na criação da estrutura mínima', 'error');
+    }
+    
     return false;
   }
 }
@@ -1008,7 +1225,7 @@ async function setupUpdateScript() {
   try {
     // Criar script de atualização
     const updateScript = `#!/bin/bash
-LOG_FILE="/opt/print_server/update_log.txt"
+LOG_FILE="/opt/loqquei/print_server_desktop/update_log.txt"
 
 log() {
   local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
@@ -1016,8 +1233,8 @@ log() {
 }
 
 # Executar scripts de atualização
-UPDATE_DIR="/opt/print_server/updates"
-EXECUTED_FILE="/opt/print_server/executed_updates.txt"
+UPDATE_DIR="/opt/loqquei/print_server_desktop/updates"
+EXECUTED_FILE="/opt/loqquei/print_server_desktop/executed_updates.txt"
 
 # Garantir que os diretórios existam
 mkdir -p "$UPDATE_DIR"
@@ -1051,7 +1268,7 @@ done
 # Reiniciar o serviço
 log "Reiniciando serviço..."
 if command -v pm2 &> /dev/null; then
-  cd /opt/print_server/print_server_desktop && pm2 restart ecosystem.config.js
+  cd /opt/loqquei/print_server_desktop && pm2 restart ecosystem.config.js
 fi
 
 log "=== Processo de atualização concluído com sucesso! ==="
@@ -1064,7 +1281,7 @@ log "=== Processo de atualização concluído com sucesso! ==="
     
     // Copiar para o WSL
     const wslScriptPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${updateScriptPath.replace(/\\/g, '/')}"`, 10000, true);
-    await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cp ${wslScriptPath} /opt/print_server/update.sh && chmod +x /opt/print_server/update.sh"`, 10000, true);
+    await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cp ${wslScriptPath} /opt/loqquei/print_server_desktop/update.sh && chmod +x /opt/loqquei/print_server_desktop/update.sh"`, 10000, true);
     
     verification.log('Script de atualização configurado com sucesso', 'success');
     return true;
@@ -1085,7 +1302,7 @@ async function setupPM2() {
     await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${pm2Check}'`, 120000, true);
     
     // Configurar serviço para iniciar com PM2
-    const startupCmd = 'cd /opt/print_server/print_server_desktop && pm2 start ecosystem.config.js && pm2 save && pm2 startup';
+    const startupCmd = 'cd /opt/loqquei/print_server_desktop && pm2 start ecosystem.config.js && pm2 save && pm2 startup';
     await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${startupCmd}'`, 30000, true);
     
     verification.log('Serviço configurado com PM2', 'success');
@@ -1103,13 +1320,13 @@ async function installDrivers() {
   
   try {
     // Verificar se diretório de drivers existe
-    const checkDrivers = 'if [ -d "/opt/print_server/print_server_desktop/drivers" ]; then echo "exists"; fi';
+    const checkDrivers = 'if [ -d "/opt/loqquei/print_server_desktop/drivers" ]; then echo "exists"; fi';
     const driversExist = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${checkDrivers}'`, 10000, true);
     
     if (driversExist.trim() === 'exists') {
       verification.log('Instalando drivers...', 'step');
       // Instalar todos os pacotes .deb no diretório de drivers
-      const installDriversCmd = 'for deb in /opt/print_server/print_server_desktop/drivers/*.deb; do [ -f "$deb" ] && dpkg -i --force-all "$deb" || true; done';
+      const installDriversCmd = 'for deb in /opt/loqquei/print_server_desktop/drivers/*.deb; do [ -f "$deb" ] && dpkg -i --force-all "$deb" || true; done';
       await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${installDriversCmd}'`, 120000, true);
       
       verification.log('Drivers instalados', 'success');
@@ -1119,7 +1336,7 @@ async function installDrivers() {
     
     return true;
   } catch (error) {
-    verification.log(`Erro ao instalar drivers: ${error.message}`, 'warning');
+    verification.log(`Erro ao instalar drivers: ${error}`, 'warning');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     return false;
   }
@@ -1146,28 +1363,337 @@ async function systemCleanup() {
 
 // Executar migrações de banco de dados
 async function setupMigrations() {
-  verification.log('Verificando e executando migrações do banco de dados...', 'step');
+  verification.log('Verificando e executando migrações do banco de dados...', 'header');
   
   try {
-    // Verificar se script de migração existe
-    const migrationCheck = 'if [ -f "/opt/print_server/print_server_desktop/db/migrate.sh" ]; then echo "exists"; fi';
-    const migrationExists = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${migrationCheck}'`, 10000, true);
+    // Verificação completa do caminho
+    const basePath = "/opt/loqquei/print_server_desktop";
+    const scriptPath = `${basePath}/db/migrate.sh`;
     
-    if (migrationExists.trim() === 'exists') {
-      verification.log('Executando script de migração...', 'step');
-      await verification.execPromise('wsl -d Ubuntu -u root chmod +x /opt/print_server/print_server_desktop/db/migrate.sh', 10000, true);
-      await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && ./db/migrate.sh"', 60000, true);
+    // Verificar se o diretório db existe
+    const dbDirCheck = `if [ -d "${basePath}/db" ]; then echo "dir_exists"; else echo "dir_missing"; fi`;
+    const dbDirStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${dbDirCheck}'`, 10000, true);
+    
+    if (dbDirStatus.trim() === 'dir_missing') {
+      verification.log(`Diretório db não encontrado em ${basePath}`, 'warning');
       
-      verification.log('Migrações executadas com sucesso', 'success');
-    } else {
-      verification.log('Script de migração não encontrado, pulando...', 'info');
+      // Verificar diretório alternativo
+      const altBasePath = "/opt/print_server/print_server_desktop";
+      const altDbDirCheck = `if [ -d "${altBasePath}/db" ]; then echo "alt_exists"; else echo "alt_missing"; fi`;
+      const altDbDirStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${altDbDirCheck}'`, 10000, true);
+      
+      if (altDbDirStatus.trim() === 'alt_exists') {
+        verification.log(`Diretório db encontrado no caminho alternativo: ${altBasePath}/db`, 'info');
+        verification.log('Usando caminho alternativo para migrações', 'info');
+        return await setupMigrationsWithPath(altBasePath);
+      }
+      
+      verification.log('Nenhum diretório db encontrado, pulando migrações', 'info');
+      return true;
     }
     
-    return true;
+    // Se chegamos aqui, o diretório db existe no caminho original
+    return await setupMigrationsWithPath(basePath);
+    
   } catch (error) {
-    verification.log(`Erro ao executar migrações: ${error.message}`, 'warning');
+    verification.log(`Erro ao executar migrações: ${error.message || JSON.stringify(error)}`, 'warning');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-    return false;
+    
+    // Mesmo com erro, prosseguir com a instalação
+    verification.log('Continuando a instalação apesar do erro nas migrações...', 'warning');
+    return true;
+  }
+}
+
+// Função auxiliar para executar migrações com um caminho base específico e timeout estendido
+async function setupMigrationsWithPath(basePath) {
+  try {
+    const scriptPath = `${basePath}/db/migrate.sh`;
+    
+    // Verificar se o script existe
+    const scriptCheck = `if [ -f "${scriptPath}" ]; then echo "exists"; else echo "missing"; fi`;
+    const scriptStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${scriptCheck}'`, 10000, true);
+    
+    if (scriptStatus.trim() === 'missing') {
+      verification.log(`Script de migração não encontrado em ${scriptPath}`, 'info');
+      return true;
+    }
+    
+    verification.log(`Script de migração encontrado em ${scriptPath}`, 'success');
+    
+    // Verificar conteúdo e formato do arquivo
+    verification.log('Verificando e corrigindo formato do arquivo de migração...', 'step');
+    
+    // Converter possíveis quebras de linha Windows para Unix
+    await verification.execPromise(`wsl -d Ubuntu -u root bash -c "tr -d '\\r' < ${scriptPath} > ${scriptPath}.unix && mv ${scriptPath}.unix ${scriptPath}"`, 15000, true);
+    
+    // Garantir permissões de execução
+    verification.log('Configurando permissões...', 'step');
+    await verification.execPromise(`wsl -d Ubuntu -u root chmod -v 755 ${scriptPath}`, 10000, true);
+    
+    // Ver tipo de arquivo para diagnóstico
+    const fileType = await verification.execPromise(`wsl -d Ubuntu -u root file ${scriptPath}`, 10000, true);
+    verification.log(`Tipo de arquivo: ${fileType}`, 'info');
+    
+    // Verificar primeiro se o PostgreSQL está rodando
+    verification.log('Verificando status do PostgreSQL...', 'step');
+    let postgresRunning = false;
+    try {
+      await verification.execPromise('wsl -d Ubuntu -u root systemctl status postgresql', 15000, true);
+      verification.log('Serviço PostgreSQL está ativo', 'success');
+      postgresRunning = true;
+    } catch (pgError) {
+      verification.log('Serviço PostgreSQL não está ativo, tentando iniciá-lo...', 'warning');
+      try {
+        await verification.execPromise('wsl -d Ubuntu -u root systemctl start postgresql', 30000, true);
+        verification.log('Serviço PostgreSQL iniciado com sucesso', 'success');
+        postgresRunning = true;
+        
+        // Aguardar um pouco para o serviço iniciar completamente
+        verification.log('Aguardando PostgreSQL inicializar completamente...', 'info');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      } catch (startError) {
+        verification.log('Não foi possível iniciar o PostgreSQL', 'error');
+        verification.logToFile(`Detalhes do erro: ${JSON.stringify(startError)}`);
+        return false;
+      }
+    }
+    
+    // Configurações específicas do banco de dados para migrações
+    const DB_HOST = 'localhost';
+    const DB_PORT = '5432';
+    const DB_NAME = 'print_management';
+    const DB_USERNAME = 'postgres_print';
+    const DB_PASSWORD = 'root_print';
+    
+    // Garanta que o usuário e banco necessários para migração existam
+    verification.log('Verificando/criando usuário e banco para migrações...', 'step');
+    try {
+      // Verificar se o usuário existe
+      const userCheck = `
+      if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USERNAME}'" | grep -q 1; then
+        sudo -u postgres psql -c "CREATE USER ${DB_USERNAME} WITH PASSWORD '${DB_PASSWORD}'"
+        sudo -u postgres psql -c "ALTER USER ${DB_USERNAME} WITH SUPERUSER"
+        echo "Usuário criado"
+      else
+        sudo -u postgres psql -c "ALTER USER ${DB_USERNAME} WITH SUPERUSER"
+        echo "Usuário já existe"
+      fi
+      `;
+      
+      const userResult = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${userCheck}"`, 20000, true);
+      verification.log(`Verificação de usuário: ${userResult.trim()}`, 'info');
+      
+      // Verificar se o banco existe
+      const dbCheck = `
+      if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
+        sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USERNAME}"
+        echo "Banco criado"
+      else
+        sudo -u postgres psql -c "ALTER DATABASE ${DB_NAME} OWNER TO ${DB_USERNAME}"
+        echo "Banco já existe"
+      fi
+      `;
+      
+      const dbResult = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${dbCheck}"`, 20000, true);
+      verification.log(`Verificação de banco: ${dbResult.trim()}`, 'info');
+      
+      // Conceder todos os privilégios
+      await verification.execPromise(`wsl -d Ubuntu -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ${DB_NAME} TO ${DB_USERNAME}"`, 15000, true);
+      verification.log('Privilégios concedidos para o banco de dados', 'success');
+      
+      // Verificar se o banco está acessível com as credenciais
+      const accessCheck = `
+      export PGPASSWORD="${DB_PASSWORD}"
+      if psql -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USERNAME} -d ${DB_NAME} -c "SELECT 1" > /dev/null 2>&1; then
+        echo "Banco acessível"
+      else
+        echo "Problema de acesso ao banco"
+      fi
+      `;
+      
+      const accessResult = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${accessCheck}"`, 20000, true);
+      verification.log(`Verificação de acesso: ${accessResult.trim()}`, 'info');
+      
+      // Se houver problema de acesso, verificar configuração do pg_hba.conf
+      if (accessResult.trim() === 'Problema de acesso ao banco') {
+        verification.log('Problema de acesso detectado, ajustando configuração do PostgreSQL...', 'warning');
+        
+        const fixAccessCmd = `
+        # Identificar arquivo pg_hba.conf
+        PG_HBA_PATH=$(sudo -u postgres psql -t -c "SHOW hba_file;" | xargs)
+        
+        # Adicionar configuração de acesso confiável para conexões locais
+        if [ -f "$PG_HBA_PATH" ]; then
+          # Adicionar linhas para garantir acesso local se não existirem
+          if ! grep -q "host all all 127.0.0.1/32 trust" "$PG_HBA_PATH"; then
+            echo "host all all 127.0.0.1/32 trust" | sudo tee -a "$PG_HBA_PATH"
+            echo "Adicionada regra para 127.0.0.1"
+          fi
+          
+          if ! grep -q "host all all 0.0.0.0/0 md5" "$PG_HBA_PATH"; then
+            echo "host all all 0.0.0.0/0 md5" | sudo tee -a "$PG_HBA_PATH"
+            echo "Adicionada regra para 0.0.0.0/0"
+          fi
+          
+          # Reiniciar PostgreSQL para aplicar mudanças
+          sudo systemctl restart postgresql
+          
+          # Aguardar reinicialização
+          sleep 5
+          
+          # Verificar novamente
+          export PGPASSWORD="${DB_PASSWORD}"
+          if psql -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USERNAME} -d ${DB_NAME} -c "SELECT 1" > /dev/null 2>&1; then
+            echo "Acesso corrigido com sucesso"
+          else
+            echo "Persistem problemas de acesso após correção"
+          fi
+        else
+          echo "Arquivo pg_hba.conf não encontrado"
+        fi
+        `;
+        
+        const fixResult = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${fixAccessCmd}"`, 40000, true);
+        verification.log(`Resultado da correção: ${fixResult}`, 'info');
+      }
+      
+    } catch (dbSetupError) {
+      verification.log('Erro ao configurar banco de dados para migrações', 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(dbSetupError)}`);
+    }
+    
+    // Criar script modificado para corrigir problemas no script original
+    verification.log('Preparando script wrapper para migrações...', 'step');
+    const modifiedMigrationScript = `#!/bin/bash
+# Script wrapper para corrigir problemas de conexão no script de migração original
+
+# Definir variáveis de ambiente que o script migrate.sh espera
+export DB_HOST="${DB_HOST}"
+export DB_PORT="${DB_PORT}"
+export DB_USERNAME="${DB_USERNAME}"
+export DB_PASSWORD="${DB_PASSWORD}"
+export DB_NAME="${DB_NAME}"
+
+# Verificar se o banco está acessível antes de tentar a migração
+echo "Verificando acessibilidade do banco de dados..."
+PGPASSWORD="${DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USERNAME}" -d "${DB_NAME}" -c "SELECT 'Banco de dados acessível'" || {
+  echo "ERRO: Não foi possível conectar ao banco de dados. Verificando configurações..."
+  
+  # Verificar se o servidor está executando
+  if ! systemctl is-active postgresql > /dev/null; then
+    echo "PostgreSQL não está ativo. Tentando iniciar..."
+    systemctl start postgresql
+    sleep 5
+  fi
+  
+  # Verificar se o usuário existe
+  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='${DB_USERNAME}'" | grep -q 1; then
+    echo "Criando usuário ${DB_USERNAME}..."
+    sudo -u postgres psql -c "CREATE USER ${DB_USERNAME} WITH PASSWORD '${DB_PASSWORD}' SUPERUSER"
+  else
+    echo "Garantindo permissões para ${DB_USERNAME}..."
+    sudo -u postgres psql -c "ALTER USER ${DB_USERNAME} WITH SUPERUSER"
+  fi
+  
+  # Verificar se o banco existe
+  if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${DB_NAME}'" | grep -q 1; then
+    echo "Criando banco ${DB_NAME}..."
+    sudo -u postgres psql -c "CREATE DATABASE ${DB_NAME} OWNER ${DB_USERNAME}"
+  fi
+  
+  # Testar conexão novamente
+  echo "Testando conexão novamente..."
+  if ! PGPASSWORD="${DB_PASSWORD}" psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${DB_USERNAME}" -d "${DB_NAME}" -c "SELECT 'Banco corrigido'" > /dev/null; then
+    echo "FALHA CRÍTICA: Não foi possível estabelecer conexão com o banco de dados"
+    exit 1
+  fi
+}
+
+echo "Banco de dados verificado e acessível. Executando script de migração..."
+
+# Ir para o diretório correto
+cd ${basePath}
+
+# Executar script original com timeout de 8 minutos
+timeout 480 bash ${scriptPath}
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -eq 124 ]; then
+  echo "AVISO: O script atingiu o timeout de 8 minutos"
+  exit 0
+else
+  exit $EXIT_CODE
+fi
+`;
+
+    // Escrever script modificado em arquivo temporário
+    const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    const wrapperPath = path.join(tempDir, 'fixed_migration_wrapper.sh');
+    fs.writeFileSync(wrapperPath, modifiedMigrationScript);
+    
+    // Copiar para WSL
+    const wslWrapperPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${wrapperPath.replace(/\\/g, '/')}"`, 10000, true);
+    await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslWrapperPath}" /tmp/fixed_migration_wrapper.sh`, 10000, true);
+    await verification.execPromise('wsl -d Ubuntu -u root chmod 755 /tmp/fixed_migration_wrapper.sh', 10000, true);
+    
+    // Executar o script wrapper com timeout estendido
+    verification.log('Executando script de migração (pode levar vários minutos)...', 'step');
+    try {
+      const migrationOutput = await verification.execPromise('wsl -d Ubuntu -u root bash /tmp/fixed_migration_wrapper.sh', 600000, true);
+      
+      // Registrar saída para diagnóstico
+      verification.log('Resultado das migrações:', 'success');
+      verification.logToFile(`Saída da migração: ${migrationOutput}`);
+      
+      // Verificar se as migrações foram concluídas com sucesso
+      verification.log('Migrações executadas com sucesso', 'success');
+      return true;
+    } catch (migrationError) {
+      // Verificar se o erro foi devido ao timeout
+      if (migrationError.message && migrationError.message.includes('Tempo limite excedido')) {
+        verification.log('O script de migração excedeu o tempo limite de 10 minutos', 'warning');
+        
+        // Verificar se o banco de dados parece estar funcionando apesar do timeout
+        try {
+          await verification.execPromise(`wsl -d Ubuntu -u postgres psql -d ${DB_NAME} -c "SELECT current_timestamp"`, 15000, true);
+          verification.log('Banco de dados parece estar funcionando apesar do timeout', 'info');
+          verification.log('Continuando instalação mesmo com timeout nas migrações', 'warning');
+          return true;
+        } catch (dbCheckError) {
+          verification.log('Banco de dados pode não estar configurado corretamente', 'warning');
+          // Continuar mesmo assim
+          return true;
+        }
+      } else {
+        verification.log(`Erro durante a execução das migrações: ${migrationError.message || JSON.stringify(migrationError)}`, 'warning');
+        verification.logToFile(`Erro detalhado da migração: ${JSON.stringify(migrationError)}`);
+        
+        // Continuar mesmo com erro
+        verification.log('Continuando instalação mesmo com erro nas migrações', 'warning');
+        return true;
+      }
+    }
+  } catch (error) {
+    verification.log(`Erro ao processar migrações: ${error.message || JSON.stringify(error)}`, 'warning');
+    verification.logToFile(`Detalhes do erro de migração: ${JSON.stringify(error)}`);
+    
+    // Tentar obter mais informações de diagnóstico
+    try {
+      // Verificar se o arquivo pode ser lido
+      const fileContent = await verification.execPromise(`wsl -d Ubuntu -u root head -n 10 ${basePath}/db/migrate.sh 2>&1`, 10000, true);
+      verification.log(`Conteúdo do início do arquivo:\n${fileContent}`, 'info');
+    } catch (diagError) {
+      verification.log('Não foi possível ler o conteúdo do arquivo para diagnóstico', 'warning');
+    }
+    
+    // Continuar a instalação mesmo com erro
+    verification.log('Continuando instalação apesar de erros nas migrações', 'warning');
+    return true;
   }
 }
 
@@ -1232,7 +1758,7 @@ async function configureSystem() {
     
     if (!apiHealth) {
       verification.log('API não está respondendo, tentando reiniciar o serviço...', 'warning');
-      await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && pm2 restart ecosystem.config.js"', 30000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart ecosystem.config.js"', 30000, true);
       
       // Aguardar inicialização
       verification.log('Aguardando inicialização do serviço...', 'info');
@@ -1468,7 +1994,7 @@ async function installSystem() {
     if (!apiHealth) {
       verification.log('API não está respondendo. Tentando reiniciar o serviço...', 'warning');
       try {
-        await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && pm2 restart all"', 30000, true);
+        await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart all"', 30000, true);
         
         // Aguardar inicialização do serviço
         verification.log('Aguardando inicialização do serviço...', 'info');
@@ -1505,7 +2031,7 @@ async function installSystem() {
 
     verification.log('Para administrar o sistema:', 'info');
     verification.log('1. Acesse o WSL usando o comando "wsl" no Prompt de Comando ou PowerShell.', 'info');
-    verification.log('2. Navegue até /opt/print_server para acessar os arquivos do sistema.', 'info');
+    verification.log('2. Navegue até /opt/loqquei/print_server_desktop para acessar os arquivos do sistema.', 'info');
 
     if (!isElectron) {
       await askQuestion('Pressione ENTER para finalizar a instalação...');

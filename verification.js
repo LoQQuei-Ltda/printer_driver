@@ -656,7 +656,7 @@ async function checkSoftwareConfigurations() {
   
   // Pacotes necessários
   const requiredPackages = [
-    'nano', 'samba', 'cups', 'cups-pdf', 'postgresql', 'postgresql-contrib',
+    'nano', 'samba', 'cups', 'printer-driver-cups-pdf', 'postgresql', 'postgresql-contrib',
     'ufw', 'npm', 'jq', 'net-tools', 'avahi-daemon', 'avahi-utils',
     'avahi-discover', 'hplip', 'hplip-gui', 'printer-driver-all'
   ];
@@ -697,20 +697,45 @@ async function checkSoftwareConfigurations() {
   // Verificar API
   const apiHealth = await checkApiHealth();
   
-  // Verificar se /opt/print_server existe
+  // Verificar se /opt/loqquei/print_server_desktop existe
   let optDirExists = false;
   try {
-    const output = await execPromise(`wsl -d Ubuntu -u root test -d /opt/print_server && echo "exists"`, 10000, true);
-    optDirExists = output.trim() === 'exists';
+    // Usar um script bash que sempre retorna um código de saída 0 (sucesso)
+    // mas com uma mensagem diferente baseada na existência do diretório
+    const bashScript = `wsl -d Ubuntu -u root bash -c "if [ -d '/opt/loqquei/print_server_desktop' ]; then echo 'EXISTS'; else echo 'NOT_EXISTS'; fi"`;
+    const result = await execPromise(bashScript, 10000, true);
+    
+    optDirExists = result.trim() === 'EXISTS';
     
     if (optDirExists) {
-      log("Diretório /opt/print_server encontrado", "success");
+      log("Diretório /opt/loqquei/print_server_desktop encontrado", "success");
     } else {
-      log("Diretório /opt/print_server não encontrado", "warning");
+      log("Diretório /opt/loqquei/print_server_desktop não encontrado", "warning");
+      
+      // Verificação adicional do diretório alternativo (opcional)
+      const altScript = `wsl -d Ubuntu -u root bash -c "if [ -d '/opt/print_server/print_server_desktop' ]; then echo 'EXISTS'; else echo 'NOT_EXISTS'; fi"`;
+      const altResult = await execPromise(altScript, 10000, true);
+      
+      if (altResult.trim() === 'EXISTS') {
+        log("Diretório alternativo /opt/print_server/print_server_desktop encontrado", "info");
+        log("ATENÇÃO: Possível inconsistência nos caminhos utilizados", "warning");
+      }
     }
   } catch (error) {
-    log("Erro ao verificar diretório /opt/print_server", "warning");
+    log(`Erro ao verificar diretório: ${error.message || 'Erro desconhecido'}`, "warning");
     optDirExists = false;
+    
+    // Diagnóstico adicional
+    try {
+      // Listar conteúdo de /opt e /opt/loqquei para diagnóstico
+      const optContents = await execPromise(`wsl -d Ubuntu -u root ls -la /opt/`, 10000, true);
+      log(`Conteúdo do diretório /opt/:\n${optContents}`, "info");
+      
+      // Tentar listar /opt/loqquei se existir
+      await execPromise(`wsl -d Ubuntu -u root bash -c "if [ -d '/opt/loqquei' ]; then ls -la /opt/loqquei/; fi"`, 10000, true);
+    } catch (diagError) {
+      log("Erro no diagnóstico adicional", "warning");
+    }
   }
   
   // Verificar processos PM2
