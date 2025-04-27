@@ -34,7 +34,7 @@ function initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated) {
     const { getAutoPrintConfig } = require('./main');
 
     // Endpoint para abrir a aplicação na seção de arquivos para impressão
-    app.get('/api/file', checkAuth, (request, response) => {
+    app.get('/api/new-file', checkAuth, (request, response) => {
         try {
             const fileId = request.query.fileId;
 
@@ -131,6 +131,60 @@ function initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated) {
                 success: false,
                 message: 'Erro ao abrir aplicação',
                 error: error.message
+            });
+        }
+    });
+
+    app.get('/api/files', checkAuth, async (request, response) => {
+        try {
+            const responseFiles = await axios.get(`${appConfig.apiLocalUrl}/files`);
+
+            if (responseFiles.status === 200) {
+                const files = responseFiles.data?.data;
+
+                return response.status(200).json({
+                    success: true,
+                    message: 'Arquivos obtidos com sucesso',
+                    files: files
+                });
+            } else {
+                return response.status(500).json({
+                    success: false,
+                    message: 'Erro ao obter arquivos'
+                });
+            }
+        } catch (error) {
+            console.error('Erro ao obter arquivos:', error);
+            return response.status(500).json({
+                success: false,
+                message: 'Erro ao obter arquivos'
+            });
+        }
+    });
+
+    app.get('/api/printers', checkAuth, async (request, response) => {
+        try {
+            const responsePrinters = await axios.get(`${appConfig.apiLocalUrl}/printers`);
+
+            if (responsePrinters.status === 200) {
+                const printers = responsePrinters.data?.data;
+
+                return response.status(200).json({
+                    success: true,
+                    message: 'Impressoras obtidas com sucesso',
+                    printers: printers
+                });
+            } else {
+                return response.status(500).json({
+                    success: false,
+                    message: 'Erro ao obter impressoras'
+                });
+            }
+        } catch (error) {
+            console.error('Erro ao obter impressoras:', error);
+            return response.status(500).json({
+                success: false,
+                message: 'Erro ao obter impressoras'
             });
         }
     });
