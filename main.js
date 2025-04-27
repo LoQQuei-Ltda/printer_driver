@@ -6,6 +6,7 @@ const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, shell, nativeImage, scr
 const { printersSync } = require('./tasks/printers');
 const { execFile, exec } = require('child_process');
 const installer = require('./installer');
+const verification = require('./verification');
 const AppUpdater = require('./updater');
 const { initTask } = require('./task');
 const { initAPI } = require('./api');
@@ -157,7 +158,7 @@ async function setupEnvironment() {
     console.log('Verificando componentes do sistema...');
 
     // Verificar se WSL e Ubuntu já estão instalados
-    const wslStatus = await installer.checkWSLStatusDetailed();
+    const wslStatus = await verification.checkWSLStatusDetailed();
 
     // Se tudo estiver instalado, não fazer nada
     if (wslStatus.installed && wslStatus.wsl2 && wslStatus.hasDistro) {
@@ -750,6 +751,45 @@ function createInstallationWindow() {
       require('electron').ipcRenderer.send('installation-page-ready');
     `);
   });
+
+  installationWindow.webContents.executeJavaScript(`
+    // Configurar manipuladores para os novos elementos
+    document.addEventListener('DOMContentLoaded', () => {
+      // Handler para exportar log
+      const exportLogButton = document.getElementById('exportLogButton');
+      if (exportLogButton) {
+        exportLogButton.addEventListener('click', () => {
+          require('electron').ipcRenderer.send('export-installation-log', 
+            'instalacao_log_' + new Date().toISOString().slice(0, 10) + '.txt');
+        });
+      }
+      
+      // Escutar atualizações de etapas
+      require('electron').ipcRenderer.on('step-update', (event, data) => {
+        const indicator = document.getElementById('stepIndicator' + (data.step + 1));
+        const status = document.getElementById('stepStatus' + (data.step + 1));
+        
+        if (indicator) {
+          indicator.className = 'step-indicator ' + data.state;
+          
+          // Atualizar ícone
+          if (data.state === 'pending') {
+            indicator.innerHTML = '<i class="fas fa-circle"></i>';
+          } else if (data.state === 'in-progress') {
+            indicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+          } else if (data.state === 'completed') {
+            indicator.innerHTML = '<i class="fas fa-check"></i>';
+          } else if (data.state === 'error') {
+            indicator.innerHTML = '<i class="fas fa-times"></i>';
+          }
+        }
+        
+        if (status) {
+          status.textContent = data.message;
+        }
+      });
+    });
+  `);  
 }
 
 // Criar ícone na bandeja
@@ -1060,6 +1100,56 @@ ipcMain.on('installation-page-ready', () => {
     installationWindow.webContents.send('log', {
       type: 'info',
       message: 'Interface de instalação inicializada com sucesso'
+    });
+  }
+});
+
+// Handler para verificação detalhada do sistema
+ipcMain.on('verificar-sistema-detalhado', async (event) => {
+  try {
+    // Verificar status do sistema com verificação completa
+    const systemStatus = await verification.checkSystemStatus();
+    
+    // Verificar status do software (mais detalhado)
+    if (systemStatus.wslStatus.installed && systemStatus.wslStatus.hasDistro) {
+      systemStatus.softwareStatus = await verification.checkSoftwareConfigurations();
+    }
+    
+    // Verificar status da impressora virtual do Windows
+    systemStatus.printerStatus = await verification.checkWindowsPrinterInstalled();
+    
+    // Determinar se o sistema precisa ser configurado
+    systemStatus.needsConfiguration = !systemStatus.systemConfigured;
+    if (systemStatus.softwareStatus) {
+      systemStatus.needsConfiguration = !systemStatus.softwareStatus.fullyConfigured;
+    }
+    
+    event.reply('sistema-status-detalhado', systemStatus);
+  } catch (error) {
+    console.error('Erro na verificação detalhada do sistema:', error);
+    event.reply('sistema-status-detalhado', {
+      error: error.message || 'Erro desconhecido na verificação do sistema'
+    });
+  }
+});
+
+// Handler para exportar log
+ipcMain.on('exportar-log', (event, { content, filename }) => {
+  try {
+    const downloadsPath = app.getPath('downloads');
+    const logPath = path.join(downloadsPath, filename);
+    
+    fs.writeFileSync(logPath, content, 'utf8');
+    
+    event.reply('exportar-log-resposta', {
+      success: true,
+      path: logPath
+    });
+  } catch (error) {
+    console.error('Erro ao exportar log:', error);
+    event.reply('exportar-log-resposta', {
+      success: false,
+      error: error.message
     });
   }
 });
@@ -1472,6 +1562,41 @@ ipcMain.on('iniciar-instalacao', async (event) => {
         });
       }
     }
+
+    installer.setStepUpdateCallback((stepIndex, state, message) => {
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        installationWindow.webContents.send('step-update', {
+          step: stepIndex,
+          state: state,
+          message: message
+        });
+      }
+    });
+
+    installer.setProgressCallback((percentage) => {
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        installationWindow.webContents.send('progress-update', {
+          percentage: percentage
+        });
+      }
+    });
+    
+    // E também adicione um listener no lado do renderer
+    installationWindow.webContents.executeJavaScript(`
+      // Escutar atualizações de progresso
+      require('electron').ipcRenderer.on('progress-update', (event, data) => {
+        const progressBar = document.getElementById('progressBar');
+        const progressPercentage = document.getElementById('progressPercentage');
+        
+        if (progressBar) {
+          progressBar.style.width = data.percentage + '%';
+        }
+        
+        if (progressPercentage) {
+          progressPercentage.textContent = Math.round(data.percentage) + '%';
+        }
+      });
+    `);    
   } catch (error) {
     console.error('Erro na instalação:', error);
 
@@ -1502,6 +1627,41 @@ ipcMain.on('resposta-pergunta', (event, resposta) => {
   if (global.askQuestionCallback) {
     global.askQuestionCallback(resposta);
     global.askQuestionCallback = null;
+  }
+});
+
+// Handler para atualizações de progresso por etapa
+ipcMain.on('get-installation-steps', (event) => {
+  const steps = installer.getInstallationSteps();
+  event.reply('installation-steps', steps);
+});
+
+// Handler para exportar log de instalação
+ipcMain.on('export-installation-log', (event, filename) => {
+  try {
+    const logContent = installer.getInstallationLog();
+    const downloadsPath = app.getPath('downloads');
+    const logPath = path.join(downloadsPath, filename || 'instalacao_log.txt');
+    
+    fs.writeFileSync(logPath, logContent, 'utf8');
+    
+    event.reply('export-installation-log-response', {
+      success: true,
+      path: logPath
+    });
+    
+    if (installationWindow && !installationWindow.isDestroyed()) {
+      installationWindow.webContents.send('log', {
+        type: 'success',
+        message: `Log exportado para: ${logPath}`
+      });
+    }
+  } catch (error) {
+    console.error('Erro ao exportar log de instalação:', error);
+    event.reply('export-installation-log-response', {
+      success: false,
+      error: error.message
+    });
   }
 });
 

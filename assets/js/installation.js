@@ -13,6 +13,7 @@ class InstallationManager {
       stepStatus: document.getElementById('stepStatus'),
       statusIcon: document.getElementById('statusIcon'),
       progressBar: document.getElementById('progressBar'),
+      progressPercentage: document.getElementById('progressPercentage'),
       logContainer: document.getElementById('logContainer'),
       closeButton: document.getElementById('closeButton'),
       questionModal: document.getElementById('questionModal'),
@@ -24,7 +25,8 @@ class InstallationManager {
       installLogo: document.getElementById('installLogo'),
       autoScrollToggle: document.getElementById('autoScrollToggle'),
       minimizeBtn: document.getElementById('minimizeBtn'),
-      closeBtn: document.getElementById('closeBtn')
+      closeBtn: document.getElementById('closeBtn'),
+      exportLogButton: document.getElementById('exportLogButton')
     };
 
     // Etapas de instalação
@@ -48,7 +50,9 @@ class InstallationManager {
       logBuffer: [], // Buffer para processar logs em lote
       processingLogs: false,
       logUpdateInterval: null,
-      lastProgressUpdate: Date.now() // Para limitar a frequência de atualizações da barra de progresso
+      lastProgressUpdate: Date.now(), // Para limitar a frequência de atualizações da barra de progresso
+      stepStatus: Array(8).fill('Pendente'),
+      stepState: Array(8).fill('pending') // pending, in-progress, completed, error
     };
 
     // Inicializar
@@ -227,6 +231,39 @@ class InstallationManager {
   }
 
   /**
+   * Exportar log para arquivo de texto
+   */
+  exportLog() {
+    if (!this.ui.logContainer) return;
+    
+    const logEntries = this.ui.logContainer.querySelectorAll('.log-entry');
+    let logText = `Log de Instalação - ${new Date().toLocaleDateString()} ${new Date().toLocaleTimeString()}\n\n`;
+    
+    logEntries.forEach(entry => {
+      logText += `${entry.textContent}\n`;
+    });
+    
+    // Criar um blob com o texto
+    const blob = new Blob([logText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    
+    // Criar um link para download e clicar nele
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `instalacao_log_${new Date().toISOString().slice(0,10)}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    
+    // Limpar
+    setTimeout(() => {
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }, 100);
+    
+    this.addLogEntry('Log exportado para arquivo de texto', 'success');
+  }
+
+  /**
    * Configurar escutadores de eventos
    */
   setupEventListeners() {
@@ -262,6 +299,11 @@ class InstallationManager {
     // Toggle de auto-scroll
     if (this.ui.autoScrollToggle) {
       this.ui.autoScrollToggle.addEventListener('click', () => this.toggleAutoScroll());
+    }
+
+    // Botão de exportar log
+    if (this.ui.exportLogButton) {
+      this.ui.exportLogButton.addEventListener('click', () => this.exportLog());
     }
 
     // Controle da janela
@@ -317,10 +359,26 @@ class InstallationManager {
     if (step >= 0 && step < this.allSteps.length && this.ui.stepStatus) {
       this.state.currentStep = step;
       this.ui.stepStatus.textContent = this.allSteps[step];
+      
+      // Atualizar o status da etapa
+      this.updateStepStatus(step, 'in-progress', 'Em andamento');
+      
+      // Marcar etapas anteriores como concluídas se não estiverem marcadas
+      for (let i = 0; i < step; i++) {
+        if (this.state.stepState[i] !== 'completed' && this.state.stepState[i] !== 'error') {
+          this.updateStepStatus(i, 'completed', 'Concluído');
+        }
+      }
     }
 
     if (percentage >= 0 && percentage <= 100 && this.ui.progressBar) {
       this.ui.progressBar.style.width = `${percentage}%`;
+      
+      // Atualizar porcentagem numérica
+      if (this.ui.progressPercentage) {
+        this.ui.progressPercentage.textContent = `${Math.round(percentage)}%`;
+      }
+      
       console.log(`Atualizando barra de progresso: ${percentage}%`); // Debug
 
       // Atualizar o ícone de status
@@ -333,6 +391,38 @@ class InstallationManager {
           this.ui.statusIcon.className = 'status-indicator green';
         }
       }
+    }
+  }
+
+  /**
+   * Atualizar status de uma etapa específica
+   */
+  updateStepStatus(stepIndex, state, statusText) {
+    if (stepIndex < 0 || stepIndex >= this.allSteps.length) return;
+    
+    this.state.stepState[stepIndex] = state;
+    this.state.stepStatus[stepIndex] = statusText;
+    
+    const indicator = document.getElementById(`stepIndicator${stepIndex + 1}`);
+    const status = document.getElementById(`stepStatus${stepIndex + 1}`);
+    
+    if (indicator) {
+      indicator.className = `step-indicator ${state}`;
+      
+      // Atualizar ícone
+      if (state === 'pending') {
+        indicator.innerHTML = '<i class="fas fa-circle"></i>';
+      } else if (state === 'in-progress') {
+        indicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+      } else if (state === 'completed') {
+        indicator.innerHTML = '<i class="fas fa-check"></i>';
+      } else if (state === 'error') {
+        indicator.innerHTML = '<i class="fas fa-times"></i>';
+      }
+    }
+    
+    if (status) {
+      status.textContent = statusText;
     }
   }
 
@@ -361,6 +451,7 @@ class InstallationManager {
     if (lowerMessage.includes('instalação concluída com sucesso') ||
       (type === 'success' && lowerMessage.includes('concluída'))) {
       this.updateProgress(7, 100);
+      this.updateStepStatus(7, 'completed', 'Concluído');
       this.state.installationComplete = true;
 
       if (this.ui.closeButton) {
@@ -375,27 +466,36 @@ class InstallationManager {
       this.updateProgress(0, 10);
     } else if (lowerMessage.includes('wsl não está instalado')) {
       this.updateProgress(0, 15);
+      this.updateStepStatus(0, 'completed', 'Concluído');
     } else if (lowerMessage.includes('instalando wsl')) {
       this.updateProgress(1, 20);
+      this.updateStepStatus(0, 'completed', 'Concluído');
     } else if (lowerMessage.includes('recurso wsl habilitado')) {
       this.updateProgress(1, 30);
     } else if (lowerMessage.includes('definindo wsl 2') ||
       lowerMessage.includes('kernel do wsl2 instalado')) {
       this.updateProgress(2, 40);
+      this.updateStepStatus(1, 'completed', 'Concluído');
     } else if (lowerMessage.includes('instalando ubuntu')) {
       this.updateProgress(3, 50);
+      this.updateStepStatus(2, 'completed', 'Concluído');
     } else if (lowerMessage.includes('ubuntu instalado')) {
       this.updateProgress(3, 60);
     } else if (lowerMessage.includes('configurando usuário padrão')) {
       this.updateProgress(4, 70);
+      this.updateStepStatus(3, 'completed', 'Concluído');
     } else if (lowerMessage.includes('configurando o sistema')) {
       this.updateProgress(5, 80);
+      this.updateStepStatus(4, 'completed', 'Concluído');
     } else if (lowerMessage.includes('configurando cups') ||
       lowerMessage.includes('configurando samba') ||
       lowerMessage.includes('configurando nginx')) {
       this.updateProgress(6, 90);
+      this.updateStepStatus(5, 'completed', 'Concluído');
     } else if (lowerMessage.includes('instalação concluída')) {
       this.updateProgress(7, 100);
+      this.updateStepStatus(6, 'completed', 'Concluído');
+      this.updateStepStatus(7, 'completed', 'Concluído');
       this.state.installationComplete = true;
 
       if (this.ui.closeButton) {
@@ -406,6 +506,29 @@ class InstallationManager {
       setTimeout(() => {
         window.close();
       }, 5000);
+    }
+    
+    // Verificar erros
+    if (type === 'error') {
+      // Marcar a etapa atual como erro
+      this.updateStepStatus(this.state.currentStep, 'error', 'Erro');
+    }
+    
+    // Verificar sucesso em etapas específicas
+    if (type === 'success') {
+      if (lowerMessage.includes('wsl instalado')) {
+        this.updateStepStatus(1, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('wsl 2 configurado')) {
+        this.updateStepStatus(2, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('ubuntu instalado')) {
+        this.updateStepStatus(3, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('usuário configurado')) {
+        this.updateStepStatus(4, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('ambiente configurado')) {
+        this.updateStepStatus(5, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('serviços configurados')) {
+        this.updateStepStatus(6, 'completed', 'Concluído');
+      }
     }
   }
 
@@ -456,14 +579,19 @@ class InstallationManager {
   }
 
   /**
- * Manipular conclusão da instalação
- */
+   * Manipular conclusão da instalação
+   */
   handleInstallationComplete(data) {
     console.log('Recebido evento de instalação completa:', data);
 
     if (data.success) {
       this.updateProgress(7, 100);
       this.addLogEntry('✅ Instalação concluída com sucesso!', 'success');
+      
+      // Marcar todas as etapas como concluídas
+      for (let i = 0; i < this.allSteps.length; i++) {
+        this.updateStepStatus(i, 'completed', 'Concluído');
+      }
 
       // Atualizar botão
       if (this.ui.closeButton) {
@@ -483,6 +611,9 @@ class InstallationManager {
       alert('Instalação concluída com sucesso! Esta janela será fechada automaticamente em 5 segundos.');
     } else {
       this.addLogEntry(`❌ Instalação falhou: ${data.error || 'Erro desconhecido'}`, 'error');
+      
+      // Marcar etapa atual como erro
+      this.updateStepStatus(this.state.currentStep, 'error', 'Erro');
 
       if (this.ui.closeButton) {
         this.ui.closeButton.style.display = 'block';

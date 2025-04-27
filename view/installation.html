@@ -22,6 +22,14 @@
     .progress-label {
       font-weight: 500;
       margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .progress-percentage {
+      font-size: 13px;
+      color: var(--text-secondary);
     }
 
     .progress-bar-container {
@@ -46,6 +54,74 @@
       padding: 16px;
       margin-bottom: 16px;
     }
+    
+    .installation-steps {
+      margin-top: 20px;
+      background-color: var(--bg-content);
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      overflow: hidden;
+    }
+    
+    .step-item {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+    }
+    
+    .step-item:last-child {
+      border-bottom: none;
+    }
+    
+    .step-indicator {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin-right: 12px;
+      font-size: 12px;
+      color: white;
+    }
+    
+    .step-indicator.pending {
+      background-color: var(--text-secondary);
+    }
+    
+    .step-indicator.in-progress {
+      background-color: var(--color-warning);
+      animation: pulse 1.5s infinite;
+    }
+    
+    .step-indicator.completed {
+      background-color: var(--color-success);
+    }
+    
+    .step-indicator.error {
+      background-color: var(--color-danger);
+    }
+    
+    .step-indicator i {
+      font-size: 10px;
+    }
+    
+    .step-text {
+      flex: 1;
+    }
+    
+    .step-status {
+      font-size: 12px;
+      margin-left: 12px;
+      color: var(--text-secondary);
+    }
+    
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.7; }
+      100% { opacity: 1; }
+    }
 
     .auto-scroll-toggle {
       cursor: pointer;
@@ -64,6 +140,41 @@
       margin-top: 16px;
       width: 100%;
       justify-content: center;
+    }
+    
+    /* Estilos para categorias de log */
+    .log-entry.header {
+      color: var(--color-primary);
+      font-weight: bold;
+      margin-top: 10px;
+      margin-bottom: 5px;
+    }
+    
+    .log-entry.success {
+      color: var(--color-success);
+    }
+    
+    .log-entry.error {
+      color: var(--color-danger);
+    }
+    
+    .log-entry.warning {
+      color: var(--color-warning);
+    }
+    
+    .log-entry.step {
+      color: var(--color-primary);
+    }
+    
+    .log-entry.info {
+      color: var(--text-color);
+    }
+    
+    /* Botões extras */
+    .control-buttons {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 16px;
     }
   </style>
 </head>
@@ -115,9 +226,72 @@
 
         <!-- Barra de Progresso -->
         <div class="progress-container">
-          <div class="progress-label">Progresso da Instalação</div>
+          <div class="progress-label">
+            <span>Progresso da Instalação</span>
+            <span id="progressPercentage" class="progress-percentage">5%</span>
+          </div>
           <div class="progress-bar-container">
             <div id="progressBar" class="progress-bar"></div>
+          </div>
+        </div>
+        
+        <!-- Etapas de Instalação -->
+        <div class="installation-steps" id="installationSteps">
+          <div class="step-item">
+            <div class="step-indicator pending" id="stepIndicator1">
+              <i class="fas fa-circle"></i>
+            </div>
+            <div class="step-text">Verificando pré-requisitos</div>
+            <div class="step-status" id="stepStatus1">Pendente</div>
+          </div>
+          <div class="step-item">
+            <div class="step-indicator pending" id="stepIndicator2">
+              <i class="fas fa-circle"></i>
+            </div>
+            <div class="step-text">Instalando Windows Subsystem for Linux (WSL)</div>
+            <div class="step-status" id="stepStatus2">Pendente</div>
+          </div>
+          <div class="step-item">
+            <div class="step-indicator pending" id="stepIndicator3">
+              <i class="fas fa-circle"></i>
+            </div>
+            <div class="step-text">Configurando WSL 2</div>
+            <div class="step-status" id="stepStatus3">Pendente</div>
+          </div>
+          <div class="step-item">
+            <div class="step-indicator pending" id="stepIndicator4">
+              <i class="fas fa-circle"></i>
+            </div>
+            <div class="step-text">Instalando Ubuntu</div>
+            <div class="step-status" id="stepStatus4">Pendente</div>
+          </div>
+          <div class="step-item">
+            <div class="step-indicator pending" id="stepIndicator5">
+              <i class="fas fa-circle"></i>
+            </div>
+            <div class="step-text">Configurando usuário padrão</div>
+            <div class="step-status" id="stepStatus5">Pendente</div>
+          </div>
+          <div class="step-item">
+            <div class="step-indicator pending" id="stepIndicator6">
+              <i class="fas fa-circle"></i>
+            </div>
+            <div class="step-text">Configurando ambiente de sistema</div>
+            <div class="step-status" id="stepStatus6">Pendente</div>
+          </div>
+          <div class="step-item">
+            <div class="step-indicator pending" id="stepIndicator7">
+              <i class="fas fa-circle"></i>
+            </div>
+            <div class="step-text">Configurando serviços</div>
+            <div class="step-status" id="stepStatus7">Pendente</div>
+          </div>
+          <div class="step-item">
+            <div class="step-indicator pending" id="stepIndicator8">
+              <i class="fas fa-circle"></i>
+            </div>
+            <div class="step-text">Finalizando instalação</div>
+            <div class="step-status" id="stepStatus8">Pendente</div>
           </div>
         </div>
 
@@ -134,8 +308,11 @@
           </div>
         </div>
 
-        <!-- Botão de Conclusão -->
-        <div class="install-button-container">
+        <!-- Botões de Controle -->
+        <div class="control-buttons">
+          <button id="exportLogButton" class="btn-secondary">
+            <i class="fas fa-download"></i> Exportar Log
+          </button>
           <button id="closeButton" class="btn-primary installed install-complete-btn" style="display: none;">
             <i class="fas fa-check-circle"></i> Instalação Concluída
           </button>

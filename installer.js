@@ -2736,6 +2736,26 @@ module.exports = {
   setupPM2,
   systemCleanup,
   
+  checkWSLStatusDetailed: verification.checkWSLStatusDetailed,
+  setCustomAskQuestion: verification.setCustomAskQuestion,
+  log: verification.log,
+  
+  // Novas funções para suportar a interface de instalação aprimorada
+  setStepUpdateCallback: function(callback) {
+    stepUpdateCallback = callback;
+  },
+  
+  setProgressCallback: function(callback) {
+    progressCallback = callback;
+  },
+  
+  getInstallationSteps: function() {
+    return allSteps;
+  },
+  
+  getInstallationLog: function() {
+    return installationLog.join('\n');
+  }
 }
 
 

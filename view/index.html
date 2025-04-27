@@ -113,12 +113,51 @@
         <div class="tab-content hidden" id="systemTab">
           <div class="content-header">
             <h2>Status do Sistema</h2>
+            <button id="checkSystemButton" class="btn-primary">
+              <i class="fas fa-sync-alt"></i> Verificar Novamente
+            </button>
           </div>
 
+          <!-- Status geral do sistema -->
           <div class="status-section" id="statusSection">
             <div class="loading">
               <div class="spinner"></div>
-              <p>Verificando...</p>
+              <p>Verificando componentes do sistema...</p>
+            </div>
+          </div>
+
+          <!-- Detalhes expandidos do status -->
+          <div class="status-details-container" style="display: none;" id="statusDetailsContainer">
+            <h3 style="margin: 16px 0 8px 0;">Detalhes do Sistema</h3>
+            
+            <!-- WSL e Ubuntu -->
+            <div class="status-section">
+              <div class="status-header" style="font-weight: 600; margin-bottom: 8px;">
+                <i class="fas fa-server"></i> Componentes Base
+              </div>
+              <div id="wslStatusDetails">
+                <!-- Será preenchido dinamicamente -->
+              </div>
+            </div>
+            
+            <!-- Pacotes e Serviços -->
+            <div class="status-section" style="margin-top: 16px;">
+              <div class="status-header" style="font-weight: 600; margin-bottom: 8px;">
+                <i class="fas fa-cube"></i> Pacotes e Serviços
+              </div>
+              <div id="servicesStatusDetails">
+                <!-- Será preenchido dinamicamente -->
+              </div>
+            </div>
+            
+            <!-- Banco de dados e API -->
+            <div class="status-section" style="margin-top: 16px;">
+              <div class="status-header" style="font-weight: 600; margin-bottom: 8px;">
+                <i class="fas fa-database"></i> Banco de Dados e API
+              </div>
+              <div id="dbApiStatusDetails">
+                <!-- Será preenchido dinamicamente -->
+              </div>
             </div>
           </div>
 
@@ -126,14 +165,20 @@
             <button id="installButton" class="btn-primary" disabled>Instalar Sistema</button>
           </div>
 
-          <!-- Installation Log Monitor -->
+          <!-- Installation Log Monitor - Expandido -->
           <div class="log-container">
             <div class="log-header">
-              <span>Log de Instalação</span>
-              <button class="btn-text" id="clearLogBtn">Limpar</button>
+              <span>Log de Verificação e Instalação</span>
+              <div style="display: flex; align-items: center; gap: 12px;">
+                <span id="autoScrollToggleSystem" class="auto-scroll-toggle" style="cursor: pointer; user-select: none;">
+                  Auto-rolagem <i class="fas fa-toggle-on"></i>
+                </span>
+                <button class="btn-text" id="clearLogBtn">Limpar</button>
+                <button class="btn-text" id="exportLogBtn">Exportar</button>
+              </div>
             </div>
             <div class="install-log" id="installLog">
-              <div class="log-entry">Clique em "Instalar Sistema" para iniciar a instalação...</div>
+              <div class="log-entry">Clique em "Verificar Novamente" para iniciar a verificação do sistema...</div>
             </div>
           </div>
         </div>
@@ -192,5 +237,6 @@
   
   <!-- Scripts -->
   <script src="../assets/js/main.js"></script>
+  <script src="../assets/js/system.js"></script>
 </body>
 </html>
