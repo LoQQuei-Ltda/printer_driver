@@ -117,7 +117,7 @@
               <i class="fas fa-sync-alt"></i> Verificar Novamente
             </button>
           </div>
-
+        
           <!-- Status geral do sistema -->
           <div class="status-section" id="statusSection">
             <div class="loading">
@@ -125,7 +125,7 @@
               <p>Verificando componentes do sistema...</p>
             </div>
           </div>
-
+        
           <!-- Detalhes expandidos do status -->
           <div class="status-details-container" style="display: none;" id="statusDetailsContainer">
             <h3 style="margin: 16px 0 8px 0;">Detalhes do Sistema</h3>
@@ -160,11 +160,19 @@
               </div>
             </div>
           </div>
-
-          <div class="install-button-container">
-            <button id="installButton" class="btn-primary" disabled>Instalar Sistema</button>
+        
+          <!-- Botões de Instalação -->
+          <div class="install-buttons-container" style="display: flex; gap: 12px; margin-top: 16px; margin-bottom: 16px;">
+            <div style="flex: 1;">
+              <button id="installButton" class="btn-primary" style="width: 100%;" disabled>Instalar Componentes Necessários</button>
+              <div class="status-text" style="margin-top: 4px; font-size: 12px; color: var(--text-secondary);">Instala apenas os componentes necessários</div>
+            </div>
+            <div style="flex: 1;">
+              <button id="reinstallButton" class="btn-secondary" style="width: 100%;">Reinstalar Sistema Completo</button>
+              <div class="status-text" style="margin-top: 4px; font-size: 12px; color: var(--text-secondary);">Força a reinstalação de todos os componentes</div>
+            </div>
           </div>
-
+        
           <!-- Installation Log Monitor - Expandido -->
           <div class="log-container">
             <div class="log-header">

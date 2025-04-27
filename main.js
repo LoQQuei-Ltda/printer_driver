@@ -714,9 +714,6 @@ function createInstallationWindow() {
   installationWindow.once('ready-to-show', () => {
     installationWindow.show();
     
-    // Para debug - abrir DevTools automaticamente
-    installationWindow.webContents.openDevTools();
-    
     // Enviar um log inicial para confirmar que a comunicação está funcionando
     setTimeout(() => {
       try {
@@ -734,63 +731,44 @@ function createInstallationWindow() {
     installationWindow = null;
   });
 
-  // Diagnóstico de comunicação
-  installationWindow.webContents.on('did-finish-load', () => {
-    installationWindow.webContents.executeJavaScript(`
-      console.log('Página de instalação carregada, configurando diagnóstico');
-      // Monitorar recebimento de mensagens
-      const originalConsoleLog = console.log;
-      console.log = function(...args) {
-        originalConsoleLog.apply(console, args);
-        if (args[0] === 'Log recebido:') {
-          document.getElementById('logContainer').innerHTML += 
-            '<div class="log-entry debug">Diagnóstico: Log recebido pelo renderer</div>';
-        }
-      };
-      
-      // Informar que a página está pronta
-      require('electron').ipcRenderer.send('installation-page-ready');
-    `);
+  // Rastrear o estado da página
+  let isPageReady = false;
+
+  // Ouvir quando a página de instalação estiver pronta
+  ipcMain.once('installation-page-ready', () => {
+    console.log('Página de instalação pronta para receber logs');
+    isPageReady = true;
+    
+    if (installationWindow && !installationWindow.isDestroyed()) {
+      try {
+        installationWindow.webContents.send('log', {
+          type: 'info',
+          message: 'Interface de instalação inicializada com sucesso'
+        });
+      } catch (err) {
+        console.error('Erro ao enviar log após ready:', err);
+      }
+    }
   });
 
-  installationWindow.webContents.executeJavaScript(`
-    // Configurar manipuladores para os novos elementos
-    document.addEventListener('DOMContentLoaded', () => {
-      // Handler para exportar log
-      const exportLogButton = document.getElementById('exportLogButton');
-      if (exportLogButton) {
-        exportLogButton.addEventListener('click', () => {
-          require('electron').ipcRenderer.send('export-installation-log', 
-            'instalacao_log_' + new Date().toISOString().slice(0, 10) + '.txt');
-        });
+  // Diagnóstico de comunicação
+  installationWindow.webContents.on('did-finish-load', () => {
+    console.log('Página de instalação carregada no did-finish-load');
+    
+    // Tentar enviar um log de teste
+    setTimeout(() => {
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        try {
+          installationWindow.webContents.send('log', {
+            type: 'info',
+            message: 'Página carregada - teste de comunicação'
+          });
+        } catch (err) {
+          console.error('Erro ao enviar log de teste:', err);
+        }
       }
-      
-      // Escutar atualizações de etapas
-      require('electron').ipcRenderer.on('step-update', (event, data) => {
-        const indicator = document.getElementById('stepIndicator' + (data.step + 1));
-        const status = document.getElementById('stepStatus' + (data.step + 1));
-        
-        if (indicator) {
-          indicator.className = 'step-indicator ' + data.state;
-          
-          // Atualizar ícone
-          if (data.state === 'pending') {
-            indicator.innerHTML = '<i class="fas fa-circle"></i>';
-          } else if (data.state === 'in-progress') {
-            indicator.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-          } else if (data.state === 'completed') {
-            indicator.innerHTML = '<i class="fas fa-check"></i>';
-          } else if (data.state === 'error') {
-            indicator.innerHTML = '<i class="fas fa-times"></i>';
-          }
-        }
-        
-        if (status) {
-          status.textContent = data.message;
-        }
-      });
-    });
-  `);  
+    }, 1000);
+  });
 }
 
 // Criar ícone na bandeja
@@ -1108,6 +1086,8 @@ ipcMain.on('installation-page-ready', () => {
 // Handler para verificação detalhada do sistema
 ipcMain.on('verificar-sistema-detalhado', async (event) => {
   try {
+    console.log('Recebida solicitação de verificação detalhada do sistema');
+    
     // Verificar status do sistema com verificação completa
     const systemStatus = await verification.checkSystemStatus();
     
@@ -1140,6 +1120,7 @@ ipcMain.on('verificar-sistema-detalhado', async (event) => {
     // Salvar o status em cache global para fallback
     global.lastSystemStatus = systemStatus;
     
+    console.log('Enviando resultado da verificação para o renderer');
     event.reply('sistema-status-detalhado', systemStatus);
   } catch (error) {
     console.error('Erro na verificação detalhada do sistema:', error);
@@ -1368,7 +1349,7 @@ function sendLogToInstallWindow(type, message) {
 }
 
 // Instalação do WSL
-ipcMain.on('iniciar-instalacao', async (event) => {
+ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
   try {
     // Evitar inicializações múltiplas
     if (isInstallingInProgress) {
@@ -1381,12 +1362,6 @@ ipcMain.on('iniciar-instalacao', async (event) => {
     }
     
     isInstallingInProgress = true;
-    
-    // Enviar log para confirmação visual
-    event.reply('installation-log', {
-      type: 'info',
-      message: 'Inicializando processo de instalação...'
-    });
     
     // Verificar se está sendo executado como administrador
     const isAdmin = await checkAdminPrivileges();
@@ -1433,10 +1408,18 @@ ipcMain.on('iniciar-instalacao', async (event) => {
       });
     }
     
+    // Determinar o tipo de instalação
+    const forceReinstall = options.forceReinstall === true;
+    
+    // Enviar log apropriado
+    let headerMessage = forceReinstall 
+      ? 'Iniciando reinstalação completa do sistema' 
+      : 'Iniciando instalação dos componentes necessários';
+    
     // Enviar log para a interface principal
     event.reply('installation-log', {
       type: 'header',
-      message: 'Iniciando instalação do Sistema de Gerenciamento de Impressão'
+      message: headerMessage
     });
     
     // Enviar log para a janela de instalação
@@ -1444,14 +1427,14 @@ ipcMain.on('iniciar-instalacao', async (event) => {
       try {
         installationWindow.webContents.send('log', {
           type: 'header',
-          message: 'Iniciando instalação do Sistema de Gerenciamento de Impressão'
+          message: headerMessage
         });
       } catch (sendError) {
         console.error('Erro ao enviar log para janela de instalação:', sendError);
       }
     }
     
-    // Configurar a função de log customizada para o installer
+    // Modificar a função de log do installer para enviar mensagens para ambas as janelas
     const originalLog = installer.log;
     installer.log = function(message, type = 'info') {
       // Log original
@@ -1527,19 +1510,27 @@ ipcMain.on('iniciar-instalacao', async (event) => {
     // Configurar callbacks para atualização da interface
     installer.setStepUpdateCallback(function(stepIndex, state, message) {
       if (installationWindow && !installationWindow.isDestroyed()) {
-        installationWindow.webContents.send('step-update', {
-          step: stepIndex,
-          state: state,
-          message: message
-        });
+        try {
+          installationWindow.webContents.send('step-update', {
+            step: stepIndex,
+            state: state,
+            message: message
+          });
+        } catch (err) {
+          console.error('Erro ao enviar atualização de etapa:', err);
+        }
       }
     });
     
     installer.setProgressCallback(function(percentage) {
       if (installationWindow && !installationWindow.isDestroyed()) {
-        installationWindow.webContents.send('progress-update', {
-          percentage: percentage
-        });
+        try {
+          installationWindow.webContents.send('progress-update', {
+            percentage: percentage
+          });
+        } catch (err) {
+          console.error('Erro ao enviar atualização de progresso:', err);
+        }
       }
     });
     
@@ -1556,10 +1547,14 @@ ipcMain.on('iniciar-instalacao', async (event) => {
       });
       
       if (installationWindow && !installationWindow.isDestroyed()) {
-        installationWindow.webContents.send('instalacao-completa', { 
-          success: true,
-          message: resultado.message
-        });
+        try {
+          installationWindow.webContents.send('instalacao-completa', { 
+            success: true,
+            message: resultado.message
+          });
+        } catch (err) {
+          console.error('Erro ao enviar notificação de conclusão:', err);
+        }
       }
       
       // Mostrar diálogo de conclusão
@@ -1598,10 +1593,14 @@ ipcMain.on('iniciar-instalacao', async (event) => {
       });
       
       if (installationWindow && !installationWindow.isDestroyed()) {
-        installationWindow.webContents.send('instalacao-completa', { 
-          success: false,
-          error: resultado.message || 'Erro desconhecido'
-        });
+        try {
+          installationWindow.webContents.send('instalacao-completa', { 
+            success: false,
+            error: resultado.message || 'Erro desconhecido'
+          });
+        } catch (err) {
+          console.error('Erro ao enviar notificação de erro:', err);
+        }
       }
       
       await dialog.showMessageBox({
@@ -1625,10 +1624,14 @@ ipcMain.on('iniciar-instalacao', async (event) => {
     
     // Notificar a janela de instalação
     if (installationWindow && !installationWindow.isDestroyed()) {
-      installationWindow.webContents.send('instalacao-completa', {
-        success: false,
-        error: error.message || 'Erro desconhecido'
-      });
+      try {
+        installationWindow.webContents.send('instalacao-completa', {
+          success: false,
+          error: error.message || 'Erro desconhecido'
+        });
+      } catch (err) {
+        console.error('Erro ao enviar notificação de erro:', err);
+      }
     }
     
     // Mostrar diálogo de erro
@@ -1657,30 +1660,275 @@ ipcMain.on('get-installation-steps', (event) => {
 });
 
 // Handler para exportar log de instalação
-ipcMain.on('export-installation-log', (event, filename) => {
+ipcMain.on('export-installation-log', (event, logContent) => {
   try {
-    const logContent = installer.getInstallationLog();
+    // Se logContent for uma string, usar diretamente
+    // Caso contrário, usar como nome de arquivo
+    let filename, content;
+    
+    if (typeof logContent === 'string' && logContent.includes('\n')) {
+      // É o conteúdo do log
+      content = logContent;
+      filename = `instalacao_log_${new Date().toISOString().slice(0, 10)}.txt`;
+    } else {
+      // É o nome do arquivo
+      filename = logContent || `instalacao_log_${new Date().toISOString().slice(0, 10)}.txt`;
+      content = installer.getInstallationLog();
+    }
+    
     const downloadsPath = app.getPath('downloads');
-    const logPath = path.join(downloadsPath, filename || 'instalacao_log.txt');
+    const logPath = path.join(downloadsPath, filename);
     
-    fs.writeFileSync(logPath, logContent, 'utf8');
+    fs.writeFileSync(logPath, content, 'utf8');
     
-    event.reply('export-installation-log-response', {
-      success: true,
-      path: logPath
-    });
-    
+    // Avisar que o log foi exportado com sucesso
     if (installationWindow && !installationWindow.isDestroyed()) {
       installationWindow.webContents.send('log', {
         type: 'success',
         message: `Log exportado para: ${logPath}`
       });
     }
+    
+    event.reply('export-installation-log-response', {
+      success: true,
+      path: logPath
+    });
   } catch (error) {
     console.error('Erro ao exportar log de instalação:', error);
+    
+    if (installationWindow && !installationWindow.isDestroyed()) {
+      installationWindow.webContents.send('log', {
+        type: 'error',
+        message: `Erro ao exportar log: ${error.message}`
+      });
+    }
+    
     event.reply('export-installation-log-response', {
       success: false,
       error: error.message
+    });
+  }
+});
+
+async function installSpecificComponent(component) {
+  try {
+    // Se já está instalando componentes, não continuar
+    if (isInstallingComponents) {
+      return { success: false, message: 'Já existe uma instalação em andamento' };
+    }
+    isInstallingComponents = true;
+
+    console.log(`Instalando componente específico: ${component}`);
+
+    // Criar janela de instalação se não existir
+    if (!installationWindow || installationWindow.isDestroyed()) {
+      createInstallationWindow();
+      
+      // Aguardar até que a janela de instalação esteja pronta
+      await new Promise((resolve) => {
+        if (installationWindow) {
+          installationWindow.once('ready-to-show', () => {
+            console.log('Janela de instalação pronta para exibição');
+            resolve();
+          });
+          
+          // Timeout como fallback (5 segundos)
+          setTimeout(() => {
+            console.log('Timeout ao aguardar janela de instalação');
+            resolve();
+          }, 5000);
+        } else {
+          console.log('Janela de instalação não foi criada');
+          resolve();
+        }
+      });
+    }
+
+    // Enviar log para a janela de instalação
+    if (installationWindow && !installationWindow.isDestroyed()) {
+      installationWindow.webContents.send('log', {
+        type: 'header',
+        message: `Iniciando instalação do componente: ${component}`
+      });
+    }
+
+    // Configurar a função de log customizada para o installer
+    const originalLog = installer.log;
+    installer.log = function(message, type = 'info') {
+      // Log original
+      originalLog(message, type);
+      
+      // Enviar para a janela de instalação
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        try {
+          installationWindow.webContents.send('log', { 
+            type: type, 
+            message: message 
+          });
+        } catch (err) {
+          console.error('Erro ao enviar log para janela de instalação:', err);
+        }
+      }
+      
+      // Notificar a janela principal também
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('installation-log', {
+          type: type,
+          message: message
+        });
+      }
+    };
+
+    // Configurar a função personalizada de perguntas
+    installer.setCustomAskQuestion(function(question) {
+      return new Promise((resolve) => {
+        installer.log(`Pergunta: ${question}`, 'info');
+
+        if (installationWindow && !installationWindow.isDestroyed()) {
+          // Enviar a pergunta para a interface
+          installationWindow.webContents.send('pergunta', { question });
+
+          // Configurar receptor de resposta via IPC
+          const responseHandler = (responseEvent, resposta) => {
+            ipcMain.removeListener('resposta-pergunta', responseHandler);
+            resolve(resposta);
+          };
+
+          // Escutar pela resposta
+          ipcMain.once('resposta-pergunta', responseHandler);
+        } else {
+          // Fallback: usar dialog
+          dialog.showMessageBox({
+            type: 'question',
+            buttons: ['Sim', 'Não'],
+            defaultId: 0,
+            title: 'Instalador',
+            message: question
+          }).then(result => {
+            const response = result.response === 0 ? 's' : 'n';
+            resolve(response);
+          }).catch(() => {
+            // Em caso de erro, assumir sim
+            resolve('s');
+          });
+        }
+      });
+    });
+
+    // Executar a instalação do componente específico
+    let result = null;
+    switch(component) {
+      case 'wsl':
+        result = await installer.installWSLModern() || await installer.installWSLLegacy();
+        break;
+      case 'wsl2':
+        try {
+          await verification.execPromise('wsl --set-default-version 2', 30000);
+          result = true;
+        } catch (error) {
+          result = false;
+        }
+        break;
+      case 'ubuntu':
+        result = await installer.installUbuntu();
+        break;
+      case 'user':
+        result = await installer.configureDefaultUser();
+        break;
+      case 'packages':
+        result = await installer.installRequiredPackages();
+        break;
+      case 'services':
+        // Reiniciar os serviços básicos
+        try {
+          await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups smbd postgresql', 30000, true);
+          result = true;
+        } catch (error) {
+          result = false;
+        }
+        break;
+      case 'firewall':
+        result = await installer.configureFirewall();
+        break;
+      case 'database':
+        result = await installer.setupDatabase();
+        break;
+      case 'api':
+        try {
+          await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart ecosystem.config.js"', 30000, true);
+          result = true;
+        } catch (error) {
+          result = false;
+        }
+        break;
+      case 'pm2':
+        result = await installer.setupPM2();
+        break;
+      case 'printer':
+        result = await installer.installWindowsPrinter();
+        break;
+      default:
+        result = false;
+    }
+
+    isInstallingComponents = false;
+
+    return { 
+      success: !!result, 
+      message: result ? 'Componente instalado com sucesso' : 'Falha na instalação do componente' 
+    };
+  } catch (error) {
+    isInstallingComponents = false;
+    console.error(`Erro ao instalar componente ${component}:`, error);
+    return { success: false, message: error.message || 'Erro desconhecido' };
+  }
+}
+
+ipcMain.on('instalar-componente', async (event, { component }) => {
+  try {
+    // Verificar se estamos rodando como administrador
+    const isAdmin = await checkAdminPrivileges();
+
+    if (!isAdmin) {
+      const choice = await dialog.showMessageBox({
+        type: 'question',
+        title: 'Privilégios de Administrador',
+        message: 'Esta operação precisa ser executada como administrador.',
+        detail: 'Deseja tentar executar com privilégios elevados?',
+        buttons: ['Sim', 'Não'],
+        defaultId: 0
+      });
+
+      if (choice.response === 0) {
+        // Tentar elevar privilégios
+        elevatePrivileges();
+      }
+      
+      event.reply('componente-instalado', {
+        success: false,
+        message: 'Privilégios de administrador necessários'
+      });
+      return;
+    }
+
+    // Instalar o componente específico
+    const result = await installSpecificComponent(component);
+    
+    // Notificar a janela principal sobre o resultado
+    event.reply('componente-instalado', result);
+    
+    // Se foi bem-sucedido, verificar sistema novamente
+    if (result.success && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('installation-log', {
+        type: 'success',
+        message: `Componente ${component} instalado com sucesso!`
+      });
+    }
+  } catch (error) {
+    console.error(`Erro ao instalar componente ${component}:`, error);
+    event.reply('componente-instalado', {
+      success: false,
+      message: error.message || 'Erro desconhecido'
     });
   }
 });

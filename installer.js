@@ -14,7 +14,168 @@ const verification = require('./verification'); // Importar o módulo de verific
 
 // Verificar se estamos em ambiente Electron
 const isElectron = process.versions && process.versions.electron;
+let stepUpdateCallback = null;
+let progressCallback = null;
 let customAskQuestion = null;
+
+const allSteps = [
+  'Verificando pré-requisitos',
+  'Instalando Windows Subsystem for Linux (WSL)',
+  'Configurando WSL 2',
+  'Instalando Ubuntu',
+  'Configurando usuário padrão',
+  'Configurando ambiente de sistema',
+  'Configurando serviços',
+  'Finalizando instalação'
+];
+
+function setCustomAskQuestion(callback) {
+  customAskQuestion = callback;
+}
+
+function askQuestion(question) {
+  // Se uma função de pergunta personalizada foi definida (para Electron)
+  if (customAskQuestion) {
+    return customAskQuestion(question);
+  }
+
+  // Se estamos em modo Electron, mas sem função personalizada, apenas retornar sim
+  if (isElectron) {
+    log(`[PERGUNTA AUTOMÁTICA] ${question}`, 'info');
+    logToFile(`Pergunta automática: ${question}`);
+    logToFile(`Resposta automática: s`);
+    return Promise.resolve('s');
+  }
+
+  // Modo terminal normal
+  return new Promise((resolve) => {
+    rl.question(`${'\x1b[33m'}${question}${'\x1b[0m'}`, (answer) => {
+      logToFile(`Pergunta: ${question}`);
+      logToFile(`Resposta: ${answer}`);
+      resolve(answer);
+    });
+  });
+}
+
+function log(message, type = "info") {
+  // Format and log to console
+  const timestamp = new Date().toLocaleTimeString();
+  let formattedMessage = "";
+
+  switch (type) {
+    case "success":
+      formattedMessage = `[${timestamp}] ✓ ${message}`;
+      break;
+    case "error":
+      formattedMessage = `[${timestamp}] ✗ ${message}`;
+      break;
+    case "warning":
+      formattedMessage = `[${timestamp}] ⚠ ${message}`;
+      break;
+    case "step":
+      formattedMessage = `[${timestamp}] → ${message}`;
+      break;
+    case "header":
+      formattedMessage = `\n=== ${message} ===\n`;
+      break;
+    default:
+      formattedMessage = `[${timestamp}] ${message}`;
+  }
+
+  console.log(formattedMessage);
+  
+  // Store in log buffer
+  installationLog.push(`[${timestamp}][${type}] ${message}`);
+  
+  // Write to file if configured
+  logToFile(`[${timestamp}][${type}] ${message}`);
+  
+  // Call update callback if set
+  if (stepUpdateCallback) {
+    // Extract step information from message
+    const lowerMessage = message.toLowerCase();
+    
+    // Map message to step number based on keywords
+    let stepNumber = -1;
+    if (lowerMessage.includes('verificando pré-requisitos') || 
+        lowerMessage.includes('verificando privilégios') || 
+        lowerMessage.includes('verificando versão')) {
+      stepNumber = 0;
+    } else if (lowerMessage.includes('instalando wsl')) {
+      stepNumber = 1;
+    } else if (lowerMessage.includes('configurando wsl 2') || 
+               lowerMessage.includes('definindo wsl 2')) {
+      stepNumber = 2;
+    } else if (lowerMessage.includes('instalando ubuntu')) {
+      stepNumber = 3;
+    } else if (lowerMessage.includes('configurando usuário')) {
+      stepNumber = 4;
+    } else if (lowerMessage.includes('configurando ambiente') || 
+               lowerMessage.includes('configurando sistema')) {
+      stepNumber = 5;
+    } else if (lowerMessage.includes('configurando serviços') || 
+               lowerMessage.includes('configurando cups') || 
+               lowerMessage.includes('configurando samba')) {
+      stepNumber = 6;
+    } else if (lowerMessage.includes('finalizando instalação') || 
+               lowerMessage.includes('instalação concluída')) {
+      stepNumber = 7;
+    }
+    
+    // Only update the step if we have a match
+    if (stepNumber >= 0) {
+      let state = 'in-progress';
+      if (type === 'success') state = 'completed';
+      else if (type === 'error') state = 'error';
+      
+      stepUpdateCallback(stepNumber, state, message);
+    }
+  }
+  
+  // Update progress if callback is set
+  if (progressCallback) {
+    // Estimate progress based on log message
+    const lowerMessage = message.toLowerCase();
+    let progress = -1;
+    
+    if (lowerMessage.includes('verificando privilégios')) {
+      progress = 5;
+    } else if (lowerMessage.includes('verificando virtualização')) {
+      progress = 10;
+    } else if (lowerMessage.includes('wsl não está instalado')) {
+      progress = 15;
+    } else if (lowerMessage.includes('instalando wsl')) {
+      progress = 20;
+    } else if (lowerMessage.includes('recurso wsl habilitado')) {
+      progress = 30;
+    } else if (lowerMessage.includes('configurando wsl 2') || 
+               lowerMessage.includes('definindo wsl 2')) {
+      progress = 40;
+    } else if (lowerMessage.includes('instalando ubuntu')) {
+      progress = 50;
+    } else if (lowerMessage.includes('ubuntu instalado')) {
+      progress = 60;
+    } else if (lowerMessage.includes('configurando usuário')) {
+      progress = 70;
+    } else if (lowerMessage.includes('configurando ambiente') || 
+               lowerMessage.includes('configurando sistema')) {
+      progress = 80;
+    } else if (lowerMessage.includes('configurando serviços') || 
+               lowerMessage.includes('configurando cups') || 
+               lowerMessage.includes('configurando samba')) {
+      progress = 90;
+    } else if (lowerMessage.includes('instalação concluída')) {
+      progress = 100;
+    }
+    
+    // Only update if we have a valid progress value
+    if (progress >= 0) {
+      progressCallback(progress);
+    }
+  }
+}
+
+const installationLog = [];
 
 // Configuração do terminal interativo (apenas quando não estiver em ambiente Electron)
 let rl;
@@ -75,31 +236,6 @@ function clearScreen() {
   console.log(`${colors.bgBlue}${colors.white}${colors.bright}   SISTEMA DE GERENCIAMENTO DE IMPRESSÃO - INSTALADOR     ${colors.reset}`);
   console.log(`${colors.bgBlue}${colors.white}${colors.bright} ========================================================= ${colors.reset}`);
   console.log();
-}
-
-// Função para fazer perguntas ao usuário - modificada para funcionar no Electron
-function askQuestion(question) {
-  // Se uma função de pergunta personalizada foi definida (para Electron)
-  if (customAskQuestion) {
-    return customAskQuestion(question);
-  }
-
-  // Se estamos em modo Electron, mas sem função personalizada, apenas retornar sim
-  if (isElectron) {
-    verification.log(`[PERGUNTA AUTOMÁTICA] ${question}`, 'info');
-    verification.logToFile(`Pergunta automática: ${question}`);
-    verification.logToFile(`Resposta automática: s`);
-    return Promise.resolve('s');
-  }
-
-  // Modo terminal normal
-  return new Promise((resolve) => {
-    rl.question(`${'\x1b[33m'}${question}${'\x1b[0m'}`, (answer) => {
-      verification.logToFile(`Pergunta: ${question}`);
-      verification.logToFile(`Resposta: ${answer}`);
-      resolve(answer);
-    });
-  });
 }
 
 // Fechar readline se necessário e se estiver disponível
@@ -2737,10 +2873,14 @@ module.exports = {
   systemCleanup,
   
   checkWSLStatusDetailed: verification.checkWSLStatusDetailed,
-  setCustomAskQuestion: verification.setCustomAskQuestion,
   log: verification.log,
   
-  // Novas funções para suportar a interface de instalação aprimorada
+  // Add this line to correctly export the setCustomAskQuestion function
+  setCustomAskQuestion: function(callback) {
+    customAskQuestion = callback;
+  },
+  
+  // Functions for UI integration
   setStepUpdateCallback: function(callback) {
     stepUpdateCallback = callback;
   },
@@ -2756,7 +2896,7 @@ module.exports = {
   getInstallationLog: function() {
     return installationLog.join('\n');
   }
-}
+};
 
 
 if (require.main === module) {

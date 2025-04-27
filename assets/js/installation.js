@@ -6,6 +6,18 @@
 // Módulos do Electron
 const { ipcRenderer } = require('electron');
 
+document.addEventListener('DOMContentLoaded', () => {
+  console.log('Página de instalação carregada');
+  // Enviar mensagem para o processo principal que a página está pronta
+  ipcRenderer.send('installation-page-ready');
+  
+  // Inicializar o gerenciador de instalação
+  window.installationManager = new InstallationManager();
+  
+  // Debug: confirmar inicialização
+  console.log('InstallationManager inicializado no DOM');
+});
+
 class InstallationManager {
   constructor() {
     // Referências aos elementos da interface
@@ -85,7 +97,6 @@ class InstallationManager {
     this.startLogUpdater();
   
     // Escutar explicitamente por eventos de atualização
-    const { ipcRenderer } = require('electron');
     
     // Configurar receptor de atualização de etapa
     ipcRenderer.on('step-update', (event, data) => {
@@ -99,6 +110,24 @@ class InstallationManager {
       if (data.percentage >= 0 && data.percentage <= 100) {
         this.updateProgressBar(data.percentage);
       }
+    });
+    
+    // Configurar receptor de log
+    ipcRenderer.on('log', (event, data) => {
+      console.log('Log recebido:', data);
+      this.handleLogMessage(data);
+    });
+    
+    // Configurar receptor de pergunta
+    ipcRenderer.on('pergunta', (event, data) => {
+      console.log('Pergunta recebida:', data);
+      this.showQuestionModal(data.question);
+    });
+    
+    // Configurar receptor de conclusão
+    ipcRenderer.on('instalacao-completa', (event, data) => {
+      console.log('Instalação completa:', data);
+      this.handleInstallationComplete(data);
     });
   
     console.log('Gerenciador de instalação inicializado');
@@ -300,24 +329,10 @@ class InstallationManager {
       logText += `${entry.textContent}\n`;
     });
     
-    // Criar um blob com o texto
-    const blob = new Blob([logText], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
+    // Enviar para o processo principal para exportar
+    ipcRenderer.send('export-installation-log', logText);
     
-    // Criar um link para download e clicar nele
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `instalacao_log_${new Date().toISOString().slice(0,10)}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    
-    // Limpar
-    setTimeout(() => {
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }, 100);
-    
-    this.addLogEntry('Log exportado para arquivo de texto', 'success');
+    this.addLogEntry('Solicitação de exportação de log enviada', 'info');
   }
 
   /**
@@ -375,33 +390,6 @@ class InstallationManager {
         window.close();
       });
     }
-
-    // Eventos IPC
-    ipcRenderer.on('log', (event, data) => {
-      console.log('Log recebido:', data); // Debug
-      this.handleLogMessage(data);
-    });
-
-    setInterval(() => {
-      console.log('🔍 Status do logContainer:', document.getElementById('logContainer').childElementCount, 'itens');
-    }, 5000);
-
-    ipcRenderer.on('pergunta', (event, data) => {
-      console.log('Pergunta recebida:', data); // Debug
-      this.showQuestionModal(data.question);
-    });
-
-    ipcRenderer.on('instalacao-completa', (event, data) => {
-      console.log('Instalação completa:', data); // Debug
-      this.handleInstallationComplete(data);
-    });
-
-    // Evento de fechamento da janela para limpar o intervalo
-    window.addEventListener('beforeunload', () => {
-      if (this.state.logUpdateInterval) {
-        clearInterval(this.state.logUpdateInterval);
-      }
-    });
   }
 
   /**
@@ -624,13 +612,16 @@ class InstallationManager {
    * Manipular mensagem de log
    */
   handleLogMessage(data) {
-    // Adicionar timestamp à mensagem
-    const timestamp = new Date().toLocaleTimeString();
-    const formattedMessage = `[${timestamp}] ${data.message}`;
+    // Adicionar timestamp à mensagem se ainda não tiver
+    let message = data.message;
+    if (!message.startsWith('[')) {
+      const timestamp = new Date().toLocaleTimeString();
+      message = `[${timestamp}] ${message}`;
+    }
 
-    console.log('Processando log:', formattedMessage); // Debug
+    console.log('Processando log:', message); // Debug
 
-    this.addLogEntry(formattedMessage, data.type);
+    this.addLogEntry(message, data.type);
   }
 
   /**
@@ -694,22 +685,3 @@ class InstallationManager {
     }
   }
 }
-
-// Inicializar quando o DOM estiver carregado
-window.addEventListener('DOMContentLoaded', () => {
-  // Verificar e definir o favicon com base no tema
-  const savedTheme = localStorage.getItem('loqqei-theme') || 'dark';
-  let favicon = document.querySelector('link[rel="icon"]');
-  if (!favicon) {
-    favicon = document.createElement('link');
-    favicon.rel = 'icon';
-    document.head.appendChild(favicon);
-  }
-  favicon.href = `../assets/icon/${savedTheme}.ico`;
-
-  // Inicializar o gerenciador de instalação
-  window.installationManager = new InstallationManager();
-
-  // Debug: confirmar inicialização
-  console.log('InstallationManager inicializado no DOM');
-});

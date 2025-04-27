@@ -323,6 +323,7 @@ body:not(.dark-theme) {
     display: inline-flex;
     align-items: center;
     gap: 8px;
+    text-justify: center;
     transition: background-color 0.2s;
 }
 
@@ -368,6 +369,7 @@ body:not(.dark-theme) {
     cursor: pointer;
     display: inline-flex;
     align-items: center;
+    text-justify: center;
     gap: 8px;
 }
 
@@ -966,4 +968,196 @@ input:checked+.slider:before {
 .status-header {
     margin-top: 8px;
     margin-left: 8px;
+}
+
+
+
+
+
+
+
+
+
+
+
+.status-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 0;
+}
+
+.status-label {
+    flex: 1;
+    margin-left: 8px;
+}
+
+.status-action {
+    margin-left: 8px;
+}
+
+.btn-mini {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: none;
+    background-color: var(--color-primary);
+    color: white;
+    cursor: pointer;
+}
+
+.btn-mini:hover {
+    background-color: var(--color-primary-dark);
+}
+
+.help-button {
+    background-color: var(--color-warning);
+}
+
+.help-button:hover {
+    background-color: var(--color-warning-dark);
+}
+
+/* Estilo para a área de botões de instalação */
+.install-buttons-container {
+    background-color: var(--bg-content);
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.status-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.status-item:last-child {
+    border-bottom: none;
+}
+
+.status-indicator {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.status-indicator.green {
+    background-color: var(--color-success);
+}
+
+.status-indicator.yellow {
+    background-color: var(--color-warning);
+}
+
+.status-indicator.red {
+    background-color: var(--color-danger);
+}
+
+.status-label {
+    flex: 1;
+    margin-left: 12px;
+}
+
+.status-action {
+    margin-left: 8px;
+}
+
+/* Botões de ação dentro dos itens de status */
+.btn-mini {
+    font-size: 12px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    border: none;
+    background-color: var(--color-primary);
+    color: white;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.btn-mini:hover {
+    background-color: var(--color-primary-dark);
+}
+
+.btn-mini:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.help-button {
+    background-color: var(--color-warning);
+}
+
+.help-button:hover {
+    background-color: var(--color-warning-dark);
+}
+
+/* Área de botões de instalação */
+.install-buttons-container {
+    background-color: var(--bg-content);
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    margin-top: 16px;
+    margin-bottom: 16px;
+    display: flex;
+    gap: 12px;
+}
+
+.install-button-box {
+    flex: 1;
+}
+
+.status-text {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+/* Melhorias nos logs de instalação */
+.log-entry.header {
+    color: var(--color-primary);
+    font-weight: bold;
+    margin-top: 10px;
+    margin-bottom: 5px;
+}
+
+.log-entry.success {
+    color: var(--color-success);
+}
+
+.log-entry.error {
+    color: var(--color-danger);
+}
+
+.log-entry.warning {
+    color: var(--color-warning);
+}
+
+.log-entry.step {
+    color: var(--color-primary);
+}
+
+.log-entry.debug {
+    color: var(--text-secondary);
+    font-style: italic;
+}
+
+/* Cores escuras */
+:root {
+    --color-primary-dark: #005fa3;
+    --color-warning-dark: #d68000;
+}
+
+/* Botão especial para reinstalação */
+.btn-reinstall {
+    background-color: var(--bg-content);
+    border: 1px solid var(--color-warning);
+    color: var(--color-warning);
+}
+
+.btn-reinstall:hover {
+    background-color: var(--color-warning);
+    color: white;
 }
