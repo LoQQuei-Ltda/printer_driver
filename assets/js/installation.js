@@ -64,28 +64,71 @@ class InstallationManager {
    */
   init() {
     console.log('Inicializando gerenciador de instalação...');
-
+  
     // Aplicar tema
     this.applyTheme();
-
+  
     // Configurar eventos
     this.setupEventListeners();
-
+  
     // Iniciar barra de progresso
     this.updateProgress(0, 5);
-
+  
     // Limpar log existente
     this.ui.logContainer.innerHTML = '';
-
+  
     // Adicionar primeira entrada de log
     this.addLogEntry('Iniciando processo de instalação...', 'header');
-
+    this.addLogEntry('Aguardando comandos do instalador...', 'info');
+  
     // Iniciar o intervalo de atualização do log
     this.startLogUpdater();
-
+  
+    // Escutar explicitamente por eventos de atualização
+    const { ipcRenderer } = require('electron');
+    
+    // Configurar receptor de atualização de etapa
+    ipcRenderer.on('step-update', (event, data) => {
+      console.log('Recebida atualização de etapa:', data);
+      this.updateStepStatus(data.step, data.state, data.message);
+    });
+    
+    // Configurar receptor de atualização de progresso
+    ipcRenderer.on('progress-update', (event, data) => {
+      console.log('Recebida atualização de progresso:', data.percentage);
+      if (data.percentage >= 0 && data.percentage <= 100) {
+        this.updateProgressBar(data.percentage);
+      }
+    });
+  
     console.log('Gerenciador de instalação inicializado');
   }
 
+  /**
+   * Adicione este método para atualizar exclusivamente a barra de progresso:
+   */
+  updateProgressBar(percentage) {
+    if (percentage >= 0 && percentage <= 100 && this.ui.progressBar) {
+      this.ui.progressBar.style.width = `${percentage}%`;
+      
+      // Atualizar porcentagem numérica
+      if (this.ui.progressPercentage) {
+        this.ui.progressPercentage.textContent = `${Math.round(percentage)}%`;
+      }
+      
+      // Atualizar o ícone de status
+      if (this.ui.statusIcon) {
+        if (percentage < 30) {
+          this.ui.statusIcon.className = 'status-indicator yellow';
+        } else if (percentage < 90) {
+          this.ui.statusIcon.className = 'status-indicator yellow';
+        } else {
+          this.ui.statusIcon.className = 'status-indicator green';
+        }
+      }
+    }
+  }
+  
   /**
    * Iniciar o atualizador de logs
    * Isso permite agrupar múltiplas mensagens de log e atualizá-las de uma vez,
@@ -106,40 +149,54 @@ class InstallationManager {
    */
   processLogBuffer() {
     if (this.state.processingLogs || this.state.logBuffer.length === 0) return;
-
+  
     this.state.processingLogs = true;
-
+  
     try {
       // Criar um fragmento para adicionar todos os logs de uma vez
       const fragment = document.createDocumentFragment();
-
+  
       // Processar até 50 logs de uma vez para evitar sobrecarga
       const logsToProcess = this.state.logBuffer.splice(0, 50);
-
+  
       logsToProcess.forEach(logEntry => {
         const { message, type } = logEntry;
-
+  
         const entry = document.createElement('div');
         entry.className = `log-entry ${type}`;
         entry.textContent = message;
-
-        fragment.appendChild(entry);
-
-        // Atualizar progresso com base na mensagem
-        this.updateProgressFromMessage(message, type);
+  
+        // Verificar se a entrada já existe (para evitar duplicação)
+        let isDuplicate = false;
+        const existingEntries = this.ui.logContainer.getElementsByClassName('log-entry');
+        if (existingEntries.length > 0) {
+          const lastEntry = existingEntries[existingEntries.length - 1];
+          if (lastEntry.textContent === message && lastEntry.className === entry.className) {
+            isDuplicate = true;
+          }
+        }
+  
+        if (!isDuplicate) {
+          fragment.appendChild(entry);
+  
+          // Atualizar progresso com base na mensagem
+          this.updateProgressFromMessage(message, type);
+        }
       });
-
+  
       // Adicionar todos os logs de uma vez
       this.ui.logContainer.appendChild(fragment);
-
+  
       // Rolar para o final se autoScroll estiver ativado
       if (this.state.autoScroll) {
         this.scrollLogToBottom();
       }
+    } catch (error) {
+      console.error('Erro ao processar logs:', error);
     } finally {
       this.state.processingLogs = false;
     }
-  }
+  } 
 
   /**
    * Rolar o log para o final
@@ -581,43 +638,55 @@ class InstallationManager {
    */
   handleInstallationComplete(data) {
     console.log('Recebido evento de instalação completa:', data);
-
+  
     if (data.success) {
       this.updateProgress(7, 100);
       this.addLogEntry('✅ Instalação concluída com sucesso!', 'success');
+      
+      if (data.message) {
+        this.addLogEntry(`Mensagem: ${data.message}`, 'success');
+      }
       
       // Marcar todas as etapas como concluídas
       for (let i = 0; i < this.allSteps.length; i++) {
         this.updateStepStatus(i, 'completed', 'Concluído');
       }
-
+  
       // Atualizar botão
       if (this.ui.closeButton) {
         this.ui.closeButton.style.display = 'block';
         this.ui.closeButton.innerHTML = '<i class="fas fa-check-circle"></i> Instalação Concluída';
       }
-
+  
       // Atualizar status icon
       if (this.ui.statusIcon) {
         this.ui.statusIcon.className = 'status-indicator green';
       }
-
+  
       // Fechar automaticamente após 5 segundos
       this.addLogEntry('Esta janela será fechada automaticamente em 5 segundos...', 'info');
-
-      // Informar ao usuário sobre o fechamento automático
-      alert('Instalação concluída com sucesso! Esta janela será fechada automaticamente em 5 segundos.');
+  
+      // Informar ao usuário sobre o fechamento automático - remover alert pois trava a UI
+      this.addLogEntry('IMPORTANTE: Instalação concluída com sucesso! Use o botão "Verificar Novamente" na tela principal para confirmar o status.', 'header');
+      
+      setTimeout(() => {
+        if (this.ui.closeButton) {
+          this.ui.closeButton.click(); // Usar o botão para fechar e garantir cleanup
+        } else {
+          window.close();
+        }
+      }, 5000);
     } else {
       this.addLogEntry(`❌ Instalação falhou: ${data.error || 'Erro desconhecido'}`, 'error');
       
       // Marcar etapa atual como erro
       this.updateStepStatus(this.state.currentStep, 'error', 'Erro');
-
+  
       if (this.ui.closeButton) {
         this.ui.closeButton.style.display = 'block';
         this.ui.closeButton.innerHTML = '<i class="fas fa-exclamation-circle"></i> Instalação Falhou';
       }
-
+  
       // Atualizar status icon
       if (this.ui.statusIcon) {
         this.ui.statusIcon.className = 'status-indicator red';

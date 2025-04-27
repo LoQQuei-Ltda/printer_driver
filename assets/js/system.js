@@ -1,6 +1,8 @@
 // Gerenciamento de Auto-Scroll para a aba de sistema
 let autoScrollSystemEnabled = true;
 
+let isCheckingSystem = false;
+
 // Função para alternar o auto-scroll na aba de sistema
 function toggleAutoScrollSystem() {
   autoScrollSystemEnabled = !autoScrollSystemEnabled;
@@ -240,6 +242,14 @@ function renderSystemStatusDetails(statusData) {
 
 // Verificar status do sistema de forma detalhada
 async function checkSystemStatusDetailed() {
+  // Evitar verificações múltiplas simultâneas
+  if (isCheckingSystem) {
+    console.log('Verificação já em andamento, ignorando nova solicitação');
+    return;
+  }
+  
+  isCheckingSystem = true;
+  
   // Limpar área de status e mostrar spinner
   const statusSection = document.getElementById('statusSection');
   if (statusSection) {
@@ -271,6 +281,8 @@ async function checkSystemStatusDetailed() {
     
     // Configurar receptor de resposta
     ipcRenderer.once('sistema-status-detalhado', (event, status) => {
+      isCheckingSystem = false;
+      
       // Log dos resultados
       addSystemLogEntry('Verificação do sistema concluída', 'success');
       
@@ -302,6 +314,7 @@ async function checkSystemStatusDetailed() {
       updateInstallButton(status.needsConfiguration);
     });
   } catch (error) {
+    isCheckingSystem = false;
     addSystemLogEntry(`Erro ao solicitar verificação: ${error.message}`, 'error');
     
     if (statusSection) {
@@ -427,37 +440,220 @@ function addDetailedStatusLogs(status) {
 function updateInstallButton(needsConfiguration) {
   const installButton = document.getElementById('installButton');
   if (!installButton) return;
+
+  console.log(`Atualizando botão de instalação. Sistema precisa de configuração: ${needsConfiguration}`);
+  
+  // Texto do botão e container da mensagem
+  const container = installButton.parentElement;
+  const statusTextElement = container.querySelector('.status-text') || document.createElement('div');
+  
+  if (!statusTextElement.classList.contains('status-text')) {
+    statusTextElement.className = 'status-text';
+    container.appendChild(statusTextElement);
+  }
   
   if (needsConfiguration) {
+    // Sistema precisa ser configurado
     installButton.textContent = 'Instalar Sistema';
     installButton.disabled = false;
     installButton.classList.remove('installed');
     
-    // Texto de status
-    const container = installButton.parentElement;
-    if (container && !container.querySelector('.status-text')) {
-      const statusText = document.createElement('div');
-      statusText.className = 'status-text';
-      statusText.textContent = 'O sistema requer configuração. Clique para instalar os componentes necessários.';
-      container.appendChild(statusText);
-    } else if (container.querySelector('.status-text')) {
-      container.querySelector('.status-text').textContent = 'O sistema requer configuração. Clique para instalar os componentes necessários.';
-    }
+    // Atribuir manipulador de evento
+    installButton.onclick = function() {
+      console.log('Clique no botão de instalação detectado');
+      // Mostrar indicação visual de que a instalação está sendo iniciada
+      installButton.innerHTML = '<div class="spinner button-spinner"></div> Iniciando Instalação...';
+      installButton.disabled = true;
+      
+      // Limpar qualquer log anterior
+      const logContainer = document.getElementById('installLog');
+      if (logContainer) {
+        logContainer.innerHTML = '';
+        addSystemLogEntry('Iniciando processo de instalação...', 'header');
+      }
+      
+      // Usar IPC para iniciar a instalação
+      const { ipcRenderer } = require('electron');
+      ipcRenderer.send('iniciar-instalacao');
+      
+      // Registrar feedback de log
+      addSystemLogEntry('Solicitação de instalação enviada. Aguarde a abertura da janela de instalação...', 'info');
+    };
+    
+    // Atualizar mensagem de status
+    statusTextElement.textContent = 'O sistema requer configuração. Clique para instalar os componentes necessários.';
+    statusTextElement.style.color = 'var(--color-warning)';
   } else {
+    // Sistema já está configurado
     installButton.textContent = 'Sistema Instalado';
     installButton.disabled = true;
     installButton.classList.add('installed');
+    installButton.onclick = null; // Remover qualquer handler de clique anterior
     
-    // Texto de status
-    const container = installButton.parentElement;
-    if (container && !container.querySelector('.status-text')) {
-      const statusText = document.createElement('div');
-      statusText.className = 'status-text';
-      statusText.textContent = 'O sistema está configurado e pronto para uso';
-      container.appendChild(statusText);
-    } else if (container.querySelector('.status-text')) {
-      container.querySelector('.status-text').textContent = 'O sistema está configurado e pronto para uso';
+    // Atualizar mensagem de status
+    statusTextElement.textContent = 'O sistema está configurado e pronto para uso.';
+    statusTextElement.style.color = 'var(--color-success)';
+  }
+}
+
+// Corrigir a função que atualiza o status geral para garantir visualização consistente
+function updateOverallStatus(status) {
+  const statusSection = document.getElementById('statusSection');
+  if (!statusSection) return;
+  
+  let statusHtml = '';
+  
+  // Determinar o estado real da configuração com base em todos os componentes
+  const needsConfiguration = 
+    (status.softwareStatus && !status.softwareStatus.fullyConfigured) ||
+    (status.softwareStatus && status.softwareStatus.firewallStatus && !status.softwareStatus.firewallStatus.configured) ||
+    (status.printerStatus && (!status.printerStatus.installed || !status.printerStatus.correctConfig));
+  
+  // Verificar status principal do WSL e Ubuntu
+  if (status.wslStatus) {
+    statusHtml += `
+      <div class="status-item">
+        <div class="status-indicator ${status.wslStatus.installed ? 'green' : 'red'}"></div>
+        <div class="status-label">Windows Subsystem for Linux</div>
+      </div>
+      <div class="status-item">
+        <div class="status-indicator ${status.wslStatus.wsl2 ? 'green' : 'red'}"></div>
+        <div class="status-label">WSL 2 Configurado</div>
+      </div>
+      <div class="status-item">
+        <div class="status-indicator ${status.wslStatus.hasDistro ? 'green' : 'red'}"></div>
+        <div class="status-label">Ubuntu Instalado</div>
+      </div>
+      <div class="status-item">
+        <div class="status-indicator ${status.userConfigured ? 'green' : 'red'}"></div>
+        <div class="status-label">Usuário do Sistema Configurado</div>
+      </div>
+    `;
+  }
+  
+  // Status geral do sistema - critério mais rigoroso
+  if (status.softwareStatus) {
+    statusHtml += `
+      <div class="status-item">
+        <div class="status-indicator ${!needsConfiguration ? 'green' : 'yellow'}"></div>
+        <div class="status-label">Status Geral do Sistema: ${!needsConfiguration ? 'Totalmente Configurado' : 'Requer Configuração'}</div>
+      </div>
+    `;
+  }
+  
+  statusSection.innerHTML = statusHtml;
+  
+  // Atualizar botão de instalação baseado no estado real
+  updateInstallButton(needsConfiguration);
+}
+
+async function checkSystemStatusDetailed() {
+  // Evitar verificações múltiplas simultâneas
+  if (isCheckingSystem) {
+    console.log('Verificação já em andamento, ignorando nova solicitação');
+    addSystemLogEntry('Verificação já em andamento, aguarde a conclusão...', 'warning');
+    return;
+  }
+  
+  isCheckingSystem = true;
+  
+  // Limpar área de status e mostrar spinner
+  const statusSection = document.getElementById('statusSection');
+  if (statusSection) {
+    statusSection.innerHTML = `
+      <div class="loading">
+        <div class="spinner"></div>
+        <p>Verificando componentes do sistema...</p>
+      </div>
+    `;
+  }
+  
+  // Desabilitar botão durante a verificação
+  const checkButton = document.getElementById('checkSystemButton');
+  const installButton = document.getElementById('installButton');
+  
+  if (checkButton) checkButton.disabled = true;
+  if (installButton) installButton.disabled = true;
+  
+  // Ocultar detalhes antigos
+  const detailsContainer = document.getElementById('statusDetailsContainer');
+  if (detailsContainer) {
+    detailsContainer.style.display = 'none';
+  }
+  
+  addSystemLogEntry('Iniciando verificação detalhada do sistema...', 'header');
+  
+  // Usar IPC para solicitar verificação ao processo principal
+  try {
+    const { ipcRenderer } = require('electron');
+    ipcRenderer.send('verificar-sistema-detalhado');
+    
+    // Configurar receptor de resposta
+    ipcRenderer.once('sistema-status-detalhado', (event, status) => {
+      isCheckingSystem = false;
+      
+      // Reabilitar botões
+      if (checkButton) checkButton.disabled = false;
+      
+      // Log dos resultados
+      addSystemLogEntry('Verificação do sistema concluída', 'success');
+      
+      if (status.error) {
+        addSystemLogEntry(`Erro na verificação: ${status.error}`, 'error');
+        
+        if (statusSection) {
+          statusSection.innerHTML = `
+            <div class="status-item">
+              <div class="status-indicator red"></div>
+              <div class="status-label">Erro ao verificar status do sistema</div>
+            </div>
+          `;
+        }
+        
+        return;
+      }
+      
+      // Determinar o estado real da configuração com base em todos os componentes
+      const needsConfiguration = 
+        (status.softwareStatus && !status.softwareStatus.fullyConfigured) ||
+        (status.softwareStatus && status.softwareStatus.firewallStatus && !status.softwareStatus.firewallStatus.configured) ||
+        (status.printerStatus && (!status.printerStatus.installed || !status.printerStatus.correctConfig));
+      
+      // Forçar o status de configuração baseado na análise completa
+      status.needsConfiguration = needsConfiguration;
+      
+      console.log('Status do sistema:', status);
+      console.log('Status da configuração:', needsConfiguration ? 'Requer configuração' : 'Configurado');
+      
+      // Renderizar status detalhado
+      renderSystemStatusDetails(status);
+      
+      // Atualizar status geral
+      updateOverallStatus(status);
+      
+      // Adicionar logs detalhados sobre cada componente
+      addDetailedStatusLogs(status);
+      
+      // Mostrar detalhes
+      if (detailsContainer) {
+        detailsContainer.style.display = 'block';
+      }
+    });
+  } catch (error) {
+    isCheckingSystem = false;
+    addSystemLogEntry(`Erro ao solicitar verificação: ${error.message}`, 'error');
+    
+    if (statusSection) {
+      statusSection.innerHTML = `
+        <div class="status-item">
+          <div class="status-indicator red"></div>
+          <div class="status-label">Erro ao verificar status: ${error.message}</div>
+        </div>
+      `;
     }
+    
+    // Reabilitar botões
+    if (checkButton) checkButton.disabled = false;
   }
 }
 
