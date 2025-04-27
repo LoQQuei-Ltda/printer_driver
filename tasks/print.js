@@ -37,12 +37,10 @@ module.exports = {
                         }
                     })
                 } catch (error) {
-                    console.log(error?.response?.data);
+                    console.log(error);
                 }
 
                 if (!fileResponse || fileResponse.status !== 200) {
-                    console.error(fileResponse);
-
                     if (!fileResponse.errors) {
                         continue;
                     }
@@ -70,12 +68,12 @@ module.exports = {
                     files: synceds
                 });
             } catch (error) {
-                console.log(error?.response?.data);
+                console.log(error);
             }
 
             return
         } catch (error) {
-            console.log(error?.response?.data);
+            console.log(error);
         }
     }
 }
