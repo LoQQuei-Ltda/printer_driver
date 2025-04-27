@@ -267,10 +267,10 @@ async function checkSystemStatusDetailed() {
   
   // Enviar solicitação para verificar sistema
   try {
-    electron.ipcRenderer.send('verificar-sistema-detalhado');
+    ipcRenderer.send('verificar-sistema-detalhado');
     
     // Configurar receptor de resposta
-    electron.ipcRenderer.once('sistema-status-detalhado', (event, status) => {
+    ipcRenderer.once('sistema-status-detalhado', (event, status) => {
       // Log dos resultados
       addSystemLogEntry('Verificação do sistema concluída', 'success');
       

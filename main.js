@@ -1334,6 +1334,16 @@ ipcMain.on('verificar-instalacao', async (event) => {
   }
 });
 
+function sendLogToInstallWindow(type, message) {
+  if (installationWindow && !installationWindow.isDestroyed()) {
+    try {
+      installationWindow.webContents.send('log', { type, message });
+    } catch (err) {
+      console.error('Erro ao enviar log para a janela de instalação:', err);
+    }
+  }
+}
+
 // Instalação do WSL
 ipcMain.on('iniciar-instalacao', async (event) => {
   try {
@@ -1358,7 +1368,42 @@ ipcMain.on('iniciar-instalacao', async (event) => {
     }
 
     // Abrir janela de instalação
-    createInstallationWindow();
+    if (!installationWindow || installationWindow.isDestroyed()) {
+      createInstallationWindow();
+    }
+
+    installer.setCustomAskQuestion(function (question) {
+      return new Promise((resolve) => {
+        if (installationWindow && !installationWindow.isDestroyed()) {
+          // Enviar a pergunta para a interface
+          installationWindow.webContents.send('pergunta', { question });
+
+          // Configurar receptor de resposta via IPC
+          const responseHandler = (responseEvent, resposta) => {
+            ipcMain.removeListener('resposta-pergunta', responseHandler);
+            resolve(resposta);
+          };
+
+          // Escutar pela resposta
+          ipcMain.once('resposta-pergunta', responseHandler);
+        } else {
+          // Fallback: usar dialog
+          dialog.showMessageBox(mainWindow, {
+            type: 'question',
+            buttons: ['Sim', 'Não'],
+            defaultId: 0,
+            title: 'Instalador',
+            message: question
+          }).then(result => {
+            const response = result.response === 0 ? 's' : 'n';
+            resolve(response);
+          }).catch(() => {
+            // Em caso de erro, assumir sim
+            resolve('s');
+          });
+        }
+      });
+    });
 
     // Iniciar o processo de instalação
     event.reply('log', {

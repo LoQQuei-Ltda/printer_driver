@@ -355,7 +355,7 @@ class InstallationManager {
     const now = Date.now();
     if (now - this.state.lastProgressUpdate < 50 && percentage < 100) return;
     this.state.lastProgressUpdate = now;
-
+  
     if (step >= 0 && step < this.allSteps.length && this.ui.stepStatus) {
       this.state.currentStep = step;
       this.ui.stepStatus.textContent = this.allSteps[step];
@@ -370,7 +370,7 @@ class InstallationManager {
         }
       }
     }
-
+  
     if (percentage >= 0 && percentage <= 100 && this.ui.progressBar) {
       this.ui.progressBar.style.width = `${percentage}%`;
       
@@ -379,8 +379,6 @@ class InstallationManager {
         this.ui.progressPercentage.textContent = `${Math.round(percentage)}%`;
       }
       
-      console.log(`Atualizando barra de progresso: ${percentage}%`); // Debug
-
       // Atualizar o ícone de status
       if (this.ui.statusIcon) {
         if (percentage < 30) {
