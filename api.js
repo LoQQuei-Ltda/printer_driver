@@ -10,7 +10,7 @@ const bodyParser = require('body-parser');
 
 function initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated) {
     const app = express();
-    
+
     // Middlewares
     app.use(cors());
     app.use(bodyParser.json());
@@ -30,14 +30,14 @@ function initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated) {
         }
         next();
     };
-    
+
     const { getAutoPrintConfig } = require('./main');
 
     // Endpoint para abrir a aplicação na seção de arquivos para impressão
     app.get('/api/file', checkAuth, (request, response) => {
         try {
             const fileId = request.query.fileId;
-            
+
 
             // Verificar se a impressão automática está habilitada
             const autoPrintConfig = getAutoPrintConfig();
@@ -131,6 +131,75 @@ function initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated) {
                 success: false,
                 message: 'Erro ao abrir aplicação',
                 error: error.message
+            });
+        }
+    });
+
+    app.post('/api/print', checkAuth, async (request, response) => {
+        try {
+            const { fileId, assetId } = request.body;
+
+            const responseFiles = await axios.get(`${appConfig.apiLocalUrl}/files`);
+
+            if (responseFiles.status === 200) {
+                const files = responseFiles.data?.data;
+
+                const file = files.find(f => f.id === fileId);
+
+                if (!file) {
+                    return response.status(404).json({
+                        success: false,
+                        message: 'Arquivo não encontrado'
+                    });
+                }
+            } else {
+                return response.status(500).json({
+                    success: false,
+                    message: 'Erro ao obter arquivos'
+                });
+            }
+
+            const responsePrinters = await axios.get(`${appConfig.apiLocalUrl}/printers`);
+
+            if (responsePrinters.status === 200) {
+                const printers = responsePrinters.data?.data;
+
+                const printer = printers.find(p => p.id === assetId);
+
+                if (!printer) {
+                    return response.status(404).json({
+                        success: false,
+                        message: 'Impressora não encontrada'
+                    });
+                }
+            } else {
+                return response.status(500).json({
+                    success: false,
+                    message: 'Erro ao obter impressoras'
+                });
+            }
+
+            const responsePrint = await axios.post(`${appConfig.apiLocalUrl}/print`, {
+                fileId: fileId,
+                assetId: assetId
+            });
+
+            if (responsePrint.status === 200) {
+                return response.status(200).json({
+                    success: true,
+                    message: 'Arquivo enviado para impressão com sucesso!'
+                });
+            } else {
+                return response.status(500).json({
+                    success: false,
+                    message: 'Erro ao enviar arquivo para impressão'
+                });
+            }
+        } catch (error) {
+            console.error('Erro ao enviar arquivo para impressão:', error);
+            return response.status(500).json({
+                success: false,
+                message: 'Erro ao enviar arquivo para impressão'
             });
         }
     });
