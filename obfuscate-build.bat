@@ -61,6 +61,11 @@ if exist "dist-obfuscated" (
   rmdir /s /q dist-obfuscated
 )
 
+if exist "dist-temp" (
+  echo - Removendo pasta dist-temp...
+  rmdir /s /q dist-temp
+)
+
 if exist "Output" (
   echo - Removendo pasta Output...
   rmdir /s /q Output
@@ -73,6 +78,14 @@ call npm cache clean --force
 echo.
 echo Instalando dependencias de ofuscacao...
 call npm install --save-dev javascript-obfuscator glob uglify-js
+
+echo.
+echo Preparando arquivos do servidor para obfuscação...
+node prepare-server-files.js
+if %ERRORLEVEL% NEQ 0 (
+  echo Aviso: Preparação dos arquivos do servidor encontrou alguns problemas.
+  echo Continuando com a build mesmo assim...
+)
 
 echo.
 echo Construindo aplicacao Electron...
@@ -92,8 +105,18 @@ echo Criar backup dos arquivos originais? (S/N)
 set /p BACKUP_CHOICE="Escolha: "
 if /i "%BACKUP_CHOICE%"=="S" (
   echo Criando backup...
+  if exist "backup-original" (
+    rmdir /s /q backup-original
+  )
   mkdir backup-original 2>nul
   xcopy /s /y dist\*.* backup-original\
+  
+  REM Copiar também os arquivos do resources explicitamente
+  if exist "resources" (
+    mkdir backup-original\resources 2>nul
+    xcopy /s /y resources\*.* backup-original\resources\
+  )
+  
   echo Backup criado em 'backup-original'
   echo Aguardando finalização da cópia...
   timeout /t 3 /nobreak >nul
@@ -103,13 +126,22 @@ echo.
 echo Executando script de ofuscacao...
 
 REM Criar pasta temporária para conter os arquivos ofuscados
-mkdir "dist-temp" 2>nul
+if not exist "dist-temp" (
+  mkdir "dist-temp" 2>nul
+)
 
 REM Copiar arquivos para pasta temporária antes de ofuscar (evita problemas de lock)
 echo Copiando arquivos para processamento...
-xcopy /s /y /e /i dist\* dist-temp\
+xcopy /s /y /e /i dist\*.* dist-temp\
 
-echo Ofuscando arquivos copiados...
+REM Copiar o diretório resources para a pasta dist-temp para ofuscação
+if exist "resources" (
+  echo Copiando diretório resources para ofuscação...
+  mkdir "dist-temp\resources" 2>nul
+  xcopy /s /y /e resources\*.* dist-temp\resources\
+)
+
+echo Ofuscando todos os arquivos...
 node obfuscate.js dist-temp dist-obfuscated
 
 if %ERRORLEVEL% NEQ 0 (
@@ -117,6 +149,33 @@ if %ERRORLEVEL% NEQ 0 (
   echo Continuando com a build...
 ) else (
   echo Ofuscacao concluida com sucesso!
+)
+
+echo.
+echo Verificando se há arquivos críticos que possam ter sido perdidos...
+if not exist "dist-obfuscated\main.js" (
+  echo ERRO: Arquivo main.js não encontrado na saída. A ofuscação falhou?
+  
+  REM Tentar recuperar do dist-temp
+  if exist "dist-temp\main.js" (
+    echo Copiando main.js do diretório temporário...
+    copy /y "dist-temp\main.js" "dist-obfuscated\main.js"
+  ) else (
+    echo ERRO CRÍTICO: Não foi possível recuperar main.js.
+    pause
+    exit /b 1
+  )
+)
+
+REM Verificar recursos após ofuscação
+if not exist "dist-obfuscated\resources" (
+  echo Aviso: Diretório resources não encontrado após ofuscação.
+  echo Criando diretório e copiando recursos originais...
+  mkdir "dist-obfuscated\resources" 2>nul
+  
+  if exist "dist-temp\resources" (
+    xcopy /s /y /e dist-temp\resources\*.* dist-obfuscated\resources\
+  )
 )
 
 echo.
@@ -130,6 +189,13 @@ if exist "dist-obfuscated" (
   REM Renomear a pasta com arquivos ofuscados para dist
   move dist-obfuscated dist
   echo Arquivos ofuscados prontos para empacotamento
+) else (
+  echo ERRO: Diretório de arquivos ofuscados não encontrado.
+  echo Usando arquivos originais como fallback...
+  
+  if exist "dist-temp" (
+    move dist-temp dist
+  )
 )
 
 echo.

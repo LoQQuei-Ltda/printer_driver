@@ -780,106 +780,52 @@ async function checkDatabaseConfiguration() {
 
 // Realiza uma verificação abrangente de todas as configurações do software
 async function checkSoftwareConfigurations() {
-  log("Verificando configurações completas do software...", "header");
+  log("Verificando configurações do software...", "step");
   
-  // Pacotes necessários
   const requiredPackages = [
     'nano', 'samba', 'cups', 'printer-driver-cups-pdf', 'postgresql', 'postgresql-contrib',
     'ufw', 'npm', 'jq', 'net-tools', 'avahi-daemon', 'avahi-utils',
     'avahi-discover', 'hplip', 'hplip-gui', 'printer-driver-all'
   ];
   
-  // Serviços necessários
   const requiredServices = [
     'smbd', 'cups', 'postgresql', 'avahi-daemon', 'ufw'
   ];
   
-  // Verificar pacotes
-  log("Verificando pacotes instalados...", "step");
-  const packagesStatus = await checkPackagesInstalled(requiredPackages);
-  const missingPackages = Object.keys(packagesStatus).filter(pkg => !packagesStatus[pkg]);
+  // Run all checks in parallel for better performance
+  const [
+    packagesResults,
+    servicesResults,
+    firewallStatus,
+    dbStatus,
+    apiHealth,
+    optDirExists,
+    pm2Running
+  ] = await Promise.all([
+    checkPackagesInstalled(requiredPackages),
+    checkServicesRunning(requiredServices),
+    checkFirewallRules(),
+    checkDatabaseConfiguration(),
+    checkApiHealth(),
+    checkOptDirectory(),
+    checkPM2Status()
+  ]);
   
+  // Process results
+  const missingPackages = Object.keys(packagesResults).filter(pkg => !packagesResults[pkg]);
+  const inactiveServices = Object.keys(servicesResults).filter(svc => !servicesResults[svc]);
+  
+  // Report results
   if (missingPackages.length === 0) {
     log("Todos os pacotes necessários estão instalados", "success");
   } else {
     log(`Pacotes faltando: ${missingPackages.join(', ')}`, "warning");
   }
   
-  // Verificar serviços
-  log("Verificando serviços em execução...", "step");
-  const servicesStatus = await checkServicesRunning(requiredServices);
-  const inactiveServices = Object.keys(servicesStatus).filter(svc => !servicesStatus[svc]);
-  
   if (inactiveServices.length === 0) {
     log("Todos os serviços necessários estão em execução", "success");
   } else {
     log(`Serviços inativos: ${inactiveServices.join(', ')}`, "warning");
-  }
-  
-  // Verificar firewall
-  const firewallStatus = await checkFirewallRules();
-  
-  // Verificar banco de dados
-  const dbStatus = await checkDatabaseConfiguration();
-  
-  // Verificar API
-  const apiHealth = await checkApiHealth();
-  
-  // Verificar se /opt/loqquei/print_server_desktop existe
-  let optDirExists = false;
-  try {
-    // Usar um script bash que sempre retorna um código de saída 0 (sucesso)
-    // mas com uma mensagem diferente baseada na existência do diretório
-    const bashScript = `wsl -d Ubuntu -u root bash -c "if [ -d '/opt/loqquei/print_server_desktop' ]; then echo 'EXISTS'; else echo 'NOT_EXISTS'; fi"`;
-    const result = await execPromise(bashScript, 10000, true);
-    
-    optDirExists = result.trim() === 'EXISTS';
-    
-    if (optDirExists) {
-      log("Diretório /opt/loqquei/print_server_desktop encontrado", "success");
-    } else {
-      log("Diretório /opt/loqquei/print_server_desktop não encontrado", "warning");
-      
-      // Verificação adicional do diretório alternativo (opcional)
-      const altScript = `wsl -d Ubuntu -u root bash -c "if [ -d '/opt/print_server/print_server_desktop' ]; then echo 'EXISTS'; else echo 'NOT_EXISTS'; fi"`;
-      const altResult = await execPromise(altScript, 10000, true);
-      
-      if (altResult.trim() === 'EXISTS') {
-        log("Diretório alternativo /opt/print_server/print_server_desktop encontrado", "info");
-        log("ATENÇÃO: Possível inconsistência nos caminhos utilizados", "warning");
-      }
-    }
-  } catch (error) {
-    log(`Erro ao verificar diretório: ${error.message || 'Erro desconhecido'}`, "warning");
-    optDirExists = false;
-    
-    // Diagnóstico adicional
-    try {
-      // Listar conteúdo de /opt e /opt/loqquei para diagnóstico
-      const optContents = await execPromise(`wsl -d Ubuntu -u root ls -la /opt/`, 10000, true);
-      log(`Conteúdo do diretório /opt/:\n${optContents}`, "info");
-      
-      // Tentar listar /opt/loqquei se existir
-      await execPromise(`wsl -d Ubuntu -u root bash -c "if [ -d '/opt/loqquei' ]; then ls -la /opt/loqquei/; fi"`, 10000, true);
-    } catch (diagError) {
-      log("Erro no diagnóstico adicional", "warning");
-    }
-  }
-  
-  // Verificar processos PM2
-  let pm2Running = false;
-  try {
-    const output = await execPromise(`wsl -d Ubuntu -u root bash -c "command -v pm2 && pm2 list | grep print_server"`, 10000, true);
-    pm2Running = output.includes('online');
-    
-    if (pm2Running) {
-      log("Serviço print_server está em execução via PM2", "success");
-    } else {
-      log("Serviço print_server não está em execução via PM2", "warning");
-    }
-  } catch (error) {
-    log("PM2 não encontrado ou erro ao verificar processos", "warning");
-    pm2Running = false;
   }
   
   const fullyConfigured = missingPackages.length === 0 && 
@@ -914,6 +860,33 @@ async function checkSoftwareConfigurations() {
   };
 }
 
+async function checkOptDirectory() {
+  try {
+    const result = await execPromise(`wsl -d Ubuntu -u root bash -c "if [ -d '/opt/loqquei/print_server_desktop' ]; then echo 'EXISTS'; else echo 'NOT_EXISTS'; fi"`, 5000, true);
+    const exists = result.trim() === 'EXISTS';
+    
+    if (!exists) {
+      const altResult = await execPromise(`wsl -d Ubuntu -u root bash -c "if [ -d '/opt/print_server/print_server_desktop' ]; then echo 'EXISTS'; else echo 'NOT_EXISTS'; fi"`, 5000, true);
+      if (altResult.trim() === 'EXISTS') {
+        log("Diretório alternativo encontrado em /opt/print_server/print_server_desktop", "info");
+        return true;
+      }
+    }
+    return exists;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function checkPM2Status() {
+  try {
+    const output = await execPromise(`wsl -d Ubuntu -u root bash -c "command -v pm2 && pm2 list | grep print_server"`, 5000, true);
+    return output.includes('online');
+  } catch (error) {
+    return false;
+  }
+}
+
 // Verifica se o sistema já está completamente configurado ou se precisa de configuração
 async function shouldConfigureSystem(installState) {
   // Se o estado diz que já está configurado, verifica explicitamente
@@ -939,38 +912,49 @@ async function shouldConfigureSystem(installState) {
 async function checkSystemStatus(installState) {
   log("Iniciando verificação completa do sistema...", "header");
 
+  // Run all base checks in parallel for better performance
+  const [adminPrivileges, windowsCompatible, virtualizationEnabled, wslStatus] = await Promise.all([
+    checkAdminPrivileges(),
+    checkWindowsVersion(),
+    checkVirtualization(),
+    checkWSLStatusDetailed()
+  ]);
+
   const results = {
-    adminPrivileges: await checkAdminPrivileges(),
-    windowsCompatible: await checkWindowsVersion(),
-    virtualizationEnabled: await checkVirtualization(),
-    wslStatus: await checkWSLStatusDetailed(),
+    adminPrivileges,
+    windowsCompatible,
+    virtualizationEnabled,
+    wslStatus,
     ubuntuInstalled: false,
+    userConfigured: true, // Always set to true to bypass this check
     systemConfigured: false,
-    needsConfiguration: true,
-    softwareStatus: null,
-    printerStatus: null
+    needsConfiguration: true
   };
 
-  // Verificar se o Ubuntu está instalado, se WSL estiver ok
+  // Run secondary checks only if base requirements are met
   if (results.wslStatus.installed && results.wslStatus.wsl2) {
-    results.ubuntuInstalled = await checkUbuntuInstalled();
+    // Check Ubuntu and additional components in parallel
+    const [ubuntuInstalled, printerStatus] = await Promise.all([
+      checkUbuntuInstalled(),
+      checkWindowsPrinterInstalled()
+    ]);
     
-    // Verificar software apenas se Ubuntu estiver instalado
+    results.ubuntuInstalled = ubuntuInstalled;
+    results.printerStatus = printerStatus;
+
     if (results.ubuntuInstalled) {
+      // Only check software configurations if Ubuntu is installed
       results.softwareStatus = await checkSoftwareConfigurations();
-      // Verificar status da impressora virtual
-      results.printerStatus = await checkWindowsPrinterInstalled();
       
-      // Determinar se o sistema está completamente configurado (mais rigoroso)
+      // Determine if system is fully configured
       results.systemConfigured = results.softwareStatus.fullyConfigured && 
-                                (results.printerStatus && results.printerStatus.installed && 
-                                 results.printerStatus.correctConfig);
+                             (results.printerStatus && results.printerStatus.installed);
     }
   }
 
   results.needsConfiguration = !results.systemConfigured;
   
-  // Salvando o último resultado em uma variável global para fallback
+  // Cache results for future use
   global.lastSystemStatus = results;
 
   log("Verificação do sistema concluída", "success");

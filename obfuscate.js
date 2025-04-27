@@ -1,12 +1,7 @@
 /**
  * Script de Ofuscação Avançada para Proteção de Código
  * Este script ofusca arquivos JS e SQL com proteções avançadas
- * 
- * Recursos:
- * - Ofuscação forte de JavaScript com transformações múltiplas
- * - Proteção de arquivos SQL via criptografia e ofuscação
- * - Anti-tampering com verificações de integridade
- * - Processamento recursivo de todos os arquivos em diretórios
+ * Versão melhorada para processar arquivos em resources/
  */
 
 const fs = require('fs');
@@ -16,7 +11,7 @@ const JavaScriptObfuscator = require('javascript-obfuscator');
 const glob = require('glob');
 const uglifyJS = require('uglify-js');
 
-// Chave de criptografia (ALTERE ESTA CHAVE para um valor único e mantenha-a segura)
+// Chave de criptografia (gerada aleatoriamente a cada execução)
 const ENCRYPTION_KEY = crypto.randomBytes(32);
 const IV_LENGTH = 16;
 
@@ -60,6 +55,26 @@ const obfuscationOptions = {
   unicodeEscapeSequence: false
 };
 
+// Configurações menos agressivas para scripts em resources
+const resourcesJsOptions = {
+  compact: true,
+  controlFlowFlattening: true,
+  controlFlowFlatteningThreshold: 0.75,
+  deadCodeInjection: true,
+  deadCodeInjectionThreshold: 0.4,
+  debugProtection: false, // Desativado para scripts que podem ser executados no WSL
+  disableConsoleOutput: false, // Manter console.log para recursos
+  identifierNamesGenerator: 'hexadecimal',
+  renameGlobals: false,
+  renameProperties: false, // Evitar renomear propriedades em scripts de servidor
+  selfDefending: false, // Desativado para scripts no WSL
+  simplify: true,
+  stringArray: true,
+  stringArrayEncoding: ['rc4'],
+  stringArrayThreshold: 0.75,
+  transformObjectKeys: false // Desativado para scripts em resources
+};
+
 // Configurações específicas para SQL
 const sqlObfuscationOptions = {
   compact: true,
@@ -70,6 +85,35 @@ const sqlObfuscationOptions = {
   stringArrayEncoding: ['rc4'],
   stringArrayThreshold: 1
 };
+
+// Lista de arquivos/diretórios que nunca devem ser ofuscados
+const globalExclusions = [
+  'node_modules',
+  '.git',
+  '.github',
+  'package-lock.json',
+  'yarn.lock',
+  'LICENSE',
+  'README.md',
+  '.gitignore',
+  '.DS_Store',
+  'Thumbs.db'
+];
+
+// Extensões de arquivos que não devem ser ofuscados
+const nonObfuscatableExtensions = [
+  '.png', '.jpg', '.jpeg', '.gif', '.svg', '.ico', '.woff', '.woff2', '.ttf', '.eot',
+  '.mp3', '.mp4', '.wav', '.ogg', '.pdf', '.zip', '.tar', '.gz', '.7z',
+  '.css', '.scss', '.less', '.json', '.md', '.csv', '.tsv'
+];
+
+// Arquivos específicos que não devem ser ofuscados
+const specificExclusions = [
+  'ecosystem.config.js', // Pode ser necessário para PM2
+  'update.sh',
+  'install_wsl_ubuntu.ps1',
+  'update_wsl.ps1'
+];
 
 // Função para criptografar strings
 function encrypt(text) {
@@ -97,93 +141,162 @@ function getDecryptFunction() {
   `;
 }
 
+// Verifica se um arquivo deve ser excluído da ofuscação
+function shouldExclude(filePath) {
+  const filename = path.basename(filePath);
+  const extension = path.extname(filePath).toLowerCase();
+  
+  // Verificar exclusões globais
+  if (globalExclusions.includes(filename)) return true;
+  
+  // Verificar extensões não ofuscáveis
+  if (nonObfuscatableExtensions.includes(extension)) return true;
+  
+  // Verificar exclusões específicas
+  if (specificExclusions.includes(filename)) return true;
+  
+  return false;
+}
+
+// Determina se um arquivo está na pasta resources e deve usar configurações menos agressivas
+function isResourcesFile(filePath) {
+  return filePath.includes('resources') || 
+         filePath.includes('print_server_desktop') || 
+         filePath.includes('scripts');
+}
+
 // Função para ofuscar arquivo JavaScript
-function obfuscateJSFile(filePath) {
+function obfuscateJSFile(filePath, outputPath) {
   console.log(`Ofuscando JS: ${filePath}`);
   
   try {
-    let code = fs.readFileSync(filePath, 'utf8');
-    
-    // Primeiro passo: minificar com UglifyJS
-    const minified = uglifyJS.minify(code, {
-      compress: {
-        dead_code: true,
-        global_defs: {
-          "@console.log": "function(){}",
-          DEBUG: false
-        },
-        passes: 3
-      },
-      mangle: {
-        properties: {
-          keep_quoted: true,
-          reserved: []
-        }
+    // Verificar se o arquivo deve ser excluído da ofuscação
+    if (shouldExclude(filePath)) {
+      console.log(`⚠️ Pulando arquivo excluído: ${filePath}`);
+      
+      // Apenas copiar o arquivo para o destino
+      const targetDir = path.dirname(outputPath);
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
       }
-    });
-    
-    if (minified.error) {
-      console.error(`Erro ao minificar ${filePath}:`, minified.error);
-      // Continue com o código original se a minificação falhar
-    } else {
-      code = minified.code;
+      fs.copyFileSync(filePath, outputPath);
+      return true;
     }
     
-    // Adicionar função de descriptografia para uso em runtime
-    code = getDecryptFunction() + code;
+    let code = fs.readFileSync(filePath, 'utf8');
     
-    // Segundo passo: ofuscação forte
-    const obfuscationResult = JavaScriptObfuscator.obfuscate(
-      code,
-      obfuscationOptions
-    );
+    // Decidir quais opções de ofuscação usar com base no caminho do arquivo
+    const options = isResourcesFile(filePath) ? resourcesJsOptions : obfuscationOptions;
     
-    // Terceiro passo: adicionar anti-tampering
-    const obfuscatedCode = obfuscationResult.getObfuscatedCode();
-    const checksum = crypto.createHash('sha256').update(obfuscatedCode).digest('hex');
-    
-    // Adicionar verificação de integridade que falha se o código for modificado
-    const finalCode = `
-      (function() {
-        const originalCode = ${JSON.stringify(obfuscatedCode)};
-        const expectedChecksum = "${checksum}";
-        
-        function verifyIntegrity() {
-          try {
-            const actualChecksum = require('crypto')
-              .createHash('sha256')
-              .update(originalCode)
-              .digest('hex');
-              
-            if (actualChecksum !== expectedChecksum) {
-              throw new Error("Integrity check failed");
+    // Primeiro passo: minificar com UglifyJS (pular para arquivos em resources)
+    if (!isResourcesFile(filePath)) {
+      try {
+        const minified = uglifyJS.minify(code, {
+          compress: {
+            dead_code: true,
+            global_defs: {
+              "@console.log": "function(){}",
+              DEBUG: false
+            },
+            passes: 3
+          },
+          mangle: {
+            properties: {
+              keep_quoted: true,
+              reserved: []
             }
-          } catch(e) {
-            // Se a verificação falhar, executar ações de proteção
-            process.exit(1);
           }
+        });
+        
+        if (!minified.error) {
+          code = minified.code;
         }
-        
-        // Verificar integridade regularmente
-        setInterval(verifyIntegrity, Math.random() * 30000 + 5000);
-        
-        // Executar o código ofuscado
-        eval(originalCode);
-      })();
-    `;
+      } catch (minifyError) {
+        console.log(`⚠️ Erro ao minificar ${filePath}, continuando com código original: ${minifyError.message}`);
+      }
+    }
     
-    // Salvar o arquivo ofuscado
-    fs.writeFileSync(filePath, finalCode, 'utf8');
-    console.log(`✅ Ofuscação completa: ${filePath}`);
-    return true;
+    // Adicionar função de descriptografia para uso em runtime (somente para arquivos não em resources)
+    if (!isResourcesFile(filePath)) {
+      code = getDecryptFunction() + code;
+    }
+    
+    // Segundo passo: ofuscação
+    try {
+      const obfuscationResult = JavaScriptObfuscator.obfuscate(code, options);
+      const obfuscatedCode = obfuscationResult.getObfuscatedCode();
+      
+      // Terceiro passo: adicionar anti-tampering (somente para arquivos não em resources)
+      let finalCode = obfuscatedCode;
+      
+      if (!isResourcesFile(filePath) && options.selfDefending) {
+        const checksum = crypto.createHash('sha256').update(obfuscatedCode).digest('hex');
+        
+        finalCode = `
+          (function() {
+            const originalCode = ${JSON.stringify(obfuscatedCode)};
+            const expectedChecksum = "${checksum}";
+            
+            function verifyIntegrity() {
+              try {
+                const actualChecksum = require('crypto')
+                  .createHash('sha256')
+                  .update(originalCode)
+                  .digest('hex');
+                  
+                if (actualChecksum !== expectedChecksum) {
+                  throw new Error("Integrity check failed");
+                }
+              } catch(e) {
+                // Se a verificação falhar, executar ações de proteção
+                process.exit(1);
+              }
+            }
+            
+            // Verificar integridade regularmente
+            setInterval(verifyIntegrity, Math.random() * 30000 + 5000);
+            
+            // Executar o código ofuscado
+            eval(originalCode);
+          })();
+        `;
+      }
+      
+      // Garantir que o diretório de destino exista
+      const targetDir = path.dirname(outputPath);
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      
+      // Salvar o arquivo ofuscado
+      fs.writeFileSync(outputPath, finalCode, 'utf8');
+      console.log(`✅ Ofuscação completa: ${outputPath}`);
+      return true;
+    } catch (obfuscateError) {
+      console.error(`❌ Erro ao ofuscar ${filePath}:`, obfuscateError);
+      
+      // Em caso de erro, copiar o arquivo original para não interromper o processo
+      try {
+        const targetDir = path.dirname(outputPath);
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+        fs.copyFileSync(filePath, outputPath);
+        console.log(`⚠️ Copiado arquivo original devido a erro na ofuscação: ${outputPath}`);
+        return true;
+      } catch (copyError) {
+        console.error(`❌ Erro ao copiar arquivo original: ${copyError}`);
+        return false;
+      }
+    }
   } catch (error) {
-    console.error(`❌ Erro ao ofuscar ${filePath}:`, error);
+    console.error(`❌ Erro ao processar ${filePath}:`, error);
     return false;
   }
 }
 
 // Função para processar arquivos SQL
-function processSQLFile(filePath) {
+function processSQLFile(filePath, outputPath) {
   console.log(`Processando SQL: ${filePath}`);
   
   try {
@@ -220,55 +333,149 @@ function processSQLFile(filePath) {
     ).getObfuscatedCode();
     
     // Salvar o novo arquivo JS no lugar do SQL
-    const jsFilePath = filePath.replace(/\.sql$/i, '.js');
-    fs.writeFileSync(jsFilePath, obfuscatedWrapper, 'utf8');
+    const jsOutputPath = outputPath.replace(/\.sql$/i, '.js');
     
-    // Opcional: remover o arquivo SQL original
-    if (filePath !== jsFilePath) {
-      fs.unlinkSync(filePath);
+    // Garantir que o diretório de destino exista
+    const targetDir = path.dirname(jsOutputPath);
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
     }
     
-    console.log(`✅ SQL processado e convertido para JS: ${jsFilePath}`);
+    fs.writeFileSync(jsOutputPath, obfuscatedWrapper, 'utf8');
+    
+    console.log(`✅ SQL processado e convertido para JS: ${jsOutputPath}`);
     return true;
   } catch (error) {
     console.error(`❌ Erro ao processar SQL ${filePath}:`, error);
+    
+    // Em caso de erro, copiar o arquivo original para não interromper o processo
+    try {
+      const targetDir = path.dirname(outputPath);
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      fs.copyFileSync(filePath, outputPath);
+      console.log(`⚠️ Copiado arquivo SQL original devido a erro: ${outputPath}`);
+      return true;
+    } catch (copyError) {
+      console.error(`❌ Erro ao copiar arquivo original: ${copyError}`);
+      return false;
+    }
+  }
+}
+
+// Função para copiar arquivos não-JS/SQL
+function copyNonProcessableFile(filePath, outputPath) {
+  try {
+    // Garantir que o diretório de destino exista
+    const targetDir = path.dirname(outputPath);
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+    
+    fs.copyFileSync(filePath, outputPath);
+    return true;
+  } catch (error) {
+    console.error(`❌ Erro ao copiar ${filePath}:`, error);
     return false;
   }
 }
 
 // Função para processar todos os arquivos em um diretório
-function processDirectory(directory, outputDir) {
-  console.log(`Processando diretório: ${directory}`);
+function processDirectory(inputDir, outputDir) {
+  console.log(`Processando diretório: ${inputDir}`);
   console.log(`Diretório de saída: ${outputDir}`);
   
   if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  // Encontrar todos os arquivos JS
-  const jsFiles = glob.sync(`${directory}/**/*.js`, { nodir: true });
-  console.log(`Encontrados ${jsFiles.length} arquivos JS`);
+  // Encontrar todos os arquivos de forma recursiva
+  const allFiles = glob.sync(`${inputDir}/**/*`, { nodir: true, dot: true });
+  console.log(`Encontrados ${allFiles.length} arquivos para processamento`);
   
-  // Encontrar todos os arquivos SQL
-  const sqlFiles = glob.sync(`${directory}/**/*.sql`, { nodir: true });
-  console.log(`Encontrados ${sqlFiles.length} arquivos SQL`);
+  let jsFiles = [];
+  let sqlFiles = [];
+  let otherFiles = [];
+  
+  // Classificar os arquivos
+  allFiles.forEach(file => {
+    const extension = path.extname(file).toLowerCase();
+    
+    if (extension === '.js') {
+      jsFiles.push(file);
+    } else if (extension === '.sql') {
+      sqlFiles.push(file);
+    } else {
+      otherFiles.push(file);
+    }
+  });
+  
+  console.log(`Classificação: ${jsFiles.length} arquivos JS, ${sqlFiles.length} arquivos SQL, ${otherFiles.length} outros arquivos`);
   
   // Processar arquivos JS
   let jsSuccess = 0;
   jsFiles.forEach(file => {
-    if (obfuscateJSFile(file)) jsSuccess++;
+    const relativePath = path.relative(inputDir, file);
+    const outputPath = path.join(outputDir, relativePath);
+    
+    if (obfuscateJSFile(file, outputPath)) {
+      jsSuccess++;
+    }
   });
   
   // Processar arquivos SQL
   let sqlSuccess = 0;
   sqlFiles.forEach(file => {
-    if (processSQLFile(file)) sqlSuccess++;
+    const relativePath = path.relative(inputDir, file);
+    const outputPath = path.join(outputDir, relativePath);
+    
+    if (processSQLFile(file, outputPath)) {
+      sqlSuccess++;
+    }
+  });
+  
+  // Copiar outros arquivos
+  let otherSuccess = 0;
+  otherFiles.forEach(file => {
+    const relativePath = path.relative(inputDir, file);
+    const outputPath = path.join(outputDir, relativePath);
+    
+    if (copyNonProcessableFile(file, outputPath)) {
+      otherSuccess++;
+    }
   });
   
   console.log(`\n========== RESUMO ==========`);
   console.log(`✅ JS: ${jsSuccess}/${jsFiles.length} arquivos ofuscados com sucesso`);
   console.log(`✅ SQL: ${sqlSuccess}/${sqlFiles.length} arquivos processados com sucesso`);
+  console.log(`✅ Outros: ${otherSuccess}/${otherFiles.length} arquivos copiados com sucesso`);
   console.log(`============================\n`);
+  
+  return {
+    jsSuccess,
+    jsTotal: jsFiles.length,
+    sqlSuccess,
+    sqlTotal: sqlFiles.length,
+    otherSuccess,
+    otherTotal: otherFiles.length
+  };
+}
+
+// Função para processar a pasta resources de forma específica
+function processResourcesDirectory(baseInputDir, baseOutputDir) {
+  const resourcesInputDir = path.join(baseInputDir, 'resources');
+  const resourcesOutputDir = path.join(baseOutputDir, 'resources');
+  
+  if (!fs.existsSync(resourcesInputDir)) {
+    console.log(`⚠️ Diretório de recursos não encontrado: ${resourcesInputDir}`);
+    return false;
+  }
+  
+  console.log(`\n========== PROCESSANDO RECURSOS ==========`);
+  console.log(`Processando diretório de recursos: ${resourcesInputDir}`);
+  
+  return processDirectory(resourcesInputDir, resourcesOutputDir);
 }
 
 // Função principal
@@ -286,12 +493,28 @@ function main() {
     console.log('Dependências instaladas.');
   }
   
-  // Obter diretório para processamento (atual por padrão)
-  const targetDir = process.argv[2] || '.';
-  const outputDir = process.argv[3] || targetDir + '-obfuscated';
+  // Obter diretório para processamento
+  const sourceDir = process.argv[2];
+  const outputDir = process.argv[3];
   
-  // Processar o diretório
-  processDirectory(targetDir, outputDir);
+  if (!sourceDir || !outputDir) {
+    console.error('Uso: node obfuscate.js <diretório_fonte> <diretório_saída>');
+    process.exit(1);
+  }
+  
+  // Processar o diretório principal
+  const mainResult = processDirectory(sourceDir, outputDir);
+  
+  // Verificar resultado
+  const totalProcessed = mainResult.jsSuccess + mainResult.sqlSuccess + mainResult.otherSuccess;
+  const totalFiles = mainResult.jsTotal + mainResult.sqlTotal + mainResult.otherTotal;
+  
+  if (totalProcessed < totalFiles) {
+    console.log(`⚠️ Aviso: ${totalProcessed} de ${totalFiles} arquivos processados com sucesso.`);
+    process.exitCode = 1;
+  } else {
+    console.log(`✅ Todos os ${totalFiles} arquivos processados com sucesso!`);
+  }
 }
 
 // Executar o script

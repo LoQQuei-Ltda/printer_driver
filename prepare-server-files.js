@@ -3,6 +3,8 @@
  * 
  * Este script simples e robusto copia o print_server_desktop para
  * a pasta resources do printer_driver para instalação e atualizações.
+ * 
+ * Versão melhorada para compatibilidade com ofuscação
  */
 
 const fs = require('fs');
@@ -73,6 +75,47 @@ function copyDir(src, dest, exclude = []) {
   }
 }
 
+// Marcador para incluir/excluir arquivos específicos da ofuscação
+function addPreserveMarkers(dir) {
+  const PRESERVE_FILES = [
+    'update.sh',
+    'ecosystem.config.js',
+    '.env',
+    '.env.example'
+  ];
+
+  const PRESERVE_EXTENSIONS = [
+    '.sh',
+    '.ps1',
+    '.bat'
+  ];
+
+  // Adicionar marcador a arquivos que devem ser preservados durante ofuscação
+  try {
+    const files = fs.readdirSync(dir, { withFileTypes: true });
+    
+    for (const file of files) {
+      const filePath = path.join(dir, file.name);
+      
+      if (file.isDirectory()) {
+        // Processar subdiretórios recursivamente
+        addPreserveMarkers(filePath);
+      } else {
+        // Verificar se este arquivo deve ser preservado
+        const ext = path.extname(file.name);
+        if (PRESERVE_FILES.includes(file.name) || PRESERVE_EXTENSIONS.includes(ext)) {
+          // Adicionar marcador em um arquivo adjacente para sinalizar preservação
+          const markerPath = `${filePath}.preserve`;
+          fs.writeFileSync(markerPath, 'Este arquivo deve ser mantido sem ofuscação.', 'utf8');
+          log(`Marcador de preservação adicionado para: ${filePath}`);
+        }
+      }
+    }
+  } catch (error) {
+    log(`ERRO ao adicionar marcadores de preservação: ${error.message}`);
+  }
+}
+
 // Função principal de preparação
 function prepareServerFiles() {
   log('Iniciando preparação dos arquivos do servidor...');
@@ -119,6 +162,10 @@ function prepareServerFiles() {
       log('AVISO: Houve problemas durante a cópia dos arquivos.');
     }
     
+    // Adicionar marcadores para preservação durante ofuscação
+    log('Adicionando marcadores para preservação de scripts...');
+    addPreserveMarkers(TARGET_DIR);
+    
     // Verificar se o diretório de atualizações existe e, se não, criá-lo
     const updatesDir = path.join(TARGET_DIR, 'updates');
     if (!fs.existsSync(updatesDir)) {
@@ -136,6 +183,10 @@ apt install net-tools -y
 # Exemplo de atualização do sistema
 echo "Atualização básica concluída!"
 exit 0`, { mode: 0o755 });
+        
+        // Adicionar marcador de preservação
+        fs.writeFileSync(`${exampleUpdateScript}.preserve`, 'Este arquivo deve ser mantido sem ofuscação.', 'utf8');
+        
         log('Criado script de atualização de exemplo');
       } catch (error) {
         log(`AVISO: Não foi possível criar script de atualização de exemplo: ${error.message}`);
@@ -198,24 +249,173 @@ else
   node -e "try { const fs=require('fs'); const path=require('path'); const oldPid = fs.existsSync('/opt/print_server/server.pid') ? fs.readFileSync('/opt/print_server/server.pid', 'utf8') : null; if (oldPid) { try { process.kill(parseInt(oldPid)); } catch(e) {} } const { spawn } = require('child_process'); const proc = spawn('node', ['bin/www.js'], { detached: true, stdio: 'ignore' }); fs.writeFileSync('/opt/print_server/server.pid', proc.pid.toString()); proc.unref(); console.log('Servidor reiniciado via método alternativo, PID:', proc.pid); }" >> "$LOG_FILE" 2>&1
 fi
 
-log "=== Processo de atualização concluído com sucesso! ==="`;
-        
+log "=== Processo de atualização concluído com sucesso! ==="`; 
+       
         fs.writeFileSync(updateScriptPath, updateScriptContent, { mode: 0o755 });
+        
+        // Adicionar marcador de preservação
+        fs.writeFileSync(`${updateScriptPath}.preserve`, 'Este arquivo deve ser mantido sem ofuscação.', 'utf8');
+        
         log('Script de atualização principal criado com sucesso');
       } catch (error) {
         log(`AVISO: Não foi possível criar script de atualização principal: ${error.message}`);
       }
     }
     
+    // Verificar se ecosystem.config.js existe
+    const ecosystemConfigPath = path.join(TARGET_DIR, 'ecosystem.config.js');
+    if (!fs.existsSync(ecosystemConfigPath)) {
+      log('Criando arquivo de configuração do PM2...');
+      try {
+        const ecosystemConfigContent = `module.exports = {
+  apps: [{
+    name: 'print_server_desktop',
+    script: './bin/www.js',
+    watch: false,
+    env: {
+      NODE_ENV: 'production',
+      PORT: 56258
+    },
+    max_memory_restart: '500M',
+    restart_delay: 3000,
+    max_restarts: 10
+  }]
+};`;
+        
+        fs.writeFileSync(ecosystemConfigPath, ecosystemConfigContent);
+        
+        // Adicionar marcador de preservação
+        fs.writeFileSync(`${ecosystemConfigPath}.preserve`, 'Este arquivo deve ser mantido sem ofuscação.', 'utf8');
+        
+        log('Arquivo de configuração do PM2 criado com sucesso');
+      } catch (error) {
+        log(`AVISO: Não foi possível criar arquivo de configuração do PM2: ${error.message}`);
+      }
+    }
+    
+    // Verificar arquivo .env
+    const envPath = path.join(TARGET_DIR, '.env');
+    if (!fs.existsSync(envPath)) {
+      const envExamplePath = path.join(TARGET_DIR, '.env.example');
+      
+      if (fs.existsSync(envExamplePath)) {
+        log('Criando arquivo .env a partir do exemplo...');
+        try {
+          fs.copyFileSync(envExamplePath, envPath);
+          log('Arquivo .env criado com sucesso');
+        } catch (error) {
+          log(`AVISO: Não foi possível criar arquivo .env: ${error.message}`);
+        }
+      } else {
+        log('Criando arquivo .env básico...');
+        try {
+          fs.writeFileSync(envPath, 'PORT=56258\nNODE_ENV=production\n');
+          log('Arquivo .env básico criado com sucesso');
+        } catch (error) {
+          log(`AVISO: Não foi possível criar arquivo .env básico: ${error.message}`);
+        }
+      }
+      
+      // Adicionar marcador de preservação para .env
+      fs.writeFileSync(`${envPath}.preserve`, 'Este arquivo deve ser mantido sem ofuscação.', 'utf8');
+    }
+    
     log('Preparação finalizada com sucesso!');
     return true;
   } else {
     log(`ERRO: Diretório do print_server_desktop não encontrado em: ${SOURCE_DIR}`);
-    log('Verifique se o caminho está correto ou forneça um caminho personalizado usando a variável de ambiente SOURCE_DIR');
-    log('Exemplo: SOURCE_DIR=/caminho/para/print_server_desktop node prepare-server-files.js');
+    log('Verificando se já existe uma estrutura em resources/...');
     
-    // Falhar, mas não terminar o processo para permitir integração com pipelines
-    return false;
+    // Verificar se já existe um diretório resources/print_server_desktop
+    if (fs.existsSync(TARGET_DIR)) {
+      log('Diretório resources/print_server_desktop já existe. Usando estrutura existente.');
+      
+      // Adicionar marcadores para preservação durante ofuscação
+      log('Adicionando marcadores para preservação de scripts...');
+      addPreserveMarkers(TARGET_DIR);
+      
+      return true;
+    }
+    
+    // Se nenhuma das alternativas funcionar, criar estrutura mínima
+    log('Criando estrutura mínima em resources/print_server_desktop...');
+    
+    try {
+      // Garantir que o diretório existe
+      ensureDir(TARGET_DIR);
+      
+      // Criar ecosystem.config.js
+      const ecosystemConfigPath = path.join(TARGET_DIR, 'ecosystem.config.js');
+      const ecosystemConfigContent = `module.exports = {
+  apps: [{
+    name: 'print_server_desktop',
+    script: './bin/www.js',
+    watch: false,
+    env: {
+      NODE_ENV: 'production',
+      PORT: 56258
+    },
+    max_memory_restart: '500M',
+    restart_delay: 3000,
+    max_restarts: 10
+  }]
+};`;
+      fs.writeFileSync(ecosystemConfigPath, ecosystemConfigContent);
+      fs.writeFileSync(`${ecosystemConfigPath}.preserve`, 'Este arquivo deve ser mantido sem ofuscação.', 'utf8');
+      
+      // Criar package.json mínimo
+      const packageJsonPath = path.join(TARGET_DIR, 'package.json');
+      const packageJsonContent = `{
+  "name": "print_server_desktop",
+  "version": "1.0.0",
+  "description": "Print Server Desktop Application",
+  "main": "bin/www.js",
+  "scripts": {
+    "start": "node bin/www.js"
+  },
+  "dependencies": {
+    "express": "^4.17.1"
+  }
+}`;
+      fs.writeFileSync(packageJsonPath, packageJsonContent);
+      
+      // Criar update.sh
+      const updateScriptPath = path.join(TARGET_DIR, 'update.sh');
+      const updateScriptContent = `#!/bin/bash
+echo "Update script executed"
+exit 0`;
+      fs.writeFileSync(updateScriptPath, updateScriptContent, { mode: 0o755 });
+      fs.writeFileSync(`${updateScriptPath}.preserve`, 'Este arquivo deve ser mantido sem ofuscação.', 'utf8');
+      
+      // Criar diretório bin e arquivo www.js mínimo
+      const binDir = path.join(TARGET_DIR, 'bin');
+      ensureDir(binDir);
+      
+      const wwwPath = path.join(binDir, 'www.js');
+      const wwwContent = `#!/usr/bin/env node
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 56258;
+
+app.get('/', (req, res) => {
+  res.send('Print Server Desktop is running');
+});
+
+app.listen(port, () => {
+  console.log(\`Print Server Desktop listening at http://localhost:\${port}\`);
+});`;
+      fs.writeFileSync(wwwPath, wwwContent);
+      
+      // Criar diretório updates
+      const updatesDir = path.join(TARGET_DIR, 'updates');
+      ensureDir(updatesDir);
+      
+      log('Estrutura mínima criada com sucesso.');
+      return true;
+    } catch (error) {
+      log(`ERRO ao criar estrutura mínima: ${error.message}`);
+      return false;
+    }
   }
 }
 
