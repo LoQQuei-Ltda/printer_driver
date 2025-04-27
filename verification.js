@@ -997,19 +997,19 @@ async function checkWindowsPrinterInstalled() {
           log(`Porta utilizada: ${port}`, 'info');
         }
         
-        // Verificar se a porta aponta para o servidor CUPS no WSL
-        const pointsToWSL = port.includes('631/printers/PDF_Printer');
+        // Verificar se a porta aponta para o servidor CUPS no WSL com a URL correta
+        const correctConfig = port.includes('localhost:631/printers/PDF_Printer');
         
-        if (pointsToWSL) {
-          log('Impressora está corretamente configurada para o servidor CUPS no WSL', 'success');
+        if (correctConfig) {
+          log('Impressora está corretamente configurada para PDF_Printer', 'success');
         } else {
-          log('Impressora encontrada, mas não está configurada para o servidor CUPS no WSL', 'warning');
+          log('Impressora encontrada, mas não está configurada corretamente para PDF_Printer', 'warning');
         }
         
         return {
           installed: true,
           port: port,
-          pointsToWSL: pointsToWSL
+          correctConfig: correctConfig
         };
       } else {
         log('Impressora LoQQuei não encontrada via WMI', 'warning');
@@ -1032,18 +1032,18 @@ async function checkWindowsPrinterInstalled() {
           log('Impressora LoQQuei encontrada via PowerShell', 'success');
           
           const port = printerInfo.PortName || '';
-          const pointsToWSL = port.includes('631/printers/PDF_Printer');
+          const correctConfig = port.includes('localhost:631/printers/PDF_Printer');
           
-          if (pointsToWSL) {
-            log('Impressora está corretamente configurada para o servidor CUPS no WSL', 'success');
+          if (correctConfig) {
+            log('Impressora está corretamente configurada para PDF_Printer', 'success');
           } else {
-            log('Impressora encontrada, mas não está configurada para o servidor CUPS no WSL', 'warning');
+            log('Impressora encontrada, mas não está configurada corretamente para PDF_Printer', 'warning');
           }
           
           return {
             installed: true,
             port: port,
-            pointsToWSL: pointsToWSL
+            correctConfig: correctConfig
           };
         }
       } catch (jsonError) {
@@ -1053,7 +1053,7 @@ async function checkWindowsPrinterInstalled() {
           return {
             installed: true,
             port: 'Desconhecido',
-            pointsToWSL: false // Não podemos confirmar
+            correctConfig: false // Não podemos confirmar
           };
         }
       }
@@ -1072,7 +1072,7 @@ async function checkWindowsPrinterInstalled() {
         return {
           installed: true,
           port: 'Desconhecido (detectado via registro)',
-          pointsToWSL: false // Não podemos confirmar
+          correctConfig: false // Não podemos confirmar
         };
       }
     } catch (regError) {
@@ -1085,7 +1085,7 @@ async function checkWindowsPrinterInstalled() {
     return {
       installed: false,
       port: null,
-      pointsToWSL: false
+      correctConfig: false
     };
   } catch (error) {
     log(`Erro ao verificar instalação da impressora: ${error.message}`, 'error');
@@ -1093,7 +1093,7 @@ async function checkWindowsPrinterInstalled() {
     return {
       installed: false,
       port: null,
-      pointsToWSL: false,
+      correctConfig: false,
       error: error.message
     };
   }
