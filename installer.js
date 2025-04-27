@@ -2329,134 +2329,103 @@ async function configureSystem() {
 
 // Função para instalar diretamente a impressora CUPS com driver IPP
 async function installWindowsPrinter() {
-  verification.log('Instalando/Verificando impressora virtual LoQQuei (IPP)...', 'header');
-  const printerName = "Impressora LoQQuei";
-  // Assumindo que a impressora CUPS-PDF se chama 'PDF' no servidor CUPS (WSL)
-  const printerURI = "http://localhost:631/printers/PDF";
-
+  verification.log('Instalando impressora CUPS PDF...', 'header');
+  
   try {
-    verification.log(`Tentando instalar impressora: ${printerName} com URI: ${printerURI}`, 'step');
-
-    // Criar script PowerShell para instalação
-    const psScriptContent = `
-# Script para instalar impressora IPP no Windows 10/11
-param(
-    [string]$PrinterName = "${printerName}",
-    [string]$PrinterURI = "${printerURI}"
-)
-
-$ErrorActionPreference = "Stop" # Parar em erros
-
-try {
-    Write-Host "Iniciando instalação da impressora IPP: $PrinterName"
-
-    # 1. Remover impressora existente (ignorar erro se não existir)
-    Write-Host "Verificando e removendo impressora existente..."
-    $existingPrinter = Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue
-    if ($existingPrinter) {
-        Write-Host "Removendo impressora '$PrinterName'..."
-        Remove-Printer -Name $PrinterName
-        Start-Sleep -Seconds 2 # Dar tempo para a remoção
-    } else {
-        Write-Host "Impressora '$PrinterName' não encontrada."
+    // Etapa 1: Limpar completamente qualquer impressora existente e seus resíduos
+    verification.log('Removendo instalações anteriores e resíduos...', 'step');
+    
+    try {
+      // Remover qualquer impressora com o nome "Impressora LoQQuei" ou "PDF_Printer"
+      await verification.execPromise('powershell -Command "Remove-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue"', 5000, true);
+      await verification.execPromise('powershell -Command "Remove-Printer -Name \'PDF_Printer\' -ErrorAction SilentlyContinue"', 5000, true);
+      
+      // Remover portas que podem estar associadas
+      await verification.execPromise('powershell -Command "Get-PrinterPort | Where-Object {$_.Name -like \'*CUPS*\' -or $_.Name -like \'*PDF*\'} | Remove-PrinterPort -ErrorAction SilentlyContinue"', 5000, true);
+      
+      // Limpar cache de spooler (mais invasivo, mas eficaz para remover resíduos)
+      await verification.execPromise('net stop spooler', 10000, true);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await verification.execPromise('net start spooler', 10000, true);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      verification.log('Sistema limpo de instalações anteriores', 'success');
+    } catch (e) {
+      verification.log('Aviso ao limpar instalações anteriores, continuando...', 'warning');
     }
-
-    # 2. Adicionar a impressora IPP usando ConnectionUri (método preferido e unificado)
-    Write-Host "Adicionando impressora IPP '$PrinterName' com URI '$PrinterURI'..."
-    Add-Printer -ConnectionUri $PrinterURI -Name $PrinterName
-    Write-Host "Comando Add-Printer executado."
-    Start-Sleep -Seconds 5 # Dar mais tempo para a instalação se registrar
-
-    # 3. Verificar se a impressora foi adicionada
-    Write-Host "Verificando instalação..."
-    $newPrinter = Get-Printer -Name $PrinterName -ErrorAction SilentlyContinue
-    if ($newPrinter) {
-        Write-Host "SUCESSO: Impressora '$PrinterName' instalada com sucesso."
-        # Opcional: Definir como padrão
-        # (Get-WmiObject -Class Win32_Printer -Filter "Name='$PrinterName'").SetDefaultPrinter() | Out-Null
-        exit 0
-    } else {
-        Write-Host "ERRO: Falha ao verificar a instalação da impressora '$PrinterName' após Add-Printer."
-        # Tentar um método alternativo (Add-Printer com porta + driver) como fallback?
-        # Por enquanto, apenas reportar falha.
-        exit 1
-    }
-
-} catch {
-    Write-Host "ERRO GERAL: Ocorreu um erro durante a instalação da impressora."
-    Write-Host "Mensagem de Erro: $($_.Exception.Message)"
-    Write-Host "StackTrace: $($_.ScriptStackTrace)"
-    exit 1
-}
-`;
-
-    // Salvar o script PowerShell em um arquivo temporário
-    const tempDir = path.join(os.tmpdir(), 'printer-install');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-    const psScriptPath = path.join(tempDir, 'install-ipp-printer.ps1');
-    fs.writeFileSync(psScriptPath, psScriptContent, 'utf8');
-    verification.log(`Script PowerShell salvo em: ${psScriptPath}`, 'info');
-
-    // Executar o script PowerShell
-    // Usar -ExecutionPolicy Bypass para evitar problemas de política de execução
-    // Não executar como admin (false) inicialmente, pois Add-Printer geralmente não requer. Se falhar, pode ser necessário.
-    verification.log('Executando script PowerShell para instalar a impressora...', 'step');
-    const executionResult = await verification.execPromise(`powershell -ExecutionPolicy Bypass -File "${psScriptPath}"`, 60000, false); // Timeout de 60s
-
-    // Analisar o resultado
-    verification.log('Resultado da execução do script PowerShell:', 'info');
-    verification.logToFile(`Saída do PowerShell:\n${executionResult}`);
-
-    if (executionResult.includes("SUCESSO")) {
-      verification.log('Impressora LoQQuei instalada com sucesso via PowerShell!', 'success');
+    
+    // Etapa 2: Instalar a impressora com configurações exatas da imagem
+    verification.log('Instalando impressora PDF_Printer...', 'step');
+    
+    // Utilizar comando direto do Windows para adicionar a impressora silenciosamente
+    const addPrinterCmd = 'rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "http://localhost:631/printers/PDF_Printer" /m "Microsoft Print To PDF" /Z';
+    
+    await verification.execPromise(addPrinterCmd, 15000, true);
+    
+    // Aguardar um momento para a impressora ser registrada
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Etapa 3: Verificar instalação
+    verification.log('Verificando instalação da impressora...', 'step');
+    
+    const checkResult = await verification.execPromise('powershell -Command "if (Get-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue) { Write-Output \'FOUND=TRUE\' } else { Write-Output \'FOUND=FALSE\' }"', 5000, true);
+    
+    if (checkResult.includes('FOUND=TRUE')) {
+      verification.log('Impressora PDF_Printer instalada com sucesso!', 'success');
+      
+      // Configurar parâmetros adicionais via CUPS para corresponder à imagem
+      verification.log('Configurando parâmetros da impressora no CUPS...', 'step');
+      
+      try {
+        // Certificar que a impressora no CUPS tem os parâmetros corretos
+        await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -o job-sheets=none,none -o media=iso_a4_210x297mm -o sides=one-sided', 10000, true);
+        
+        // Configurar driver para "Generic CUPS-PDF Printer"
+        await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -m drv:///cupsfilters.drv/genericpdf.ppd', 10000, true);
+        
+        // Reiniciar CUPS para aplicar configurações
+        await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups', 15000, true);
+        
+        verification.log('Parâmetros da impressora configurados com sucesso', 'success');
+      } catch (cupsError) {
+        verification.log('Aviso: Erro ao configurar parâmetros CUPS detalhados', 'warning');
+        verification.logToFile(`Erro CUPS: ${JSON.stringify(cupsError)}`);
+      }
+      
       return true;
-    } else if (executionResult.includes("ERRO")) {
-       verification.log('Script PowerShell reportou erro durante a instalação.', 'error');
-       // Verificar se o erro foi de permissão e sugerir execução como admin se necessário
-       if (executionResult.includes("Access is denied") || executionResult.includes("Acesso negado")) {
-            verification.log('Erro de permissão detectado. Tentando executar como administrador...', 'warning');
-            try {
-                const adminExecutionResult = await verification.execPromise(`powershell -ExecutionPolicy Bypass -File "${psScriptPath}"`, 60000, true); // Tentar com admin (true)
-                verification.log('Resultado da execução como administrador:', 'info');
-                verification.logToFile(`Saída do PowerShell (Admin):\n${adminExecutionResult}`);
-                if (adminExecutionResult.includes("SUCESSO")) {
-                    verification.log('Impressora LoQQuei instalada com sucesso como administrador!', 'success');
-                    return true;
-                } else {
-                    verification.log('Falha na instalação mesmo como administrador.', 'error');
-                    return false;
-                }
-            } catch (adminError) {
-                verification.log(`Erro ao executar como administrador: ${adminError.message || JSON.stringify(adminError)}`, 'error');
-                verification.logToFile(`Erro detalhado (Admin): ${JSON.stringify(adminError)}`);
-                return false;
-            }
-       }
-       return false; // Falha se não for erro de permissão ou se a tentativa admin falhar
     } else {
-        // Se não houver SUCESSO ou ERRO explícito, verificar novamente
-        verification.log('Resultado do script PowerShell inconclusivo, verificando a impressora manualmente...', 'warning');
-        // IMPORTANTE: A função verification.checkWindowsPrinterInstalled precisa existir e aceitar o nome da impressora como argumento.
-        const checkAgain = await verification.checkWindowsPrinterInstalled(printerName);
-        if (checkAgain && checkAgain.installed) {
-             verification.log('Verificação manual confirma que a impressora foi instalada.', 'success');
-             return true;
-        } else {
-             verification.log('Verificação manual falhou. Instalação da impressora falhou.', 'error');
-             return false;
+      // Método alternativo - mais direto
+      verification.log('Primeiro método falhou, tentando método alternativo...', 'warning');
+      
+      const altCmd = 'powershell -Command "Add-PrinterPort -Name \'Impressora LoQQuei\' -PrinterHostAddress \'http://localhost:631/printers/PDF_Printer\'; Add-Printer -Name \'PDF_Printer\' -DriverName \'Microsoft Print To PDF\' -PortName \'CUPS_PDF_Port\'"';
+      
+      await verification.execPromise(altCmd, 15000, true);
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      
+      // Verificar novamente
+      const recheckResult = await verification.execPromise('powershell -Command "if (Get-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue) { Write-Output \'FOUND=TRUE\' } else { Write-Output \'FOUND=FALSE\' }"', 5000, true);
+      
+      if (recheckResult.includes('FOUND=TRUE')) {
+        verification.log('Impressora PDF_Printer instalada com sucesso via método alternativo!', 'success');
+        
+        // Configurar parâmetros CUPS também para este método
+        try {
+          await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -o job-sheets=none,none -o media=iso_a4_210x297mm -o sides=one-sided', 10000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -m drv:///cupsfilters.drv/genericpdf.ppd', 10000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups', 15000, true);
+        } catch (e) {
+          verification.log('Aviso ao configurar parâmetros CUPS', 'warning');
         }
+        
+        return true;
+      } else {
+        verification.log('Falha na instalação da impressora após múltiplas tentativas', 'error');
+        return false;
+      }
     }
-
   } catch (error) {
-    // Captura erros do execPromise ou outros erros JS
-    const errorMessage = error.stderr || error.stdout || error.message || JSON.stringify(error);
-    verification.log(`Erro GERAL na função installWindowsPrinter: ${errorMessage}`, 'error');
-    verification.logToFile(`Erro detalhado na instalação da impressora: ${JSON.stringify(error)}`);
-    // Tentar logar a saída do PowerShell se estiver no erro
-    if (error.stdout) verification.logToFile(`Saída (stdout) no erro: ${error.stdout}`);
-    if (error.stderr) verification.logToFile(`Saída (stderr) no erro: ${error.stderr}`);
+    verification.log(`Erro na instalação da impressora: ${error.message || 'Erro desconhecido'}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     return false;
   }
 }
