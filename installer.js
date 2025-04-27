@@ -711,8 +711,22 @@ async function configureSamba() {
   verification.log('Configurando Samba...', 'step');
   
   try {
-    // Criar arquivo de configuração do Samba
-    const smbContent = `[global]
+    // Verificar se existe o arquivo de configuração personalizado
+    const configExists = `if [ -f "/opt/loqquei/print_server_desktop/config/smb.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
+    const configStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${configExists}"`, 10000, true);
+    
+    if (configStatus.trim() === 'exists') {
+      // Usar o arquivo de configuração existente
+      verification.log('Usando arquivo de configuração do Samba personalizado...', 'info');
+      
+      // Copiar para o destino no sistema
+      await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/samba`, 10000, true);
+      await verification.execPromise(`wsl -d Ubuntu -u root cp /opt/loqquei/print_server_desktop/config/smb.conf /etc/samba/smb.conf`, 10000, true);
+      verification.log('Arquivo de configuração do Samba copiado com sucesso', 'success');
+    } else {
+      // Criar arquivo de configuração do Samba padrão
+      verification.log('Arquivo de configuração do Samba personalizado não encontrado, usando padrão...', 'info');
+      const smbContent = `[global]
 workgroup = WORKGROUP
 security = user
 map to guest = bad user
@@ -725,20 +739,21 @@ browseable = yes
 guest ok = yes
 `;
 
-    // Criar arquivo temporário
-    const tempDir = path.join(os.tmpdir(), 'wsl-setup');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
+      // Criar arquivo temporário
+      const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      const smbConfigPath = path.join(tempDir, 'smb.conf');
+      fs.writeFileSync(smbConfigPath, smbContent);
+      
+      // Obter caminho WSL para o arquivo
+      const wslPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${smbConfigPath.replace(/\\/g, '/')}"`, 10000, true);
+      
+      // Copiar para o WSL
+      await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/samba`, 10000, true);
+      await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslPath}" /etc/samba/smb.conf`, 10000, true);
     }
-    const smbConfigPath = path.join(tempDir, 'smb.conf');
-    fs.writeFileSync(smbConfigPath, smbContent);
-    
-    // Obter caminho WSL para o arquivo
-    const wslPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${smbConfigPath.replace(/\\/g, '/')}"`, 10000, true);
-    
-    // Copiar para o WSL
-    await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/samba`, 10000, true);
-    await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslPath}" /etc/samba/smb.conf`, 10000, true);
     
     // Criar diretório compartilhado
     await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /srv/print_server', 10000, true);
@@ -761,34 +776,49 @@ async function configureCups() {
   verification.log('Configurando CUPS...', 'step');
   
   try {
-    // Criar arquivo de configuração do CUPS
-    const cupsContent = `Listen 0.0.0.0:631
-WebInterface Yes
-ServerAlias *
-<Location />
-  Order allow,deny
-  Allow all
-</Location>
-<Location /admin>
-  Order allow,deny
-  Allow all
-</Location>
-`;
-
-    // Criar arquivo temporário
-    const tempDir = path.join(os.tmpdir(), 'wsl-setup');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
+    // Verificar se existe o arquivo de configuração cupsd.conf personalizado
+    const cupsConfigExists = `if [ -f "/opt/loqquei/print_server_desktop/config/cupsd.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
+    const cupsConfigStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cupsConfigExists}"`, 10000, true);
+    
+    // Verificar se existe o arquivo de configuração cups-pdf.conf personalizado
+    const cupsPdfConfigExists = `if [ -f "/opt/loqquei/print_server_desktop/config/cups-pdf.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
+    const cupsPdfConfigStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cupsPdfConfigExists}"`, 10000, true);
+    
+    // Verificar se existe o arquivo de configuração cups-browsed.conf personalizado
+    const cupsBrowsedConfigExists = `if [ -f "/opt/loqquei/print_server_desktop/config/cups-browsed.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
+    const cupsBrowsedConfigStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cupsBrowsedConfigExists}"`, 10000, true);
+    
+    // Configurar cupsd.conf
+    if (cupsConfigStatus.trim() === 'exists') {
+      // Usar o arquivo de configuração existente
+      verification.log('Usando arquivo de configuração do CUPS personalizado...', 'info');
+      
+      // Copiar para o destino no sistema
+      await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/cups`, 10000, true);
+      await verification.execPromise(`wsl -d Ubuntu -u root cp /opt/loqquei/print_server_desktop/config/cupsd.conf /etc/cups/cupsd.conf`, 10000, true);
+      verification.log('Arquivo de configuração CUPS copiado com sucesso', 'success');
+    } else {
+      // Criar arquivo de configuração do CUPS padrão
+      verification.log('Arquivo de configuração do CUPS personalizado não encontrado, usando padrão do sistema', 'info');
     }
-    const cupsConfigPath = path.join(tempDir, 'cupsd.conf');
-    fs.writeFileSync(cupsConfigPath, cupsContent);
     
-    // Obter caminho WSL para o arquivo
-    const wslPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${cupsConfigPath.replace(/\\/g, '/')}"`, 10000, true);
-    
-    // Copiar para o WSL
-    await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/cups`, 10000, true);
-    await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslPath}" /etc/cups/cupsd.conf`, 10000, true);
+    // Configurar cups-pdf.conf se existir
+    if (cupsPdfConfigStatus.trim() === 'exists') {
+      verification.log('Usando arquivo de configuração do CUPS-PDF personalizado...', 'info');
+      await verification.execPromise(`wsl -d Ubuntu -u root cp /opt/loqquei/print_server_desktop/config/cups-pdf.conf /etc/cups/cups-pdf.conf`, 10000, true);
+      verification.log('Arquivo de configuração CUPS-PDF copiado com sucesso', 'success');
+    } else {
+      verification.log('Arquivo de configuração do CUPS-PDF personalizado não encontrado, usando padrão do sistema', 'info');
+    }
+
+    // Configurar cups-browsed.conf se existir
+    if (cupsBrowsedConfigStatus.trim() === 'exists') {
+      verification.log('Usando arquivo de configuração do CUPS-BROWSED personalizado...', 'info');
+      await verification.execPromise(`wsl -d Ubuntu -u root cp /opt/loqquei/print_server_desktop/config/cups-browsed.conf /etc/cups/cups-browsed.conf`, 10000, true);
+      verification.log('Arquivo de configuração CUPS-BROWSED copiado com sucesso', 'success');
+    } else {
+      verification.log('Arquivo de configuração do CUPS-BROWSED personalizado não encontrado, usando padrão do sistema', 'info');
+    }
     
     // Configurar para acesso remoto
     await verification.execPromise('wsl -d Ubuntu -u root cupsctl --remote-any', 15000, true);
@@ -2261,6 +2291,9 @@ async function configureSystem() {
     
     // Limpeza do sistema
     await systemCleanup();
+
+    // Instalar impressora virtual do Windows
+    await installWindowsPrinter();
     
     // Verificar se a API está respondendo
     verification.log('Verificando se a API está respondendo...', 'step');
@@ -2290,6 +2323,442 @@ async function configureSystem() {
   } catch (error) {
     verification.log(`Erro ao configurar o sistema: ${error.message}`, 'error');
     verification.logToFile(`Detalhes do erro ao configurar o sistema: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Função para instalar a impressora virtual no Windows
+// Função corrigida para instalar a impressora virtual no Windows
+async function installWindowsPrinter() {
+  verification.log('Instalando impressora virtual do Windows...', 'header');
+  
+  try {
+    // Verificar se já está instalada
+    const printerStatus = await verification.checkWindowsPrinterInstalled();
+    if (printerStatus.installed) {
+      verification.log('Impressora LoQQuei já está instalada no sistema', 'success');
+      // Mesmo que esteja instalada, precisamos garantir que funciona
+      verification.log('Verificando configuração da impressora no CUPS...', 'step');
+    }
+    
+    // Verificar privilégios de administrador
+    const isAdmin = await verification.checkAdminPrivileges();
+    if (!isAdmin) {
+      verification.log('Necessário privilégios de administrador para instalar a impressora', 'error');
+      return false;
+    }
+
+    // Obter o IP do WSL
+    verification.log('Obtendo IP do WSL...', 'step');
+    let wslIp = 'localhost'; // IP padrão como fallback
+    
+    try {
+      // Tentar obter o IP real do WSL para melhor conectividade
+      const ipOutput = await verification.execPromise('wsl -d Ubuntu hostname -I', 10000, true);
+      const ipMatch = ipOutput.trim().split(' ')[0];
+      
+      if (ipMatch && ipMatch.match(/^\d+\.\d+\.\d+\.\d+$/)) {
+        wslIp = ipMatch;
+        wslIp = 'localhost';
+        verification.log(`IP do WSL detectado: ${wslIp}`, 'success');
+      } else {
+        verification.log('Não foi possível obter o IP do WSL, usando localhost', 'warning');
+      }
+    } catch (ipError) {
+      verification.log('Erro ao obter IP do WSL, usando localhost como fallback', 'warning');
+      verification.logToFile(`Erro ao obter IP: ${JSON.stringify(ipError)}`);
+    }
+    
+    // Verificar se o serviço CUPS está em execução
+    verification.log('Verificando se o serviço CUPS está ativo...', 'step');
+    const cupsRunning = await verification.checkServiceRunning('cups');
+    if (!cupsRunning) {
+      verification.log('Serviço CUPS não está em execução, iniciando...', 'warning');
+      try {
+        await verification.execPromise('wsl -d Ubuntu -u root systemctl start cups', 30000, true);
+        verification.log('Serviço CUPS iniciado com sucesso', 'success');
+        // Aguardar o serviço inicializar
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      } catch (cupsError) {
+        verification.log('Falha ao iniciar serviço CUPS', 'error');
+        verification.logToFile(`Detalhes do erro: ${JSON.stringify(cupsError)}`);
+        return false;
+      }
+    }
+    
+    // === Configuração aprimorada da impressora no CUPS ===
+    verification.log('Configurando impressora PDF no CUPS...', 'step');
+    
+    // Primeiro verificar se o pacote cups-pdf está instalado
+    const cupsPdfInstalled = await verification.checkPackageInstalled('cups-pdf');
+    if (!cupsPdfInstalled) {
+      verification.log('Instalando pacote cups-pdf...', 'step');
+      await verification.execPromise('wsl -d Ubuntu -u root apt-get update', 60000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root apt-get install -y cups-pdf', 180000, true);
+      
+      // Verificar se instalou
+      const checkInstall = await verification.checkPackageInstalled('cups-pdf');
+      if (!checkInstall) {
+        verification.log('Falha ao instalar cups-pdf, tentando outro método...', 'warning');
+      } else {
+        verification.log('Pacote cups-pdf instalado com sucesso', 'success');
+      }
+    } else {
+      verification.log('Pacote cups-pdf já está instalado', 'success');
+    }
+    
+    // Tentar remover a impressora PDF_Printer se já existir
+    try {
+      await verification.execPromise('wsl -d Ubuntu -u root lpadmin -x PDF_Printer', 10000, true);
+      verification.log('Impressora antiga removida', 'info');
+    } catch (removeError) {
+      // Ignorar erros - pode não existir
+    }
+    
+    // Reiniciar CUPS para garantir
+    verification.log('Reiniciando serviço CUPS...', 'step');
+    await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups', 20000, true);
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Verificar se há impressoras PDF pré-configuradas pelo sistema
+    let pdfPrinterExists = false;
+    
+    try {
+      const printerList = await verification.execPromise('wsl -d Ubuntu -u root lpstat -v', 15000, true);
+      
+      if (printerList.toLowerCase().includes('pdf')) {
+        // Já existe alguma impressora PDF
+        const pdfPrinters = printerList.split('\n').filter(line => 
+          line.toLowerCase().includes('pdf'));
+        
+        if (pdfPrinters.length > 0) {
+          verification.log(`Impressora PDF encontrada: ${pdfPrinters[0]}`, 'success');
+          
+          // Extrair nome da impressora
+          const printerMatch = pdfPrinters[0].match(/^device for ([^:]+):/);
+          if (printerMatch && printerMatch[1]) {
+            verification.log(`Usando impressora existente: ${printerMatch[1]}`, 'success');
+            return await setupWindowsPrinterForCups(printerMatch[1], wslIp);
+          }
+        }
+      }
+    } catch (listError) {
+      verification.log('Erro ao listar impressoras existentes', 'warning');
+    }
+    
+    // Configurar a impressora PDF no CUPS - Método 1
+    try {
+      verification.log('Configurando impressora PDF no CUPS (Método 1)...', 'step');
+      
+      await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -v cups-pdf:/ -E', 15000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -o printer-is-shared=true', 10000, true);
+      
+      // Verificar se foi criada corretamente
+      const checkCmd = 'wsl -d Ubuntu -u root lpstat -v | grep PDF_Printer';
+      await verification.execPromise(checkCmd, 10000, true);
+      
+      verification.log('Impressora PDF_Printer configurada com sucesso no CUPS', 'success');
+      return await setupWindowsPrinterForCups('PDF_Printer', wslIp);
+    } catch (pdfError) {
+      verification.log('Erro no Método 1, tentando método alternativo...', 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(pdfError)}`);
+    }
+    
+    // Método 2: Usar uma abordagem diferente se o método 1 falhar
+    try {
+      verification.log('Configurando impressora PDF no CUPS (Método 2)...', 'step');
+      
+      // Verificar o driver disponível
+      const availableDrivers = await verification.execPromise('wsl -d Ubuntu -u root lpinfo -m | grep -i pdf', 15000, true);
+      let pdfDriver = 'CUPS-PDF.ppd'; // Driver padrão
+      
+      // Tentar encontrar o driver correto
+      if (availableDrivers) {
+        const drivers = availableDrivers.split('\n');
+        for (const driver of drivers) {
+          if (driver.toLowerCase().includes('cups-pdf')) {
+            pdfDriver = driver.split(' ')[0];
+            break;
+          }
+        }
+        verification.log(`Usando driver PDF: ${pdfDriver}`, 'info');
+      }
+      
+      // Criar a impressora com o driver encontrado
+      await verification.execPromise(`wsl -d Ubuntu -u root lpadmin -p Virtual_PDF -v cups-pdf:/ -m ${pdfDriver} -E`, 15000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p Virtual_PDF -o printer-is-shared=true', 10000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root cupsaccept Virtual_PDF', 10000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root cupsenable Virtual_PDF', 10000, true);
+      
+      verification.log('Impressora Virtual_PDF configurada com sucesso no CUPS', 'success');
+      return await setupWindowsPrinterForCups('Virtual_PDF', wslIp);
+    } catch (altError) {
+      verification.log('Erro no Método 2, tentando último método...', 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(altError)}`);
+    }
+    
+    // Método 3: Último recurso - Criar arquivo de configuração manualmente
+    try {
+      verification.log('Configurando impressora PDF no CUPS (Método 3)...', 'step');
+      
+      // Criar arquivo de configuração para impressora PDF (Método extremo)
+      const printerConfig = `<Printer Generic_PDF>
+Info Generic PDF Printer
+Location Virtual
+DeviceURI cups-pdf:/
+State Idle
+StateTime 1689900000
+Accepting Yes
+Shared Yes
+JobSheets none none
+QuotaPeriod 0
+PageLimit 0
+KLimit 0
+OpPolicy default
+ErrorPolicy stop-printer
+</Printer>`;
+      
+      // Criar arquivo temporário e copiar para WSL
+      const tempDir = path.join(os.tmpdir(), 'printer-setup');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+      const configPath = path.join(tempDir, 'generic-pdf.conf');
+      fs.writeFileSync(configPath, printerConfig);
+      
+      // Obter o caminho WSL para o arquivo
+      const wslConfigPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${configPath.replace(/\\/g, '/')}"`, 10000, true);
+      
+      // Adicionar ao arquivo de configuração do CUPS
+      await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cat ${wslConfigPath} >> /etc/cups/printers.conf"`, 10000, true);
+      
+      // Reiniciar CUPS para aplicar as configurações
+      await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups', 20000, true);
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      verification.log('Impressora Generic_PDF configurada com método manual', 'success');
+      return await setupWindowsPrinterForCups('Generic_PDF', wslIp);
+    } catch (manualError) {
+      verification.log('Todos os métodos de configuração falharam', 'error');
+      verification.logToFile(`Detalhes do erro manual: ${JSON.stringify(manualError)}`);
+      return false;
+    }
+  } catch (error) {
+    verification.log(`Erro ao instalar impressora virtual: ${error.message}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Função auxiliar para configurar a impressora no Windows apontando para a impressora CUPS
+async function setupWindowsPrinterForCups(cupsPrinterName, wslIp) {
+  verification.log(`Configurando impressora Windows para ${cupsPrinterName}...`, 'step');
+  
+  // Verificar se já existe e remover
+  const checkExisting = await verification.checkWindowsPrinterInstalled();
+  if (checkExisting.installed) {
+    verification.log('Removendo impressora existente...', 'step');
+    try {
+      await verification.execPromise('powershell -Command "Remove-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue"', 15000, true);
+    } catch (removeError) {
+      verification.log('Erro ao remover impressora existente', 'warning');
+    }
+  }
+  
+  // URL para a impressora no CUPS
+  const printerUrl = `http://${wslIp}:631/printers/${cupsPrinterName}`;
+  verification.log(`URL da impressora: ${printerUrl}`, 'info');
+  
+  // Verificar se a impressora está acessível via HTTP
+  try {
+    const curlCmd = `curl -s -m 5 -o nul -w "%{http_code}" "${printerUrl}"`;
+    const response = await verification.execPromise(curlCmd, 10000, true);
+    
+    if (!response.includes('200')) {
+      verification.log(`Aviso: Impressora não está respondendo via HTTP (${response})`, 'warning');
+    } else {
+      verification.log('Impressora está respondendo via HTTP', 'success');
+    }
+  } catch (curlError) {
+    verification.log('Erro ao testar acesso HTTP à impressora', 'warning');
+  }
+  
+  // Tentar instalar usando PowerShell moderno (Método 1)
+  try {
+    verification.log('Instalando impressora via PowerShell (Método 1)...', 'step');
+    
+    const psScript = `
+      $ErrorActionPreference = 'Stop'
+      
+      # Criar porta para a impressora
+      try {
+        $portExists = Get-PrinterPort -Name "CUPS_${cupsPrinterName}" -ErrorAction SilentlyContinue
+        if (-not $portExists) {
+          Add-PrinterPort -Name "CUPS_${cupsPrinterName}" -PrinterHostAddress "${printerUrl}"
+        }
+      }
+      catch {
+        Write-Output "Erro ao criar porta: $_"
+        # Tentar método alternativo para porta
+        try {
+          & rundll32.exe printui.dll,PrintUIEntry /ga /n"Porta_${cupsPrinterName}" /j"${printerUrl}"
+        }
+        catch {
+          Write-Output "Erro no método alternativo: $_"
+        }
+      }
+      
+      # Verificar os drivers disponíveis
+      $pdfDriver = $null
+      
+      if (Get-PrinterDriver -Name "Microsoft Print to PDF" -ErrorAction SilentlyContinue) {
+        $pdfDriver = "Microsoft Print to PDF"
+      }
+      elseif (Get-PrinterDriver -Name "Microsoft XPS Document Writer" -ErrorAction SilentlyContinue) {
+        $pdfDriver = "Microsoft XPS Document Writer"
+      }
+      elseif (Get-PrinterDriver -Name "Generic / Text Only" -ErrorAction SilentlyContinue) {
+        $pdfDriver = "Generic / Text Only"
+      }
+      
+      if ($pdfDriver) {
+        Write-Output "Usando driver: $pdfDriver"
+        Add-Printer -Name "Impressora LoQQuei" -DriverName $pdfDriver -PortName "CUPS_${cupsPrinterName}"
+        Write-Output "success"
+      }
+      else {
+        Write-Output "Nenhum driver compatível encontrado"
+      }
+    `;
+    
+    // Salvar e executar o script
+    const tempDir = path.join(os.tmpdir(), 'printer-setup');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    const psPath = path.join(tempDir, 'install-printer.ps1');
+    fs.writeFileSync(psPath, psScript);
+    
+    const psResult = await verification.execPromise(`powershell -ExecutionPolicy Bypass -File "${psPath}"`, 30000, false);
+    
+    if (psResult.includes('success')) {
+      verification.log('Impressora instalada com sucesso!', 'success');
+      return true;
+    } else {
+      verification.log('Método 1 falhou, tentando método alternativo...', 'warning');
+      verification.logToFile(`Saída do método 1: ${psResult}`);
+    }
+  } catch (psError) {
+    verification.log('Erro no Método 1', 'warning');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(psError)}`);
+  }
+  
+  // Método 2: Usar PrintUI diretamente
+  try {
+    verification.log('Instalando impressora via PrintUI (Método 2)...', 'step');
+    
+    const command = `powershell -Command "rundll32 printui.dll,PrintUIEntry /if /b \\"Impressora LoQQuei\\" /f %windir%\\\\inf\\\\ntprint.inf /r \\"${printerUrl}\\" /m \\"Microsoft Print To PDF\\" /Z"`;
+    
+    await verification.execPromise(command, 20000, false);
+    
+    // Verificar se a impressora foi instalada
+    const verifyCmd = 'powershell -Command "Get-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue | Select-Object Name"';
+    const verifyResult = await verification.execPromise(verifyCmd, 10000, true);
+    
+    if (verifyResult.includes('Impressora LoQQuei')) {
+      verification.log('Impressora instalada com sucesso via Método 2!', 'success');
+      return true;
+    } else {
+      verification.log('Método 2 falhou, tentando último método...', 'warning');
+    }
+  } catch (printUIError) {
+    verification.log('Erro no Método 2', 'warning');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(printUIError)}`);
+  }
+  
+  // Método 3: Usar script batch invisível
+  try {
+    verification.log('Instalando impressora via script batch (Método 3)...', 'step');
+    
+    const batchScript = `@echo off
+setlocal enabledelayedexpansion
+
+:: Remover qualquer impressora existente
+wmic printer where name="Impressora LoQQuei" get name 2>nul | find "Impressora LoQQuei" >nul
+if %errorlevel% equ 0 (
+    rundll32 printui.dll,PrintUIEntry /dl /n "Impressora LoQQuei" /q
+    timeout /t 2 >nul
+)
+
+:: Configurar porta para a impressora
+echo Configurando porta...
+set PRINTER_URL=${printerUrl}
+
+:: Criar porta da impressora com cscript
+cscript /nologo "%SystemRoot%\\System32\\Printing_Admin_Scripts\\en-US\\prnport.vbs" -a -r CUPS_${cupsPrinterName.replace(/ /g, '_')} -h ${wslIp} -o raw -n 631
+
+:: Instalar impressora usando rundll32
+echo Instalando Impressora...
+rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "CUPS_${cupsPrinterName.replace(/ /g, '_')}" /m "Microsoft Print To PDF" /Z
+
+:: Se falhar com MS Print to PDF, tentar outro driver
+if %errorlevel% neq 0 (
+    rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "CUPS_${cupsPrinterName.replace(/ /g, '_')}" /m "Microsoft XPS Document Writer" /Z
+)
+
+:: Último recurso - usar driver genérico
+if %errorlevel% neq 0 (
+    rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "CUPS_${cupsPrinterName.replace(/ /g, '_')}" /m "Generic / Text Only" /Z
+)
+
+echo PRINTER_RESULT: %errorlevel% > "${path.join(os.tmpdir(), 'printer-setup', 'printer_result.txt').replace(/\\/g, '\\\\')}"
+exit /b
+`;
+    
+    // Salvar o script
+    const batchPath = path.join(os.tmpdir(), 'printer-setup', 'install-printer.bat');
+    fs.writeFileSync(batchPath, batchScript);
+    
+    // Criar VBS para executar o batch invisível
+    const vbsPath = path.join(os.tmpdir(), 'printer-setup', 'run-hidden.vbs');
+    const vbsContent = `
+Set objShell = CreateObject("WScript.Shell")
+objShell.Run "${batchPath.replace(/\\/g, '\\\\')}", 0, True
+`;
+    
+    fs.writeFileSync(vbsPath, vbsContent);
+    
+    // Executar o VBS
+    await verification.execPromise(`cscript //nologo "${vbsPath}"`, 40000, false);
+    
+    // Aguardar um pouco e verificar o resultado
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Verificar se a impressora foi instalada
+    const finalVerify = await verification.checkWindowsPrinterInstalled();
+    if (finalVerify.installed) {
+      verification.log('Impressora instalada com sucesso via script batch!', 'success');
+      return true;
+    } else {
+      // Verificar arquivo de resultado se disponível
+      try {
+        const resultPath = path.join(os.tmpdir(), 'printer-setup', 'printer_result.txt');
+        if (fs.existsSync(resultPath)) {
+          const resultContent = fs.readFileSync(resultPath, 'utf8');
+          verification.log(`Resultado do script: ${resultContent}`, 'warning');
+        }
+      } catch (e) {
+        // Ignorar erros
+      }
+      
+      verification.log('Todos os métodos falharam', 'error');
+      return false;
+    }
+  } catch (batchError) {
+    verification.log('Erro no Método 3', 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(batchError)}`);
     return false;
   }
 }
@@ -2588,6 +3057,7 @@ module.exports = {
   installUbuntu,
   installWSLLegacy,
   installWSLModern,
+  installWindowsPrinter,
   configureDefaultUser,
   configureSamba,
   configureCups,
@@ -2599,4 +3069,12 @@ module.exports = {
   setupPM2,
   systemCleanup,
   
+}
+
+
+if (require.main === module) {
+  (async () => {
+    console.log(await installWindowsPrinter());
+    process.exit(1)
+  })()
 }

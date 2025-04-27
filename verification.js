@@ -970,6 +970,135 @@ async function checkSystemStatus(installState) {
   return results;
 }
 
+// Função para verificar a impressora virtual no Windows
+async function checkWindowsPrinterInstalled() {
+  log('Verificando se a impressora LoQQuei está instalada...', 'step');
+  
+  try {
+    // Verificar privilégios de administrador (não crítico, apenas para log)
+    const isAdmin = await checkAdminPrivileges();
+    if (!isAdmin) {
+      log('Verificando sem privilégios de administrador (alguns detalhes podem estar indisponíveis)', 'warning');
+    }
+    
+    // Método 1: Usar WMI para listar impressoras
+    try {
+      const output = await execPromise('wmic printer where name="Impressora LoQQuei" get name,portname /format:list', 15000, true);
+      
+      if (output.includes('Impressora LoQQuei')) {
+        // Impressora encontrada
+        log('Impressora LoQQuei encontrada no sistema', 'success');
+        
+        // Extrair a porta usada pela impressora
+        let port = '';
+        const portMatch = output.match(/PortName=(.+)/);
+        if (portMatch && portMatch[1]) {
+          port = portMatch[1].trim();
+          log(`Porta utilizada: ${port}`, 'info');
+        }
+        
+        // Verificar se a porta aponta para o servidor CUPS no WSL
+        const pointsToWSL = port.includes('631/printers/PDF_Printer');
+        
+        if (pointsToWSL) {
+          log('Impressora está corretamente configurada para o servidor CUPS no WSL', 'success');
+        } else {
+          log('Impressora encontrada, mas não está configurada para o servidor CUPS no WSL', 'warning');
+        }
+        
+        return {
+          installed: true,
+          port: port,
+          pointsToWSL: pointsToWSL
+        };
+      } else {
+        log('Impressora LoQQuei não encontrada via WMI', 'warning');
+      }
+    } catch (wmicError) {
+      log('Erro ao verificar impressora via WMI, tentando método alternativo...', 'warning');
+      logToFile(`Detalhes do erro WMI: ${JSON.stringify(wmicError)}`);
+    }
+    
+    // Método 2: Usar PowerShell para listar impressoras
+    try {
+      const powershellCmd = 'powershell -Command "Get-Printer | Where-Object { $_.Name -eq \'Impressora LoQQuei\' } | Select-Object Name, PortName | ConvertTo-Json"';
+      const psOutput = await execPromise(powershellCmd, 15000, true);
+      
+      try {
+        // Tentar analisar a saída JSON
+        const printerInfo = JSON.parse(psOutput);
+        
+        if (printerInfo && printerInfo.Name === 'Impressora LoQQuei') {
+          log('Impressora LoQQuei encontrada via PowerShell', 'success');
+          
+          const port = printerInfo.PortName || '';
+          const pointsToWSL = port.includes('631/printers/PDF_Printer');
+          
+          if (pointsToWSL) {
+            log('Impressora está corretamente configurada para o servidor CUPS no WSL', 'success');
+          } else {
+            log('Impressora encontrada, mas não está configurada para o servidor CUPS no WSL', 'warning');
+          }
+          
+          return {
+            installed: true,
+            port: port,
+            pointsToWSL: pointsToWSL
+          };
+        }
+      } catch (jsonError) {
+        // Não é JSON válido, mas ainda podemos verificar a saída bruta
+        if (psOutput.includes('Impressora LoQQuei')) {
+          log('Impressora LoQQuei detectada via PowerShell (formato não padronizado)', 'success');
+          return {
+            installed: true,
+            port: 'Desconhecido',
+            pointsToWSL: false // Não podemos confirmar
+          };
+        }
+      }
+    } catch (psError) {
+      log('Erro ao verificar impressora via PowerShell', 'warning');
+      logToFile(`Detalhes do erro PowerShell: ${JSON.stringify(psError)}`);
+    }
+    
+    // Método 3: Verificar diretamente no registro do Windows
+    try {
+      const regCmd = 'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Print\\Printers" /s /f "Impressora LoQQuei"';
+      const regOutput = await execPromise(regCmd, 15000, true);
+      
+      if (regOutput.includes('Impressora LoQQuei')) {
+        log('Impressora LoQQuei encontrada através do registro do Windows', 'success');
+        return {
+          installed: true,
+          port: 'Desconhecido (detectado via registro)',
+          pointsToWSL: false // Não podemos confirmar
+        };
+      }
+    } catch (regError) {
+      log('Erro ao verificar impressora via registro', 'warning');
+      logToFile(`Detalhes do erro de registro: ${JSON.stringify(regError)}`);
+    }
+    
+    // Se chegamos aqui, a impressora não está instalada
+    log('Impressora LoQQuei não foi encontrada no sistema', 'warning');
+    return {
+      installed: false,
+      port: null,
+      pointsToWSL: false
+    };
+  } catch (error) {
+    log(`Erro ao verificar instalação da impressora: ${error.message}`, 'error');
+    logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return {
+      installed: false,
+      port: null,
+      pointsToWSL: false,
+      error: error.message
+    };
+  }
+}
+
 // Exportar funções
 module.exports = {
   // Inicialização
@@ -983,6 +1112,7 @@ module.exports = {
   checkUbuntuInstalled,
   shouldConfigureSystem,
   checkSystemStatus,
+  checkWindowsPrinterInstalled,
   
   // Novas funções de verificação detalhada
   checkPackageInstalled,
@@ -999,3 +1129,11 @@ module.exports = {
   logToFile,
   execPromise,
 };
+
+
+if (require.main === module) {
+  (async () => {
+    console.log(await checkWindowsPrinterInstalled());
+    process.exit(1)
+  })()
+}
