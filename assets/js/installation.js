@@ -9,6 +9,7 @@ const { ipcRenderer } = require('electron');
 document.addEventListener('DOMContentLoaded', () => {
   console.log('Página de instalação carregada');
   // Enviar mensagem para o processo principal que a página está pronta
+  const { ipcRenderer } = require('electron');
   ipcRenderer.send('installation-page-ready');
 
   // Inicializar o gerenciador de instalação
@@ -97,6 +98,14 @@ class InstallationManager {
     this.startLogUpdater();
 
     // Escutar explicitamente por eventos de atualização
+    const { ipcRenderer } = require('electron');
+
+    // Remover ouvintes anteriores para prevenir duplicação
+    ipcRenderer.removeAllListeners('step-update');
+    ipcRenderer.removeAllListeners('progress-update');
+    ipcRenderer.removeAllListeners('log');
+    ipcRenderer.removeAllListeners('pergunta');
+    ipcRenderer.removeAllListeners('instalacao-completa');
 
     // Configurar receptor de atualização de etapa
     ipcRenderer.on('step-update', (event, data) => {
@@ -129,6 +138,9 @@ class InstallationManager {
       console.log('Instalação completa:', data);
       this.handleInstallationComplete(data);
     });
+
+    // Imediatamente enviar mensagem de pronto para o processo principal
+    ipcRenderer.send('installation-page-ready');
 
     console.log('Gerenciador de instalação inicializado');
   }
@@ -690,7 +702,7 @@ class InstallationManager {
       // Fechar automaticamente após 5 segundos
       this.addLogEntry('Esta janela será fechada automaticamente em 5 segundos...', 'info');
 
-      // Informar ao usuário sobre o fechamento automático - remover alert pois trava a UI
+      // Informar ao usuário sobre o fechamento automático
       this.addLogEntry('IMPORTANTE: Instalação concluída com sucesso! Use o botão "Verificar Novamente" na tela principal para confirmar o status.', 'header');
 
       setTimeout(() => {

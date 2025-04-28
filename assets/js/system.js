@@ -453,7 +453,7 @@ async function checkSystemStatusDetailed() {
     `;
   }
   
-  // Desabilitar botão durante a verificação
+  // Desabilitar botões durante a verificação
   const checkButton = document.getElementById('checkSystemButton');
   const installButton = document.getElementById('installButton');
   const reinstallButton = document.getElementById('reinstallButton');
@@ -461,6 +461,10 @@ async function checkSystemStatusDetailed() {
   if (checkButton) checkButton.disabled = true;
   if (installButton) installButton.disabled = true;
   if (reinstallButton) reinstallButton.disabled = true;
+  
+  // Desabilitar também botões de componentes individuais
+  const componentButtons = document.querySelectorAll('.install-component, .help-button');
+  componentButtons.forEach(button => button.disabled = true);
   
   // Ocultar detalhes antigos
   const detailsContainer = document.getElementById('statusDetailsContainer');
@@ -482,6 +486,9 @@ async function checkSystemStatusDetailed() {
       // Reabilitar botões
       if (checkButton) checkButton.disabled = false;
       if (reinstallButton) reinstallButton.disabled = false;
+      
+      // Reabilitar botões de componentes individuais
+      componentButtons.forEach(button => button.disabled = false);
       
       // Armazenar último status verificado
       lastSystemStatus = status;
@@ -547,6 +554,9 @@ async function checkSystemStatusDetailed() {
     if (checkButton) checkButton.disabled = false;
     if (installButton) installButton.disabled = false;
     if (reinstallButton) reinstallButton.disabled = false;
+    
+    // Reabilitar botões de componentes individuais
+    componentButtons.forEach(button => button.disabled = false);
   }
 }
 
@@ -900,6 +910,11 @@ function initiateInstallation(forceReinstall = false) {
   ipcRenderer.once('instalacao-completa', (event, data) => {
     // Reabilitar botões
     if (checkButton) checkButton.disabled = false;
+    if (reinstallButton) reinstallButton.disabled = false;
+    if (installButton) installButton.disabled = false;
+    
+    // Reabilitar botões de componentes individuais
+    componentButtons.forEach(button => button.disabled = false);
     
     if (data.success) {
       addSystemLogEntry('Instalação concluída com sucesso!', 'success');
@@ -942,6 +957,14 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
   
+  // Botão instalar componentes necessários
+  const installButton = document.getElementById('installButton');
+  if (installButton) {
+    installButton.addEventListener('click', function() {
+      initiateInstallation(false); // false = instalar apenas o necessário
+    });
+  }
+  
   // Auto scroll toggle
   const autoScrollToggle = document.getElementById('autoScrollToggleSystem');
   if (autoScrollToggle) {
@@ -970,8 +993,62 @@ document.addEventListener('DOMContentLoaded', function() {
       const tabName = this.getAttribute('data-tab');
       if (tabName === 'system') {
         // Esperar um pouco para garantir que a mudança de aba já ocorreu
+        // Usar apenas uma verificação, não duas
         setTimeout(checkSystemStatusDetailed, 100);
       }
     });
   });
+  
+  // Adicionar handler para botões de componentes individuais - garantir que funcionem
+  const setupComponentButtons = () => {
+    document.querySelectorAll('.install-component').forEach(button => {
+      // Remover listeners antigos para evitar chamadas duplicadas
+      const newButton = button.cloneNode(true);
+      button.parentNode.replaceChild(newButton, button);
+      
+      // Adicionar novo listener
+      newButton.addEventListener('click', function() {
+        const component = this.getAttribute('data-component');
+        console.log(`Solicitando instalação do componente: ${component}`);
+        
+        // Desabilitar todos os botões durante a operação
+        document.querySelectorAll('.install-component, .help-button, #checkSystemButton, #installButton, #reinstallButton')
+          .forEach(btn => btn.disabled = true);
+        
+        // Log da operação iniciada
+        addSystemLogEntry(`Iniciando instalação do componente: ${component}...`, 'header');
+        
+        // Enviar solicitação via IPC
+        const { ipcRenderer } = require('electron');
+        ipcRenderer.send('instalar-componente', { component });
+        
+        // Ouvir resposta da instalação
+        ipcRenderer.once('componente-instalado', (event, result) => {
+          // Reabilitar todos os botões
+          document.querySelectorAll('.install-component, .help-button, #checkSystemButton, #installButton, #reinstallButton')
+            .forEach(btn => btn.disabled = false);
+          
+          // Log do resultado
+          if (result.success) {
+            addSystemLogEntry(`Componente ${component} instalado com sucesso!`, 'success');
+            
+            // Verificar o sistema após instalação bem-sucedida
+            setTimeout(checkSystemStatusDetailed, 1000);
+          } else {
+            addSystemLogEntry(`Erro ao instalar componente ${component}: ${result.message}`, 'error');
+          }
+        });
+      });
+    });
+  };
+  
+  // Garantir que o setup aconteça quando os botões forem criados
+  const originalRenderSystemStatusDetails = window.renderSystemStatusDetails;
+  window.renderSystemStatusDetails = function(statusData) {
+    // Chamar a função original
+    originalRenderSystemStatusDetails(statusData);
+    
+    // Configurar os botões após a renderização
+    setupComponentButtons();
+  };
 });

@@ -7,6 +7,17 @@ document.addEventListener('DOMContentLoaded', () => {
   window.app = app; // Expose app to global scope for compatibility
 });
 
+document.querySelectorAll('.nav-item[data-tab]').forEach(item => {
+  item.addEventListener('click', function() {
+    const tabName = this.getAttribute('data-tab');
+    if (tabName === 'system' && window.pendingSystemCheck) {
+      // Se houver uma verificação pendente, executar após a troca de aba
+      window.pendingSystemCheck = false;
+      setTimeout(checkSystemStatusDetailed, 100);
+    }
+  });
+});
+
 // Classe principal da aplicação
 class PrintManager {
   constructor() {
@@ -204,6 +215,26 @@ class PrintManager {
     ipcRenderer.on('installation-log', (event, data) => {
       this.addLogEntry(data.message, data.type);
     });
+
+    ipcRenderer.on('check-system-now', () => {
+      console.log('Recebida solicitação de verificação imediata do sistema');
+      
+      // Verificar se a aba do sistema está visível
+      const systemTab = document.getElementById('systemTab');
+      if (!systemTab.classList.contains('hidden')) {
+        // Verificar se já não está verificando
+        if (!isCheckingSystem) {
+          console.log('Executando verificação por solicitação externa');
+          checkSystemStatusDetailed();
+        } else {
+          console.log('Verificação já em andamento, ignorando solicitação externa');
+        }
+      } else {
+        console.log('Aba de sistema não está visível, armazenando para verificação posterior');
+        // Armazenar a solicitação para quando a aba ficar visível
+        window.pendingSystemCheck = true;
+      }
+    });    
 
     ipcRenderer.on('navegar-para', (event, { secao }) => {
       console.log(`Navegando para seção: ${secao}`);

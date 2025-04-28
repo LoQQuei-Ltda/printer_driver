@@ -42,16 +42,16 @@ function askQuestion(question) {
   // Se estamos em modo Electron, mas sem função personalizada, apenas retornar sim
   if (isElectron) {
     log(`[PERGUNTA AUTOMÁTICA] ${question}`, 'info');
-    logToFile(`Pergunta automática: ${question}`);
-    logToFile(`Resposta automática: s`);
+    verification.logToFile(`Pergunta automática: ${question}`);
+    verification.logToFile(`Resposta automática: s`);
     return Promise.resolve('s');
   }
 
   // Modo terminal normal
   return new Promise((resolve) => {
     rl.question(`${'\x1b[33m'}${question}${'\x1b[0m'}`, (answer) => {
-      logToFile(`Pergunta: ${question}`);
-      logToFile(`Resposta: ${answer}`);
+      verification.logToFile(`Pergunta: ${question}`);
+      verification.logToFile(`Resposta: ${answer}`);
       resolve(answer);
     });
   });
@@ -86,7 +86,7 @@ function log(message, type = "info") {
   
   // Store in log buffer
   installationLog.push(`[${timestamp}][${type}] ${message}`);
-  logToFile(`[${timestamp}][${type}] ${message}`);
+  verification.logToFile(`[${timestamp}][${type}] ${message}`);
   
   // Call update callback if set
   if (stepUpdateCallback) {
@@ -173,39 +173,102 @@ function log(message, type = "info") {
 }
 
 async function installComponent(component, status) {
-  // Only install if needed based on status
-  if (status && status[component + 'Installed']) {
-    verification.log(`Componente ${component} já está instalado, pulando...`, 'info');
-    return true;
-  }
+  log(`Instalando componente específico: ${component}...`, 'step');
   
-  verification.log(`Instalando componente: ${component}...`, 'step');
-  
-  // Install logic based on component type...
-  switch(component) {
-    case 'wsl':
-      return await installWSLModern() || await installWSLLegacy();
-    case 'wsl2':
-      return await configureWSL2();
-    case 'ubuntu':
-      return await installUbuntu();
-    case 'services':
-      return await configureServices();
-    case 'firewall':
-      return await configureFirewall();
-    case 'database':
-      return await setupDatabase();
-    case 'api':
-      return await setupAPI();
-    case 'printer':
-      return await setupPrinter();
-    case 'printer-driver':
-      return await setupPrinterDriver();
-    case 'package':
-      return await setupPackage();
-    default:
-      verification.log(`Componente desconhecido: ${component}`, 'error');
-      return false;
+  try {
+    // Verificar status atual do sistema se não for fornecido
+    if (!status) {
+      status = await verification.checkSystemStatus();
+    }
+    
+    // Instalação do componente específico
+    switch (component) {
+      case 'wsl':
+        if (status.wslStatus && status.wslStatus.installed) {
+          log('WSL já está instalado, pulando instalação', 'info');
+          return true;
+        }
+        return await installWSLModern() || await installWSLLegacy();
+        
+      case 'wsl2':
+        if (status.wslStatus && status.wslStatus.wsl2) {
+          log('WSL 2 já está configurado, pulando configuração', 'info');
+          return true;
+        }
+        try {
+          await verification.execPromise('wsl --set-default-version 2', 30000);
+          log('WSL 2 configurado como versão padrão', 'success');
+          return true;
+        } catch (error) {
+          log(`Erro ao configurar WSL 2: ${error.message}`, 'error');
+          return false;
+        }
+        
+      case 'ubuntu':
+        if (status.wslStatus && status.wslStatus.hasDistro) {
+          log('Ubuntu já está instalado, pulando instalação', 'info');
+          return true;
+        }
+        return await installUbuntu();
+        
+      case 'packages':
+        return await installRequiredPackages();
+        
+      case 'services':
+        try {
+          log('Reiniciando serviços...', 'step');
+          await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups smbd postgresql', 30000, true);
+          log('Serviços reiniciados com sucesso', 'success');
+          return true;
+        } catch (error) {
+          log(`Erro ao reiniciar serviços: ${error.message}`, 'error');
+          return false;
+        }
+        
+      case 'firewall':
+        return await configureFirewall();
+        
+      case 'database':
+        return await setupDatabase();
+        
+      case 'api':
+        try {
+          log('Reiniciando API...', 'step');
+          // Primeiro verificar se o diretório existe
+          const dirCheck = await verification.execPromise('wsl -d Ubuntu -u root bash -c "if [ -d \'/opt/loqquei/print_server_desktop\' ]; then echo \'exists\'; else echo \'not_found\'; fi"', 10000, true);
+          
+          if (dirCheck.trim() === 'exists') {
+            await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart ecosystem.config.js || pm2 start ecosystem.config.js"', 30000, true);
+          } else {
+            // Tentar caminho alternativo
+            const altCheck = await verification.execPromise('wsl -d Ubuntu -u root bash -c "if [ -d \'/opt/print_server/print_server_desktop\' ]; then echo \'exists\'; else echo \'not_found\'; fi"', 10000, true);
+            if (altCheck.trim() === 'exists') {
+              await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && pm2 restart ecosystem.config.js || pm2 start ecosystem.config.js"', 30000, true);
+            } else {
+              throw new Error('Diretório da aplicação não encontrado');
+            }
+          }
+          
+          log('API reiniciada com sucesso', 'success');
+          return true;
+        } catch (error) {
+          log(`Erro ao reiniciar API: ${error.message}`, 'error');
+          return false;
+        }
+        
+      case 'pm2':
+        return await setupPM2();
+        
+      case 'printer':
+        return await installWindowsPrinter();
+        
+      default:
+        log(`Componente desconhecido: ${component}`, 'error');
+        return false;
+    }
+  } catch (error) {
+    log(`Erro ao instalar componente ${component}: ${error.message}`, 'error');
+    return false;
   }
 }
 
@@ -2735,6 +2798,7 @@ module.exports = {
   configureFirewall,
   configureSystem,
   copySoftwareToOpt,
+  installComponent,
   setupUpdateScript,
   setupMigrations,
   setupPM2,
