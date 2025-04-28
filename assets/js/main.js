@@ -182,7 +182,7 @@ class PrintManager {
     // Window controls
     if (this.dom.minimizeBtn) {
       this.dom.minimizeBtn.addEventListener('click', () => {
-        ipcRenderer.send('minimize-window');
+        ipcRenderer.send('hide-window');
       });
     }
 

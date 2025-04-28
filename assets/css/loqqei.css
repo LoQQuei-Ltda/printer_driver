@@ -1030,6 +1030,8 @@ input:checked+.slider:before {
     align-items: center;
     padding: 8px 0;
     border-bottom: 1px solid var(--border-color);
+    margin-left: 8px;
+    margin-right: 8px;
 }
 
 .status-item:last-child {

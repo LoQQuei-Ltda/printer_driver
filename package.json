@@ -1,6 +1,6 @@
 {
   "name": "print-management-installer",
-  "version": "1.0.3",
+  "version": "1.0.0",
   "description": "Instalador do Sistema de Gerenciamento de Impressão",
   "main": "main.js",
   "updateConfig": {
@@ -12,14 +12,16 @@
     "dev": "nodemon --exec electron . --watch . --ext js,html,css",
     "prebuild": "npm run clean && npm run prepare-server-files",
     "prepare-server-files": "node prepare-server-files.js",
-    "build": "electron-builder --win --x64",
-    "postinstall": "electron-builder install-app-deps"
+    "build": "electron-builder --win --x64 --config.asar=true --config.compression=maximum",
+    "postinstall": "electron-builder install-app-deps",
+    "depcheck": "npx depcheck"
   },
   "author": "LoQQuei-Ltda",
   "license": "MIT",
   "devDependencies": {
+    "depcheck": "^1.4.7",
     "electron": "^29.0.0",
-    "electron-builder": "^24.13.0",
+    "electron-builder": "^24.13.3",
     "glob": "^11.0.2",
     "javascript-obfuscator": "^4.1.1",
     "nodemon": "^3.1.9",
@@ -29,6 +31,8 @@
   "build": {
     "appId": "com.loqquei.print-management-installer",
     "productName": "Gerenciamento de Impressão - LoQQuei",
+    "asar": true,
+    "compression": "maximum",
     "icon": "assets/icon/icon.ico",
     "win": {
       "target": "nsis",
@@ -44,8 +48,17 @@
     },
     "files": [
       "**/*",
+      "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}",
+      "!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}",
+      "!**/node_modules/*.d.ts",
+      "!**/node_modules/.bin",
       "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}",
-      "!**/{.git,.hg,.svn,CVS,RCS,SCCS,__pycache__,thumbs.db,.DS_Store,.idea,.vs,.vscode,.gitattributes,.*ignore}"
+      "!.editorconfig",
+      "!**/._*",
+      "!**/{.DS_Store,.git,.hg,.svn,CVS,RCS,SCCS,.gitignore,.gitattributes}",
+      "!**/{__pycache__,thumbs.db,.flowconfig,.idea,.vs,.nyc_output}",
+      "!**/{appveyor.yml,.travis.yml,circle.yml}",
+      "!**/{npm-debug.log,yarn.lock,.yarn-integrity,.yarn-metadata.json}"
     ],
     "extraResources": [
       {
@@ -76,7 +89,6 @@
     ]
   },
   "dependencies": {
-    "adm-zip": "^0.5.16",
     "auto-launch": "^5.0.5",
     "axios": "^1.6.7",
     "body-parser": "^2.2.0",

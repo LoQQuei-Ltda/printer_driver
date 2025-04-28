@@ -5,12 +5,11 @@
  * Versão refatorada com funções de verificação movidas para verification.js
  */
 
-const { exec, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const os = require('os');
-const verification = require('./verification'); // Importar o módulo de verificação
+const verification = require('./verification');
 
 // Verificar se estamos em ambiente Electron
 const isElectron = process.versions && process.versions.electron;

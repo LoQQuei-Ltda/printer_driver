@@ -7,7 +7,6 @@
 const { exec } = require("child_process");
 const fs = require("fs");
 const os = require("os");
-const path = require("path");
 const axios = require("axios");
 
 // Cores para o console

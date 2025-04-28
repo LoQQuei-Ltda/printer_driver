@@ -40,6 +40,8 @@ const appConfig = {
   defaultHeight: 600
 };
 
+verification.execPromise('wsl -d Ubuntu -u root bash -c echo "Ubuntu está acessível"', 3000, true);
+
 const setupWSL = process.argv.includes('--setup-wsl');
 
 if (setupWSL) {
@@ -2426,4 +2428,4 @@ module.exports = {
   appConfig
 };
 
-// initTask();
+initTask();
