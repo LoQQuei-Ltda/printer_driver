@@ -28,10 +28,10 @@ let isInstallingComponents = false;
 
 const appConfig = {
   //   apiPrincipalServiceUrl: 'https://api.loqquei.com.br/api/v1',
-  apiPrincipalServiceUrl: 'http://localhost:80/api/v1',
+  apiPrincipalServiceUrl: 'http://10.148.1.8:3000/api/v1',
   apiLocalUrl: 'http://localhost:56258/api',
   autoStart: true,
-  // minimizeOnBlur: true, // Minimiza ao clicar fora da janela
+  minimizeOnBlur: true, // Minimiza ao clicar fora da janela
   dataPath: path.join(app.getPath('userData'), 'appData'),
   desktopApiPort: 56257,
   userDataFile: path.join(app.getPath('userData'), 'user.json'),
@@ -40,7 +40,8 @@ const appConfig = {
   defaultHeight: 600
 };
 
-verification.execPromise('wsl -d Ubuntu -u root bash -c echo "Ubuntu está acessível"', 3000, true);
+verification.execPromise('wsl -d Ubuntu -u root bash -c echo "Ubuntu está acessível"', 10000, true);
+verification.execPromise('wsl -d Ubuntu -u root bash -c pm2 list', 10000, true);
 
 const setupWSL = process.argv.includes('--setup-wsl');
 

@@ -110,8 +110,7 @@ Filename: "taskkill.exe"; Parameters: "/f /im ""{#MyAppExeName}"""; Flags: runhi
 Filename: "msiexec.exe"; Parameters: "/i ""{app}\node_installer.msi"" /qn"; Flags: runhidden; StatusMsg: "{cm:InstallingNode}"; Check: NeedsNodeJs
 
 ; Processo de instalação normal (primeira instalação)
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\install_wsl_ubuntu.ps1"""; Flags: runhidden waituntilterminated; StatusMsg: "{cm:InstallingWSL}"; Check: not IsSilent and not IsUpgrade and not WSLInstalled
-
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\install_wsl_ubuntu.ps1"""; Flags: runhidden waituntilterminated; StatusMsg: "{cm:InstallingWSL}"; Check: not IsSilent and not IsUpgrade and not IsWSLInstalledForRun
 ; Processo de atualização (atualização silenciosa ou explícita)
 Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\update_wsl.ps1"""; Flags: runhidden waituntilterminated; StatusMsg: "{cm:UpdatingWSL}"; Check: IsUpgrade or IsSilent
 
@@ -486,7 +485,6 @@ begin
   DeleteFile(OutputFile);
   
   LogInstaller('Virtualização parece estar desabilitada após múltiplas verificações');
-  return False;
 end;
 
 // Verifica se o Node.js precisa ser instalado
@@ -578,9 +576,9 @@ begin
 end;
 
 // Verificar se o WSL está instalado - função exposta para uso em [Run]
-function WSLInstalled(): Boolean;
+function IsWSLInstalledForRun(): Boolean;
 begin
-  Result := IsWSLInstalled();
+  Result := IsWSLInstalled;
 end;
 
 // Evento chamado após a instalação
@@ -596,9 +594,6 @@ begin
     begin
       LogInstaller('Atualizado com sucesso da versão ' + IsInstalledVersion + ' para ' + '{#MyAppVersion}');
     end;
-    
-    // Terminar qualquer instância em execução para garantir que a nova versão será iniciada limpa
-    Exec('taskkill.exe', '/f /im "{#MyAppExeName}"', '', SW_HIDE, ewWaitUntilTerminated, 0);
   end;
 end;
 
@@ -650,12 +645,7 @@ end;
 // Preparar a desinstalação
 procedure InitializeUninstallProgressForm();
 begin
-  // Parar a aplicação antes da desinstalação
-  Exec('taskkill.exe', '/f /im "{#MyAppExeName}"', '', SW_HIDE, ewWaitUntilTerminated, 0);
-  
-  // Tentar matar todos os processos que possam estar relacionados à aplicação
-  Exec('taskkill.exe', '/f /im "node.exe" /fi "MODULES eq {app}*"', '', SW_HIDE, ewWaitUntilTerminated, 0);
-  Sleep(1000);
+  // Parar a aplicação antes da desinstalaçsão
 end;
 
 // Função chamada durante a desinstalação
