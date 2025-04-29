@@ -49,7 +49,8 @@ module.exports = {
             try {
                 printersSystem = await axios.get(`${appConfig.apiPrincipalServiceUrl}/desktop/printers`, {
                     headers: {
-                        'Authorization': `Bearer ${userData.token}`
+                        'Authorization': `Bearer ${userData.token}`,
+                        'accept': 'application/json'
                     }
                 });
             } catch (error) {

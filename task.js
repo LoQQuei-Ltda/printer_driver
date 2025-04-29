@@ -181,8 +181,8 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
 
 module.exports = {
   initTask: async () => {
-    // printSync();
-    // printersSync();
+    printSync();
+    printersSync();
 
     const mainModule = require('./main');
 

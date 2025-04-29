@@ -907,16 +907,46 @@ async function shouldConfigureSystem(installState) {
   return true;
 }
 
+async function checkIfDefaultUserConfigured() {
+  log('Verificando se o usuário padrão está configurado...', 'step');
+  
+  try {
+    // Verificar se o usuário 'print_user' existe no sistema WSL
+    const stdout = await execPromise('wsl.exe -d Ubuntu -u root bash -c "getent passwd print_user"', 12000, true);
+
+    // Se o usuário 'print_user' não existir, o comando retornará vazio
+    if (!stdout || !stdout.includes('print_user:')) {
+      log('Usuário "print_user" não encontrado no WSL', 'error');
+      return false;
+    }
+    
+    // Verificar se o usuário 'print_user' está configurado como o padrão no wsl.conf
+    const wslConfResult = await execPromise('wsl.exe -d Ubuntu -u root cat /etc/wsl.conf', 12000, true);
+    
+    if (!wslConfResult || !wslConfResult.includes('default=print_user')) {
+      log('Usuário "print_user" não está configurado como padrão no WSL', 'error');
+      return false;
+    }
+    
+    log('Usuário "print_user" está configurado corretamente como padrão no WSL', 'success');
+    return true;
+  } catch (error) {
+    log('Falha ao verificar a configuração do usuário padrão', 'error');
+    return false;
+  }
+}
+
 // Verificação completa do sistema
 async function checkSystemStatus(installState) {
   log("Iniciando verificação completa do sistema...", "header");
 
   // Run all base checks in parallel for better performance
-  const [adminPrivileges, windowsCompatible, virtualizationEnabled, wslStatus] = await Promise.all([
+  const [adminPrivileges, windowsCompatible, virtualizationEnabled, wslStatus, userConfigured] = await Promise.all([
     checkAdminPrivileges(),
     checkWindowsVersion(),
     checkVirtualization(),
-    checkWSLStatusDetailed()
+    checkWSLStatusDetailed(),
+    checkIfDefaultUserConfigured()
   ]);
 
   const results = {
@@ -925,7 +955,7 @@ async function checkSystemStatus(installState) {
     virtualizationEnabled,
     wslStatus,
     ubuntuInstalled: false,
-    userConfigured: true, // Always set to true to bypass this check
+    userConfigured,
     systemConfigured: false,
     needsConfiguration: true
   };
@@ -1086,7 +1116,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await checkWindowsPrinterInstalled());
+    console.log(await checkIfDefaultUserConfigured());
     process.exit(1)
   })()
 }

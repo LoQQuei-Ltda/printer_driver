@@ -1,12 +1,16 @@
 # Script para atualização dos componentes WSL
 # Este script é executado durante atualizações do aplicativo
 # Atualiza os componentes do servidor no ambiente WSL
+param(
+    [switch]$NonInteractive
+)
 
 $ErrorActionPreference = "Stop"
 $LOG_FILE = Join-Path $PSScriptRoot "..\wsl_update.log"
+$JOB_LOG_FILE = "$env:TEMP\wsl_update_job.log"
 
 # Função para log
-function Log-Message {
+function Write-Log {
     param (
         [string]$Message,
         [string]$Level = "INFO"
@@ -31,125 +35,158 @@ try {
     Write-Host "ALERTA: Não foi possível criar arquivo de log em $LOG_FILE. Continuando sem log em arquivo."
 }
 
-Log-Message "Iniciando atualização dos componentes WSL..."
-
-# Verificar se o WSL está instalado e disponível
-try {
-    $wslVersion = wsl --version 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "WSL não está disponível ou não está instalado corretamente"
+# Iniciar um job para executar a atualização em segundo plano
+$backgroundJob = Start-Job -ScriptBlock {
+    param($ScriptPath, $JobLogFile)
+    
+    # Função para log do job
+    function Job-Log {
+        param (
+            [string]$Message,
+            [string]$Level = "INFO"
+        )
+        
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        $logMessage = "[$timestamp] [$Level] $Message"
+        
+        # Saída para arquivo de log do job
+        Add-Content -Path $JobLogFile -Value $logMessage -ErrorAction SilentlyContinue
     }
-    Log-Message "WSL encontrado: $wslVersion"
-} catch {
+    
+    # Garantir que o diretório de log existe
+    $logDir = Split-Path -Parent $JobLogFile
+    if (-not (Test-Path $logDir)) {
+        New-Item -Path $logDir -ItemType Directory -Force | Out-Null
+    }
+    
+    Job-Log "Iniciando job de atualização dos componentes WSL..."
+    
+    # Verificar se o WSL está instalado e disponível
     try {
-        # Método alternativo para versões antigas do WSL
-        $wslStatus = wsl --status 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "WSL não está disponível ou não está instalado corretamente"
+        $wslCommand = Get-Command wsl.exe -ErrorAction SilentlyContinue
+        if (-not $wslCommand) {
+            throw "WSL não está disponível. Comando não encontrado."
         }
-        Log-Message "WSL encontrado (método alternativo)"
+        
+        # Tentar obter a versão do WSL
+        try {
+            $wslVersion = wsl --version 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "WSL não disponível. Erro ao obter versão."
+            }
+            Job-Log "WSL encontrado: $wslVersion"
+        } catch {
+            # Método alternativo para versões antigas do WSL
+            try {
+                $wslStatus = wsl --status 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    throw "WSL não disponível. Erro ao obter status."
+                }
+                Job-Log "WSL encontrado (método alternativo)"
+            } catch {
+                throw "WSL não disponível após tentativas alternativas."
+            }
+        }
     } catch {
         $errorMsg = $_.Exception.Message
-        Log-Message "Erro crítico: WSL não encontrado ou não funcional: $errorMsg" "ERROR"
-        Log-Message "A atualização do componente WSL não pode continuar. Verifique se o WSL está instalado corretamente." "ERROR"
-        exit 1
-    }
-}
-
-# Verificar se o Ubuntu está instalado no WSL
-try {
-    $distributions = wsl --list --verbose 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Não foi possível listar distribuições WSL"
+        Job-Log "Erro crítico: WSL não encontrado ou não funcional: $errorMsg" "ERROR"
+        Job-Log "A atualização do componente WSL não pode continuar." "ERROR"
+        return
     }
     
-    if ($distributions -notmatch "Ubuntu") {
-        Log-Message "Ubuntu não encontrado nas distribuições WSL. Distribuições disponíveis:" "ERROR"
-        $distributions | ForEach-Object { Log-Message "- $_" "ERROR" }
-        exit 1
-    }
-    
-    Log-Message "Ubuntu encontrado no WSL"
-} catch {
-    $errorMsg = $_.Exception.Message
-    Log-Message "Erro ao verificar distribuições WSL: $errorMsg" "ERROR"
-    exit 1
-}
-
-# Verificar se o Ubuntu está acessível
-try {
-    $wslTest = wsl -d Ubuntu echo "Ubuntu está acessível" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Ubuntu não está acessível. Código de erro: $LASTEXITCODE"
-    }
-    Log-Message "Ubuntu está acessível e respondendo: $wslTest"
-} catch {
-    $errorMsg = $_.Exception.Message
-    Log-Message "Erro ao acessar Ubuntu no WSL: $errorMsg" "ERROR"
-    
-    # Tentar reiniciar a distribuição
-    Log-Message "Tentando reiniciar a distribuição Ubuntu..." "WARN"
+    # Verificar se o Ubuntu está instalado no WSL
     try {
-        wsl --terminate Ubuntu 2>&1 | Out-Null
-        Start-Sleep -Seconds 2
-        $wslRestart = wsl -d Ubuntu echo "Ubuntu reiniciado com sucesso" 2>&1
+        $distributions = wsl --list 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Não foi possível listar distribuições WSL"
+        }
         
-        if ($LASTEXITCODE -eq 0) {
-            Log-Message "Ubuntu reiniciado com sucesso: $wslRestart"
-        } else {
-            throw "Não foi possível reiniciar o Ubuntu"
+        if ($distributions -notmatch "Ubuntu") {
+            Job-Log "Ubuntu não encontrado nas distribuições WSL. Distribuições disponíveis:" "ERROR"
+            $distributions | ForEach-Object { Job-Log "- $_" "ERROR" }
+            return
+        }
+        
+        Job-Log "Ubuntu encontrado no WSL"
+    } catch {
+        $errorMsg = $_.Exception.Message
+        Job-Log "Erro ao verificar distribuições WSL: $errorMsg" "ERROR"
+        return
+    }
+    
+    # Verificar se o Ubuntu está acessível
+    try {
+        $wslTest = wsl -d Ubuntu echo "Ubuntu está acessível" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Ubuntu não está acessível. Código de erro: $LASTEXITCODE"
+        }
+        Job-Log "Ubuntu está acessível e respondendo"
+    } catch {
+        $errorMsg = $_.Exception.Message
+        Job-Log "Erro ao acessar Ubuntu no WSL: $errorMsg" "ERROR"
+        
+        # Tentar reiniciar a distribuição
+        Job-Log "Tentando reiniciar a distribuição Ubuntu..." "WARN"
+        try {
+            wsl --terminate Ubuntu 2>&1 | Out-Null
+            Start-Sleep -Seconds 2
+            $wslRestart = wsl -d Ubuntu echo "Ubuntu reiniciado com sucesso" 2>&1
+            
+            if ($LASTEXITCODE -eq 0) {
+                Job-Log "Ubuntu reiniciado com sucesso"
+            } else {
+                throw "Não foi possível reiniciar o Ubuntu"
+            }
+        } catch {
+            $restartError = $_.Exception.Message
+            Job-Log "Falha ao reiniciar Ubuntu: $restartError" "ERROR"
+            return
+        }
+    }
+    
+    # Verificar/criar a estrutura de diretórios
+    Job-Log "Verificando estrutura de diretórios no WSL..."
+    try {
+        # Verificar/criar diretório principal
+        $checkMainDir = wsl -d Ubuntu -u root bash -c "if [ -d /opt/print_server ]; then echo 'exists'; else mkdir -p /opt/print_server && echo 'created'; fi" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao verificar/criar diretório principal: $checkMainDir"
+        }
+        Job-Log "Diretório principal: $checkMainDir"
+        
+        # Verificar/criar diretório print_server_desktop
+        $checkServerDir = wsl -d Ubuntu -u root bash -c "if [ -d /opt/print_server/print_server_desktop ]; then echo 'exists'; else mkdir -p /opt/print_server/print_server_desktop && echo 'created'; fi" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao verificar/criar diretório do servidor: $checkServerDir"
+        }
+        Job-Log "Diretório do servidor: $checkServerDir"
+        
+        # Verificar/criar diretório de atualizações
+        $checkUpdatesDir = wsl -d Ubuntu -u root bash -c "if [ -d /opt/print_server/updates ]; then echo 'exists'; else mkdir -p /opt/print_server/updates && echo 'created'; fi" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao verificar/criar diretório de atualizações: $checkUpdatesDir"
+        }
+        Job-Log "Diretório de atualizações: $checkUpdatesDir"
+        
+        # Verificar/criar arquivo de registro de atualizações
+        $checkUpdateLog = wsl -d Ubuntu -u root bash -c "touch /opt/print_server/executed_updates.txt && echo 'ok'" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Falha ao verificar/criar arquivo de registro de atualizações: $checkUpdateLog"
         }
     } catch {
-        $restartError = $_.Exception.Message
-        Log-Message "Falha ao reiniciar Ubuntu: $restartError" "ERROR"
-        Log-Message "A atualização do WSL não pode continuar. Tente reiniciar o computador e tentar novamente." "ERROR"
-        exit 1
+        $errorMsg = $_.Exception.Message
+        Job-Log "Erro ao configurar estrutura de diretórios: $errorMsg" "ERROR"
+        Job-Log "Tentando continuar mesmo assim..." "WARN"
     }
-}
-
-# Verificar/criar a estrutura de diretórios
-Log-Message "Verificando estrutura de diretórios no WSL..."
-try {
-    # Verificar/criar diretório principal
-    $checkMainDir = wsl -d Ubuntu -u root bash -c "if [ -d /opt/print_server ]; then echo 'exists'; else mkdir -p /opt/print_server && echo 'created'; fi" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Falha ao verificar/criar diretório principal: $checkMainDir"
-    }
-    Log-Message "Diretório principal: $checkMainDir"
     
-    # Verificar/criar diretório print_server_desktop
-    $checkServerDir = wsl -d Ubuntu -u root bash -c "if [ -d /opt/print_server/print_server_desktop ]; then echo 'exists'; else mkdir -p /opt/print_server/print_server_desktop && echo 'created'; fi" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Falha ao verificar/criar diretório do servidor: $checkServerDir"
-    }
-    Log-Message "Diretório do servidor: $checkServerDir"
-    
-    # Verificar/criar diretório de atualizações
-    $checkUpdatesDir = wsl -d Ubuntu -u root bash -c "if [ -d /opt/print_server/updates ]; then echo 'exists'; else mkdir -p /opt/print_server/updates && echo 'created'; fi" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Falha ao verificar/criar diretório de atualizações: $checkUpdatesDir"
-    }
-    Log-Message "Diretório de atualizações: $checkUpdatesDir"
-    
-    # Verificar/criar arquivo de registro de atualizações
-    $checkUpdateLog = wsl -d Ubuntu -u root bash -c "touch /opt/print_server/executed_updates.txt && echo 'ok'" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Falha ao verificar/criar arquivo de registro de atualizações: $checkUpdateLog"
-    }
-} catch {
-    $errorMsg = $_.Exception.Message
-    Log-Message "Erro ao configurar estrutura de diretórios: $errorMsg" "ERROR"
-    Log-Message "Tentando continuar mesmo assim..." "WARN"
-}
-
-# Verificar script de atualização principal
-Log-Message "Verificando script de atualização principal..."
-$updateScriptExists = wsl -d Ubuntu -u root bash -c "if [ -f /opt/print_server/update.sh ]; then echo 'exists'; else echo 'not-found'; fi" 2>&1
-if ($updateScriptExists -ne "exists") {
-    Log-Message "Script de atualização principal não encontrado. Criando script padrão..." "WARN"
-    
-    # Criar o script de atualização padrão
-    $updateScriptContent = @'
+    # Verificar script de atualização principal
+    Job-Log "Verificando script de atualização principal..."
+    $updateScriptExists = wsl -d Ubuntu -u root bash -c "if [ -f /opt/print_server/update.sh ]; then echo 'exists'; else echo 'not-found'; fi" 2>&1
+    if ($updateScriptExists -ne "exists") {
+        Job-Log "Script de atualização principal não encontrado. Criando script padrão..." "WARN"
+        
+        # Criar o script de atualização padrão
+        $updateScriptContent = @'
 #!/bin/bash
 # Script principal de atualização para print_server
 # Executa os scripts de atualização na sequência
@@ -253,166 +290,208 @@ fi
 log "Processo de atualização concluído com sucesso!"
 '@
 
-    # Salvar em arquivo temporário
-    $tempFile = [System.IO.Path]::GetTempFileName()
-    Set-Content -Path $tempFile -Value $updateScriptContent
-    
-    # Obter caminho WSL para o arquivo temporário
-    $tempFilePath = $tempFile.Replace('\', '/')
-    $wslTempPath = wsl -d Ubuntu wslpath -u "$tempFilePath" 2>&1
-    
-    if ($LASTEXITCODE -eq 0) {
-        # Copiar para o WSL e configurar permissões
-        $copyResult = wsl -d Ubuntu -u root bash -c "cp '$wslTempPath' /opt/print_server/update.sh && chmod +x /opt/print_server/update.sh && echo 'ok'" 2>&1
+        # Salvar em arquivo temporário
+        $tempFile = [System.IO.Path]::GetTempFileName()
+        Set-Content -Path $tempFile -Value $updateScriptContent
         
-        if ($LASTEXITCODE -eq 0 -and $copyResult -eq "ok") {
-            Log-Message "Script de atualização principal criado com sucesso"
-        } else {
-            Log-Message "Erro ao criar script de atualização: $copyResult" "ERROR"
-        }
-    } else {
-        Log-Message "Erro ao converter caminho para WSL: $wslTempPath" "ERROR"
-    }
-    
-    # Limpar arquivo temporário
-    Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
-}
-
-# Diretório com os scripts de atualização no Windows
-$wslUpdatesDir = Join-Path $PSScriptRoot "..\resources\print_server_desktop\updates"
-
-# Verificar se o diretório existe
-if (Test-Path $wslUpdatesDir) {
-    Log-Message "Verificando scripts de atualização em: $wslUpdatesDir"
-    $updateScripts = Get-ChildItem -Path $wslUpdatesDir -Filter "*.sh"
-    
-    if ($updateScripts.Count -gt 0) {
-        Log-Message "Encontrados $($updateScripts.Count) scripts de atualização"
+        # Obter caminho WSL para o arquivo temporário
+        $tempFilePath = $tempFile.Replace('\', '/')
         
-        # Copiar cada script para o WSL
-        foreach ($script in $updateScripts) {
-            Log-Message "Processando script: $($script.Name)"
-            
-            # Obter caminho WSL para o script
-            $scriptWinPath = $script.FullName.Replace('\', '/')
-            $scriptWslPath = wsl -d Ubuntu wslpath -u "$scriptWinPath" 2>&1
+        try {
+            $wslTempPath = wsl -d Ubuntu wslpath -u "$tempFilePath" 2>&1
             
             if ($LASTEXITCODE -eq 0) {
                 # Copiar para o WSL e configurar permissões
-                $copyResult = wsl -d Ubuntu -u root bash -c "cp '$scriptWslPath' /opt/print_server/updates/ && chmod +x /opt/print_server/updates/$($script.Name) && echo 'ok'" 2>&1
+                $copyResult = wsl -d Ubuntu -u root bash -c "cp '$wslTempPath' /opt/print_server/update.sh && chmod +x /opt/print_server/update.sh && echo 'ok'" 2>&1
                 
                 if ($LASTEXITCODE -eq 0 -and $copyResult -eq "ok") {
-                    Log-Message "Script $($script.Name) copiado com sucesso"
+                    Job-Log "Script de atualização principal criado com sucesso"
                 } else {
-                    Log-Message "Erro ao copiar script $($script.Name): $copyResult" "ERROR"
+                    Job-Log "Erro ao criar script de atualização: $copyResult" "ERROR"
                 }
             } else {
-                Log-Message "Erro ao converter caminho para WSL: $scriptWslPath" "ERROR"
+                Job-Log "Erro ao converter caminho para WSL: $wslTempPath" "ERROR"
             }
+        } catch {
+            Job-Log "Erro ao processar caminhos WSL: $_" "ERROR"
+        } finally {
+            # Limpar arquivo temporário
+            Remove-Item -Path $tempFile -Force -ErrorAction SilentlyContinue
         }
-    } else {
-        Log-Message "Nenhum script de atualização encontrado"
     }
-} else {
-    Log-Message "Diretório de scripts de atualização não encontrado: $wslUpdatesDir" "WARN"
-}
-
-# Verificar diretório de recursos do servidor
-$serverResourcesDir = Join-Path $PSScriptRoot "..\resources\print_server_desktop"
-
-# Atualizar os arquivos do servidor se existirem
-if (Test-Path $serverResourcesDir) {
-    Log-Message "Verificando arquivos do servidor em: $serverResourcesDir"
     
-    # Lista de diretórios e arquivos principais a serem atualizados
-    $keyComponents = @("api", "bin", "db", "helper", "middleware", "src", "app.js", "ecosystem.config.js", "package.json")
+    # Diretório com os scripts de atualização no Windows
+    $resourcesDir = Split-Path -Parent $ScriptPath
+    $wslUpdatesDir = Join-Path (Split-Path -Parent $resourcesDir) "resources\print_server_desktop\updates"
     
-    foreach ($component in $keyComponents) {
-        $componentPath = Join-Path $serverResourcesDir $component
+    # Verificar se o diretório existe
+    if (Test-Path $wslUpdatesDir) {
+        Job-Log "Verificando scripts de atualização em: $wslUpdatesDir"
+        $updateScripts = Get-ChildItem -Path $wslUpdatesDir -Filter "*.sh" -ErrorAction SilentlyContinue
         
-        if (Test-Path $componentPath) {
-            Log-Message "Atualizando componente: $component"
+        if ($updateScripts -and $updateScripts.Count -gt 0) {
+            Job-Log "Encontrados $($updateScripts.Count) scripts de atualização"
             
-            # Determinar se é diretório ou arquivo
-            $isDirectory = (Get-Item $componentPath) -is [System.IO.DirectoryInfo]
-            
-            # Obter caminho WSL
-            $componentWinPath = $componentPath.Replace('\', '/')
-            $componentWslPath = wsl -d Ubuntu wslpath -u "$componentWinPath" 2>&1
-            
-            if ($LASTEXITCODE -eq 0) {
-                $targetPath = "/opt/print_server/print_server_desktop/$component"
+            # Copiar cada script para o WSL
+            foreach ($script in $updateScripts) {
+                Job-Log "Processando script: $($script.Name)"
                 
-                if ($isDirectory) {
-                    # Criar diretório de destino se não existir
-                    $createDirResult = wsl -d Ubuntu -u root bash -c "mkdir -p '$targetPath'" 2>&1
+                # Obter caminho WSL para o script
+                $scriptWinPath = $script.FullName.Replace('\', '/')
+                
+                try {
+                    $scriptWslPath = wsl -d Ubuntu wslpath -u "$scriptWinPath" 2>&1
                     
                     if ($LASTEXITCODE -eq 0) {
-                        # Copiar diretório usando rsync se disponível, ou cp como alternativa
-                        $copyResult = wsl -d Ubuntu -u root bash -c "if command -v rsync > /dev/null; then rsync -a --delete --exclude='node_modules' --exclude='.git' --exclude='*.log' '$componentWslPath/' '$targetPath/'; else cp -rf '$componentWslPath'/* '$targetPath/'; fi" 2>&1
+                        # Copiar para o WSL e configurar permissões
+                        $copyResult = wsl -d Ubuntu -u root bash -c "cp '$scriptWslPath' /opt/print_server/updates/ && chmod +x /opt/print_server/updates/$($script.Name) && echo 'ok'" 2>&1
                         
-                        if ($LASTEXITCODE -eq 0) {
-                            Log-Message "Diretório $component atualizado com sucesso"
+                        if ($LASTEXITCODE -eq 0 -and $copyResult -eq "ok") {
+                            Job-Log "Script $($script.Name) copiado com sucesso"
                         } else {
-                            Log-Message "Erro ao atualizar diretório $component: $copyResult" "ERROR"
+                            Job-Log "Erro ao copiar script $($script.Name): $copyResult" "ERROR"
                         }
                     } else {
-                        Log-Message "Erro ao criar diretório de destino $targetPath: $createDirResult" "ERROR"
+                        Job-Log "Erro ao converter caminho para WSL: $scriptWslPath" "ERROR"
                     }
-                } else {
-                    # Copiar arquivo
-                    $copyResult = wsl -d Ubuntu -u root bash -c "cp '$componentWslPath' '$targetPath' && echo 'ok'" 2>&1
-                    
-                    if ($LASTEXITCODE -eq 0 -and $copyResult -eq "ok") {
-                        Log-Message "Arquivo $component atualizado com sucesso"
-                    } else {
-                        Log-Message "Erro ao atualizar arquivo $component: $copyResult" "ERROR"
-                    }
+                } catch {
+                    Job-Log "Erro ao processar script $($script.Name): $_" "ERROR"
                 }
-            } else {
-                Log-Message "Erro ao converter caminho para WSL: $componentWslPath" "ERROR"
             }
         } else {
-            Log-Message "Componente não encontrado: $component" "WARN"
+            Job-Log "Nenhum script de atualização encontrado"
         }
-    }
-    
-    # Verificar se é necessário instalar dependências
-    Log-Message "Verificando se é necessário atualizar dependências..."
-    
-    $npmInstallResult = wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && if [ -f package.json ]; then npm install --only=production; else echo 'No package.json'; fi" 2>&1
-    
-    if ($LASTEXITCODE -eq 0) {
-        Log-Message "Dependências atualizadas: $npmInstallResult"
     } else {
-        Log-Message "Aviso: Erro ao atualizar dependências: $npmInstallResult" "WARN"
-    }
-} else {
-    Log-Message "Diretório de recursos do servidor não encontrado: $serverResourcesDir" "WARN"
-}
-
-# Executar o script de atualização principal
-Log-Message "Executando script de atualização principal..."
-
-$updateOutput = wsl -d Ubuntu -u root bash -c "cd /opt/print_server && bash update.sh" 2>&1
-
-if ($LASTEXITCODE -eq 0) {
-    # Processar cada linha da saída para o log
-    $updateOutput -split "`n" | ForEach-Object {
-        if ($_.Trim()) {
-            Log-Message "WSL: $_"
-        }
+        Job-Log "Diretório de scripts de atualização não encontrado: $wslUpdatesDir" "WARN"
     }
     
-    Log-Message "Script de atualização executado com sucesso!"
-} else {
-    Log-Message "Erro ao executar script de atualização: Código $LASTEXITCODE" "ERROR"
-    $updateOutput -split "`n" | ForEach-Object {
-        if ($_.Trim()) {
-            Log-Message "WSL Error: $_" "ERROR"
+    # Verificar diretório de recursos do servidor
+    $serverResourcesDir = Join-Path (Split-Path -Parent $resourcesDir) "resources\print_server_desktop"
+    
+    # Atualizar os arquivos do servidor se existirem
+    if (Test-Path $serverResourcesDir) {
+        Job-Log "Verificando arquivos do servidor em: $serverResourcesDir"
+        
+        # Lista de diretórios e arquivos principais a serem atualizados
+        $keyComponents = @("api", "bin", "db", "helper", "middleware", "src", "app.js", "ecosystem.config.js", "package.json")
+        
+        foreach ($component in $keyComponents) {
+            $componentPath = Join-Path $serverResourcesDir $component
+            
+            if (Test-Path $componentPath) {
+                Job-Log "Atualizando componente: $component"
+                
+                # Determinar se é diretório ou arquivo
+                $isDirectory = (Get-Item $componentPath) -is [System.IO.DirectoryInfo]
+                
+                # Obter caminho WSL
+                $componentWinPath = $componentPath.Replace('\', '/')
+                
+                try {
+                    $componentWslPath = wsl -d Ubuntu wslpath -u "$componentWinPath" 2>&1
+                    
+                    if ($LASTEXITCODE -eq 0) {
+                        $targetPath = "/opt/print_server/print_server_desktop/$component"
+                        
+                        if ($isDirectory) {
+                            # Criar diretório de destino se não existir
+                            $createDirResult = wsl -d Ubuntu -u root bash -c "mkdir -p '$targetPath'" 2>&1
+                            
+                            if ($LASTEXITCODE -eq 0) {
+                                # Copiar diretório usando método mais simples e confiável
+                                $copyResult = wsl -d Ubuntu -u root bash -c "cp -rf '$componentWslPath'/* '$targetPath/' 2>/dev/null || echo 'copy-error'" 2>&1
+                                
+                                if ($LASTEXITCODE -eq 0 -and $copyResult -ne "copy-error") {
+                                    Job-Log "Diretório $component atualizado com sucesso"
+                                } else {
+                                    Job-Log "Erro ao atualizar diretório $component: $copyResult" "ERROR"
+                                }
+                            } else {
+                                Job-Log "Erro ao criar diretório de destino $targetPath: $createDirResult" "ERROR"
+                            }
+                        } else {
+                            # Copiar arquivo
+                            $copyResult = wsl -d Ubuntu -u root bash -c "cp '$componentWslPath' '$targetPath' && echo 'ok'" 2>&1
+                            
+                            if ($LASTEXITCODE -eq 0 -and $copyResult -eq "ok") {
+                                Job-Log "Arquivo $component atualizado com sucesso"
+                            } else {
+                                Job-Log "Erro ao atualizar arquivo $component: $copyResult" "ERROR"
+                            }
+                        }
+                    } else {
+                        Job-Log "Erro ao converter caminho para WSL: $componentWslPath" "ERROR"
+                    }
+                } catch {
+                    Job-Log "Erro ao processar componente $component: $_" "ERROR"
+                }
+            } else {
+                Job-Log "Componente não encontrado: $component" "WARN"
+            }
         }
+        
+        # Verificar se é necessário instalar dependências
+        Job-Log "Verificando se é necessário atualizar dependências..."
+        
+        try {
+            $npmInstallResult = wsl -d Ubuntu -u root bash -c "cd /opt/print_server/print_server_desktop && if [ -f package.json ]; then npm install --only=production || echo 'npm-error'; else echo 'No package.json'; fi" 2>&1
+            
+            if ($LASTEXITCODE -eq 0 -and $npmInstallResult -ne "npm-error") {
+                Job-Log "Dependências atualizadas: $npmInstallResult"
+            } else {
+                Job-Log "Aviso: Erro ao atualizar dependências: $npmInstallResult" "WARN"
+            }
+        } catch {
+            Job-Log "Erro ao atualizar dependências: $_" "ERROR"
+        }
+    } else {
+        Job-Log "Diretório de recursos do servidor não encontrado: $serverResourcesDir" "WARN"
     }
+    
+    # Executar o script de atualização principal
+    Job-Log "Executando script de atualização principal..."
+    
+    try {
+        $updateOutput = wsl -d Ubuntu -u root bash -c "cd /opt/print_server && bash update.sh" 2>&1
+        
+        if ($LASTEXITCODE -eq 0) {
+            # Processar cada linha da saída para o log
+            $updateOutput -split "`n" | ForEach-Object {
+                if ($_.Trim()) {
+                    Job-Log "WSL: $_"
+                }
+            }
+            
+            Job-Log "Script de atualização executado com sucesso!"
+        } else {
+            Job-Log "Erro ao executar script de atualização: Código $LASTEXITCODE" "ERROR"
+            $updateOutput -split "`n" | ForEach-Object {
+                if ($_.Trim()) {
+                    Job-Log "WSL Error: $_" "ERROR"
+                }
+            }
+        }
+    } catch {
+        Job-Log "Exceção ao executar script de atualização: $_" "ERROR"
+    }
+    
+    Job-Log "Processo de atualização WSL concluído!"
+} -ArgumentList $PSCommandPath, $JOB_LOG_FILE
+
+Write-Log "Iniciando atualização do WSL em segundo plano..."
+Write-Log "A atualização continuará mesmo depois que o instalador concluir."
+Write-Log "Registros detalhados estão sendo salvos em: $JOB_LOG_FILE"
+
+# Aguardar um curto período para garantir que o job iniciou
+Start-Sleep -Seconds 2
+
+# Verificar estado do job
+if ($backgroundJob.State -eq "Running") {
+    Write-Log "Job de atualização iniciado com sucesso."
+} else {
+    Write-Log "AVISO: Job pode não ter iniciado corretamente. Estado: $($backgroundJob.State)"
 }
 
-Log-Message "Processo de atualização WSL concluído!"
+# Sair sem aguardar a conclusão do job - isso permite que o instalador continue
+Write-Log "Processo de atualização WSL iniciado em segundo plano."
 exit 0

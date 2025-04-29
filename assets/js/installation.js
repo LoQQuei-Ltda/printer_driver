@@ -77,42 +77,42 @@ class InstallationManager {
    */
   init() {
     console.log('Inicializando gerenciador de instalação...');
-
+  
     // Aplicar tema
     this.applyTheme();
-
+  
     // Configurar eventos
     this.setupEventListeners();
-
+  
     // Iniciar barra de progresso
     this.updateProgress(0, 5);
-
+  
     // Limpar log existente
     this.ui.logContainer.innerHTML = '';
-
+  
     // Adicionar primeira entrada de log
     this.addLogEntry('Iniciando processo de instalação...', 'header');
     this.addLogEntry('Aguardando comandos do instalador...', 'info');
-
+  
     // Iniciar o intervalo de atualização do log
     this.startLogUpdater();
-
+  
     // Escutar explicitamente por eventos de atualização
     const { ipcRenderer } = require('electron');
-
+  
     // Remover ouvintes anteriores para prevenir duplicação
     ipcRenderer.removeAllListeners('step-update');
     ipcRenderer.removeAllListeners('progress-update');
     ipcRenderer.removeAllListeners('log');
     ipcRenderer.removeAllListeners('pergunta');
     ipcRenderer.removeAllListeners('instalacao-completa');
-
+  
     // Configurar receptor de atualização de etapa
     ipcRenderer.on('step-update', (event, data) => {
       console.log('Recebida atualização de etapa:', data);
       this.updateStepStatus(data.step, data.state, data.message);
     });
-
+  
     // Configurar receptor de atualização de progresso
     ipcRenderer.on('progress-update', (event, data) => {
       console.log('Recebida atualização de progresso:', data.percentage);
@@ -120,31 +120,186 @@ class InstallationManager {
         this.updateProgressBar(data.percentage);
       }
     });
-
+  
     // Configurar receptor de log
     ipcRenderer.on('log', (event, data) => {
       console.log('Log recebido:', data);
       this.handleLogMessage(data);
     });
-
+  
     // Configurar receptor de pergunta
     ipcRenderer.on('pergunta', (event, data) => {
       console.log('Pergunta recebida:', data);
       this.showQuestionModal(data.question);
     });
-
+  
     // Configurar receptor de conclusão
     ipcRenderer.on('instalacao-completa', (event, data) => {
       console.log('Instalação completa:', data);
       this.handleInstallationComplete(data);
     });
-
+  
     // Imediatamente enviar mensagem de pronto para o processo principal
     ipcRenderer.send('installation-page-ready');
-
+  
     console.log('Gerenciador de instalação inicializado');
-  }
+  }  
 
+  processLogForSteps(message, type) {
+    const lowerMessage = message.toLowerCase();
+    console.log('Analisando mensagem para mapeamento de etapas:', lowerMessage);
+    
+    // Detectar componentes específicos sendo instalados
+    if (lowerMessage.includes('instalando/configurando database') || 
+        lowerMessage.includes('banco de dados')) {
+      // Database geralmente é configurado como parte do ambiente
+      console.log('Detectada instalação/configuração de banco de dados');
+      
+      // Marcar etapas anteriores como concluídas
+      for (let i = 0; i < 5; i++) {
+        this.updateStepStatus(i, 'completed', 'Concluído');
+      }
+      
+      // Atualizar etapa atual
+      this.updateStepStatus(5, 'in-progress', 'Em andamento');
+      this.updateProgressBar(80);
+      
+      // Atualizar status principal
+      if (this.ui.stepStatus) {
+        this.ui.stepStatus.textContent = this.allSteps[5];
+      }
+      
+      return true;
+    } 
+    else if (lowerMessage.includes('instalando/configurando api') || 
+             lowerMessage.includes('instalando/configurando pm2')) {
+      // API e PM2 são geralmente parte dos serviços
+      console.log('Detectada instalação/configuração de API ou PM2');
+      
+      // Marcar etapas anteriores como concluídas
+      for (let i = 0; i < 6; i++) {
+        this.updateStepStatus(i, 'completed', 'Concluído');
+      }
+      
+      // Atualizar etapa atual
+      this.updateStepStatus(6, 'in-progress', 'Em andamento');
+      this.updateProgressBar(90);
+      
+      // Atualizar status principal
+      if (this.ui.stepStatus) {
+        this.ui.stepStatus.textContent = this.allSteps[6];
+      }
+      
+      return true;
+    }
+    else if (lowerMessage.includes('instalando/configurando printer') || 
+             lowerMessage.includes('impressora')) {
+      // Impressora geralmente é o último componente antes de finalizar
+      console.log('Detectada instalação/configuração de impressora');
+      
+      // Marcar etapas anteriores como concluídas
+      for (let i = 0; i < 7; i++) {
+        this.updateStepStatus(i, 'completed', 'Concluído');
+      }
+      
+      // Atualizar etapa atual
+      this.updateStepStatus(7, 'in-progress', 'Em andamento');
+      this.updateProgressBar(95);
+      
+      // Atualizar status principal
+      if (this.ui.stepStatus) {
+        this.ui.stepStatus.textContent = this.allSteps[7];
+      }
+      
+      return true;
+    }
+    else if (lowerMessage.includes('verificando o sistema após a instalação')) {
+      // Verificação final
+      console.log('Detectada verificação final do sistema');
+      
+      // Marcar etapas anteriores como concluídas
+      for (let i = 0; i < 7; i++) {
+        this.updateStepStatus(i, 'completed', 'Concluído');
+      }
+      
+      // Atualizar etapa atual
+      this.updateStepStatus(7, 'in-progress', 'Em andamento');
+      this.updateProgressBar(98);
+      
+      // Atualizar status principal
+      if (this.ui.stepStatus) {
+        this.ui.stepStatus.textContent = this.allSteps[7];
+      }
+      
+      return true;
+    }
+    else if (lowerMessage.includes('componentes que serão instalados')) {
+      // Detectar a lista de componentes e marcar etapas apropriadamente
+      console.log('Detectada listagem de componentes para instalação');
+      
+      // Verificar quais componentes serão instalados
+      const needsWsl = lowerMessage.includes('wsl');
+      const needsUbuntu = lowerMessage.includes('ubuntu');
+      const hasDatabaseComponent = lowerMessage.includes('database');
+      const hasApiComponent = lowerMessage.includes('api');
+      const hasPm2Component = lowerMessage.includes('pm2');
+      const hasPrinterComponent = lowerMessage.includes('printer');
+      
+      // Se não menciona WSL ou Ubuntu, significa que já estão instalados
+      if (!needsWsl && !needsUbuntu) {
+        // Marcar as primeiras etapas como concluídas
+        for (let i = 0; i < 4; i++) {
+          this.updateStepStatus(i, 'completed', 'Concluído');
+        }
+        
+        // Se temos componentes de ambiente/serviço, vamos para a etapa correspondente
+        if (hasDatabaseComponent || hasApiComponent || hasPm2Component || hasPrinterComponent) {
+          this.updateStepStatus(4, 'completed', 'Concluído'); // Usuário padrão também está ok
+          this.updateStepStatus(5, 'in-progress', 'Em andamento'); // Ambiente de sistema
+          this.updateProgressBar(70);
+          
+          // Atualizar status principal
+          if (this.ui.stepStatus) {
+            this.ui.stepStatus.textContent = this.allSteps[5];
+          }
+        }
+      }
+      
+      return true;
+    }
+    else if (lowerMessage.includes('analisando componentes necessários')) {
+      // Análise inicial - verificação concluída
+      console.log('Detectada análise de componentes - verificação concluída');
+      
+      // Marcar primeira etapa como concluída
+      this.updateStepStatus(0, 'completed', 'Concluído');
+      this.updateProgressBar(20);
+      
+      return true;
+    }
+    
+    // Padrão para instalação genérica de componentes
+    if (lowerMessage.includes('instalando/configurando')) {
+      console.log('Detectada instalação/configuração genérica de componente');
+      
+      // No mínimo, a verificação está concluída
+      this.updateStepStatus(0, 'completed', 'Concluído');
+      
+      // Se não temos um componente específico, assumir que estamos na etapa de ambiente de sistema
+      this.updateStepStatus(5, 'in-progress', 'Em andamento');
+      this.updateProgressBar(80);
+      
+      // Atualizar status principal
+      if (this.ui.stepStatus) {
+        this.ui.stepStatus.textContent = this.allSteps[5];
+      }
+      
+      return true;
+    }
+    
+    return false;
+  }
+  
   /**
    * Adicione este método para atualizar exclusivamente a barra de progresso:
    */
@@ -153,12 +308,12 @@ class InstallationManager {
       // Use requestAnimationFrame for smoother updates
       requestAnimationFrame(() => {
         this.ui.progressBar.style.width = `${percentage}%`;
-
+  
         // Update numerical percentage
         if (this.ui.progressPercentage) {
           this.ui.progressPercentage.textContent = `${Math.round(percentage)}%`;
         }
-
+  
         // Update status icon based on progress
         if (this.ui.statusIcon) {
           if (percentage < 30) {
@@ -181,40 +336,40 @@ class InstallationManager {
   startLogUpdater() {
     // Processar imediatamente o primeiro lote para garantir feedback rápido
     this.processLogBuffer();
-
-    // Configurar o intervalo para atualização contínua
+  
+    // Configurar o intervalo para atualização contínua com intervalo menor
     this.state.logUpdateInterval = setInterval(() => {
       this.processLogBuffer();
     }, 50); // Atualizar 20 vezes por segundo para feedback mais rápido
-  }
+  }  
 
   /**
    * Processar o buffer de logs
    */
   processLogBuffer() {
     if (this.state.processingLogs || this.state.logBuffer.length === 0) return;
-
+  
     this.state.processingLogs = true;
-
+  
     try {
       // Create fragment for batch DOM updates
       const fragment = document.createDocumentFragment();
-
+  
       // Process up to 50 logs at once to avoid overwhelming the UI
       const logsToProcess = this.state.logBuffer.splice(0, 50);
-
+  
       // Track if we need to update UI based on logs
       let needsProgressUpdate = false;
       let progressValue = -1;
-
+  
       logsToProcess.forEach(logEntry => {
         const { message, type } = logEntry;
-
+  
         // Create log entry element
         const entry = document.createElement('div');
         entry.className = `log-entry ${type}`;
         entry.textContent = message;
-
+  
         // Check for duplicates
         let isDuplicate = false;
         const existingEntries = this.ui.logContainer.getElementsByClassName('log-entry');
@@ -224,10 +379,10 @@ class InstallationManager {
             isDuplicate = true;
           }
         }
-
+  
         if (!isDuplicate) {
           fragment.appendChild(entry);
-
+  
           // Check if this message should update progress
           const progressInfo = this.getProgressInfoFromMessage(message, type);
           if (progressInfo.shouldUpdate) {
@@ -236,15 +391,15 @@ class InstallationManager {
           }
         }
       });
-
+  
       // Add all logs at once for better performance
       this.ui.logContainer.appendChild(fragment);
-
+  
       // Update progress if needed
       if (needsProgressUpdate && progressValue >= 0) {
         this.updateProgressBar(progressValue);
       }
-
+  
       // Scroll to bottom if auto-scroll is enabled
       if (this.state.autoScroll) {
         this.scrollLogToBottom();
@@ -254,23 +409,45 @@ class InstallationManager {
     } finally {
       this.state.processingLogs = false;
     }
-  }
+  }  
 
   // Helper to extract progress info from log messages
   getProgressInfoFromMessage(message, type) {
     const lowerMessage = message.toLowerCase();
     let result = { shouldUpdate: false, value: -1 };
-
+  
     // Progress percentage mapping (same logic as in installer.js)
     if (lowerMessage.includes('verificando privilégios')) {
       result = { shouldUpdate: true, value: 5 };
     } else if (lowerMessage.includes('verificando virtualização')) {
       result = { shouldUpdate: true, value: 10 };
+    } else if (lowerMessage.includes('wsl não está instalado')) {
+      result = { shouldUpdate: true, value: 15 };
+    } else if (lowerMessage.includes('instalando wsl')) {
+      result = { shouldUpdate: true, value: 20 };
+    } else if (lowerMessage.includes('recurso wsl habilitado')) {
+      result = { shouldUpdate: true, value: 30 };
+    } else if (lowerMessage.includes('definindo wsl 2') || 
+               lowerMessage.includes('kernel do wsl2 instalado')) {
+      result = { shouldUpdate: true, value: 40 };
+    } else if (lowerMessage.includes('instalando ubuntu')) {
+      result = { shouldUpdate: true, value: 50 };
+    } else if (lowerMessage.includes('ubuntu instalado')) {
+      result = { shouldUpdate: true, value: 60 };
+    } else if (lowerMessage.includes('configurando usuário padrão')) {
+      result = { shouldUpdate: true, value: 70 };
+    } else if (lowerMessage.includes('configurando o sistema')) {
+      result = { shouldUpdate: true, value: 80 };
+    } else if (lowerMessage.includes('configurando cups') || 
+               lowerMessage.includes('configurando samba') || 
+               lowerMessage.includes('configurando nginx')) {
+      result = { shouldUpdate: true, value: 90 };
+    } else if (lowerMessage.includes('instalação concluída')) {
+      result = { shouldUpdate: true, value: 100 };
     }
-    // ... (rest of the cases matching the installer.js conditions)
-
+  
     return result;
-  }
+  } 
 
   /**
    * Rolar o log para o final
@@ -488,6 +665,18 @@ class InstallationManager {
   updateStepStatus(stepIndex, state, statusText) {
     if (stepIndex < 0 || stepIndex >= this.allSteps.length) return;
 
+    console.log(`Atualizando etapa ${stepIndex} para estado '${state}' com texto '${statusText}'`);
+
+    // Armazenar estado anterior para comparação
+    const previousState = this.state.stepState[stepIndex];
+    
+    // Regra importante: não permitir "rebaixar" um estado de completed para in-progress
+    // Isso é vital para instalações parciais onde etapas já estão concluídas
+    if (previousState === 'completed' && state === 'in-progress') {
+      console.log(`Etapa ${stepIndex} já está marcada como concluída, ignorando alteração para 'in-progress'`);
+      return;
+    }
+
     this.state.stepState[stepIndex] = state;
     this.state.stepStatus[stepIndex] = statusText;
 
@@ -512,6 +701,128 @@ class InstallationManager {
     if (status) {
       status.textContent = statusText;
     }
+
+    // Se a etapa atual mudou para "em andamento", atualizar o status principal
+    if (state === 'in-progress' && this.ui.stepStatus) {
+      this.ui.stepStatus.textContent = this.allSteps[stepIndex];
+    }
+
+    // CRUCIAL: Se estamos marcando uma etapa como em andamento ou concluída,
+    // garantir que todas as etapas anteriores estejam marcadas como concluídas
+    if ((state === 'in-progress' || state === 'completed') && stepIndex > 0) {
+      for (let i = 0; i < stepIndex; i++) {
+        // Só atualizar se a etapa não estiver já marcada como concluída ou erro
+        if (this.state.stepState[i] !== 'completed' && this.state.stepState[i] !== 'error') {
+          this.updateStepStatus(i, 'completed', 'Concluído');
+        }
+      }
+    }
+  }
+
+  /**
+   * Função especializada para detectar padrões de componentes específicos nos logs
+   */
+  detectComponentSpecificLogs(message, type) {
+    const lowerMessage = message.toLowerCase();
+    
+    // Componentes específicos que indicam etapas mais avançadas
+    const componentPatterns = [
+      { pattern: 'database', step: 5, progress: 80 },
+      { pattern: 'api', step: 6, progress: 85 },
+      { pattern: 'pm2', step: 6, progress: 87 },
+      { pattern: 'printer', step: 7, progress: 95 },
+      { pattern: 'verificando o sistema após', step: 7, progress: 98 }
+    ];
+    
+    // Verificar cada padrão
+    for (const { pattern, step, progress } of componentPatterns) {
+      if (lowerMessage.includes(pattern)) {
+        console.log(`Detectado componente específico: ${pattern} → Etapa ${step}, Progresso ${progress}%`);
+        
+        // Primeiro verificar se alguma etapa posterior já está em progresso/completa
+        let skipUpdate = false;
+        for (let i = step + 1; i < this.allSteps.length; i++) {
+          if (this.state.stepState[i] === 'in-progress' || this.state.stepState[i] === 'completed') {
+            skipUpdate = true;
+            break;
+          }
+        }
+        
+        // Se não precisamos pular, atualizar para este componente
+        if (!skipUpdate) {
+          // Garantir que as etapas anteriores estejam marcadas como concluídas
+          for (let i = 0; i < step; i++) {
+            this.updateStepStatus(i, 'completed', 'Concluído');
+          }
+          
+          // Marcar a etapa atual
+          this.updateStepStatus(step, 'in-progress', 'Em andamento');
+          
+          // Atualizar o progresso
+          this.updateProgressBar(progress);
+          
+          // Atualizar texto de status principal
+          if (this.ui.stepStatus) {
+            this.ui.stepStatus.textContent = this.allSteps[step];
+          }
+          
+          return true;
+        }
+      }
+    }
+    
+    // Verificar lista de componentes a instalar
+    if (lowerMessage.includes('componentes que serão instalados:')) {
+      try {
+        // Tentar extrair a lista de componentes
+        const componentsMatch = lowerMessage.match(/instalados:([^,]+(?:,[^,]+)*)/);
+        if (componentsMatch && componentsMatch[1]) {
+          const componentsList = componentsMatch[1].split(',').map(c => c.trim().toLowerCase());
+          console.log('Lista de componentes detectada:', componentsList);
+          
+          // Com base nos componentes, determinar quais etapas pular
+          const needsWsl = componentsList.some(c => c === 'wsl');
+          const needsWsl2 = componentsList.some(c => c === 'wsl2');
+          const needsUbuntu = componentsList.some(c => c === 'ubuntu');
+          
+          // Se não precisa de WSL/Ubuntu, podemos marcar essas etapas como concluídas
+          if (!needsWsl && !needsWsl2 && !needsUbuntu) {
+            // Marcar etapas iniciais como concluídas
+            for (let i = 0; i <= 3; i++) {
+              this.updateStepStatus(i, 'completed', 'Concluído');
+            }
+            
+            // Definir qual etapa está em progresso com base nos componentes
+            let currentStep = 5; // Ambiente por padrão
+            
+            if (componentsList.includes('database') || 
+                componentsList.includes('software')) {
+              currentStep = 5; // Ambiente
+            } else if (componentsList.includes('api') || 
+                       componentsList.includes('pm2') || 
+                       componentsList.includes('services')) {
+              currentStep = 6; // Serviços
+            } else if (componentsList.includes('printer')) {
+              currentStep = 7; // Finalização
+            }
+            
+            this.updateStepStatus(currentStep, 'in-progress', 'Em andamento');
+            this.updateProgressBar(currentStep * 15); // Progresso aproximado
+            
+            // Atualizar status principal
+            if (this.ui.stepStatus) {
+              this.ui.stepStatus.textContent = this.allSteps[currentStep];
+            }
+            
+            return true;
+          }
+        }
+      } catch (err) {
+        console.error('Erro ao analisar componentes:', err);
+      }
+    }
+    
+    return false;
   }
 
   /**
@@ -520,7 +831,17 @@ class InstallationManager {
   addLogEntry(message, type = 'info') {
     // Adicionar ao buffer de log em vez de diretamente ao DOM
     this.state.logBuffer.push({ message, type });
-
+  
+    // Processar mensagens específicas relacionadas à instalação de componentes
+    const lowerMessage = message.toLowerCase();
+    
+    if (lowerMessage.includes('instalando componente') || 
+        lowerMessage.includes('instalando/configurando packages') ||
+        lowerMessage.includes('instalando aplicação')) {
+      // Forçar atualização do estado para mostrar o progresso corretamente
+      this.updateProgressFromMessage(message, type);
+    }
+  
     // Forçar processamento imediato para visualização rápida
     if (type === 'error' || type === 'success' || type === 'header' || this.state.logBuffer.length === 1) {
       this.processLogBuffer();
@@ -665,46 +986,174 @@ class InstallationManager {
     }
 
     console.log('Processando log:', message); // Debug
-
+    
+    // NOVO: Primeiro tentar detectar logs específicos de componentes
+    const handled = this.detectComponentSpecificLogs(message, data.type);
+    
+    // Adicionar a entrada ao log de qualquer forma
     this.addLogEntry(message, data.type);
+    
+    // Se não foi tratado como componente específico, processar normalmente
+    if (!handled) {
+      this.updateProgressFromMessage(message, data.type);
+    }
   }
+  
+  // 2. Melhoria no método updateProgressFromMessage para mapear corretamente as mensagens para etapas
+  updateProgressFromMessage(message, type) {
+    if (this.state.installationComplete) return;
+  
+    const lowerMessage = message.toLowerCase();
+    console.log('Analisando mensagem para progresso:', lowerMessage);
+  
+    // Priorizar mensagens explícitas de instalação de componentes
+    if (lowerMessage.includes('instalando aplicação') || 
+        lowerMessage.includes('instalando/configurando packages')) {
+      this.updateProgress(5, 80);
+      this.updateStepStatus(0, 'completed', 'Concluído');
+      this.updateStepStatus(1, 'completed', 'Concluído');
+      this.updateStepStatus(2, 'completed', 'Concluído');
+      this.updateStepStatus(3, 'completed', 'Concluído');
+      this.updateStepStatus(4, 'completed', 'Concluído');
+      this.updateStepStatus(5, 'in-progress', 'Em andamento');
+      return;
+    }
+  
+    // Mapeamento detalhado de mensagens para etapas e progresso
+    if (lowerMessage.includes('instalação concluída com sucesso') ||
+        (type === 'success' && lowerMessage.includes('concluída'))) {
+      this.updateProgress(7, 100);
+      this.updateStepStatus(7, 'completed', 'Concluído');
+      this.state.installationComplete = true;
+  
+      if (this.ui.closeButton) {
+        this.ui.closeButton.style.display = 'block';
+      }
+  
+      return;
+    } else if (lowerMessage.includes('verificando privilégios') ||
+        lowerMessage.includes('verificando versão do windows')) {
+      this.updateProgress(0, 5);
+    } else if (lowerMessage.includes('verificando virtualização')) {
+      this.updateProgress(0, 10);
+    } else if (lowerMessage.includes('wsl não está instalado')) {
+      this.updateProgress(0, 15);
+      this.updateStepStatus(0, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('instalando wsl')) {
+      this.updateProgress(1, 20);
+      this.updateStepStatus(0, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('recurso wsl habilitado')) {
+      this.updateProgress(1, 30);
+    } else if (lowerMessage.includes('definindo wsl 2') ||
+        lowerMessage.includes('kernel do wsl2 instalado')) {
+      this.updateProgress(2, 40);
+      this.updateStepStatus(1, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('instalando ubuntu')) {
+      this.updateProgress(3, 50);
+      this.updateStepStatus(2, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('ubuntu instalado')) {
+      this.updateProgress(3, 60);
+    } else if (lowerMessage.includes('configurando usuário padrão')) {
+      this.updateProgress(4, 70);
+      this.updateStepStatus(3, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('configurando o sistema') || 
+               lowerMessage.includes('configurando ambiente')) {
+      this.updateProgress(5, 80);
+      this.updateStepStatus(4, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('configurando cups') ||
+        lowerMessage.includes('configurando samba') ||
+        lowerMessage.includes('configurando nginx')) {
+      this.updateProgress(6, 90);
+      this.updateStepStatus(5, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('instalação concluída')) {
+      this.updateProgress(7, 100);
+      this.updateStepStatus(6, 'completed', 'Concluído');
+      this.updateStepStatus(7, 'completed', 'Concluído');
+      this.state.installationComplete = true;
+  
+      if (this.ui.closeButton) {
+        this.ui.closeButton.style.display = 'block';
+      }
+  
+      // Fechar automaticamente após 5 segundos
+      setTimeout(() => {
+        window.close();
+      }, 5000);
+    } else if (lowerMessage.includes('analisando componentes necessários')) {
+      // Esta mensagem indica que a verificação está completa e estamos analisando o que instalar
+      this.updateProgress(0, 20);
+      this.updateStepStatus(0, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('componentes que serão instalados')) {
+      // Quando os componentes são listados, sabemos quais etapas serão puladas
+      this.updateProgress(1, 30);
+      this.updateStepStatus(0, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('banco de dados configurado')) {
+      this.updateProgress(5, 85);
+      this.updateStepStatus(5, 'completed', 'Concluído');
+    } else if (lowerMessage.includes('firewall configurado')) {
+      this.updateProgress(6, 90);
+    }
+  
+    // Verificar erros
+    if (type === 'error') {
+      // Marcar a etapa atual como erro
+      this.updateStepStatus(this.state.currentStep, 'error', 'Erro');
+    }
+  
+    // Verificar sucesso em etapas específicas
+    if (type === 'success') {
+      if (lowerMessage.includes('wsl instalado')) {
+        this.updateStepStatus(1, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('wsl 2 configurado')) {
+        this.updateStepStatus(2, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('ubuntu instalado')) {
+        this.updateStepStatus(3, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('usuário configurado')) {
+        this.updateStepStatus(4, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('ambiente configurado')) {
+        this.updateStepStatus(5, 'completed', 'Concluído');
+      } else if (lowerMessage.includes('serviços configurados')) {
+        this.updateStepStatus(6, 'completed', 'Concluído');
+      }
+    }
+  } 
 
   /**
    * Manipular conclusão da instalação
    */
   handleInstallationComplete(data) {
     console.log('Recebido evento de instalação completa:', data);
-
+  
     if (data.success) {
       this.updateProgress(7, 100);
       this.addLogEntry('✅ Instalação concluída com sucesso!', 'success');
-
+  
       if (data.message) {
         this.addLogEntry(`Mensagem: ${data.message}`, 'success');
       }
-
+  
       // Marcar todas as etapas como concluídas
       for (let i = 0; i < this.allSteps.length; i++) {
         this.updateStepStatus(i, 'completed', 'Concluído');
       }
-
+  
       // Atualizar botão
       if (this.ui.closeButton) {
         this.ui.closeButton.style.display = 'block';
         this.ui.closeButton.innerHTML = '<i class="fas fa-check-circle"></i> Instalação Concluída';
       }
-
+  
       // Atualizar status icon
       if (this.ui.statusIcon) {
         this.ui.statusIcon.className = 'status-indicator green';
       }
-
+  
       // Fechar automaticamente após 5 segundos
       this.addLogEntry('Esta janela será fechada automaticamente em 5 segundos...', 'info');
-
+  
       // Informar ao usuário sobre o fechamento automático
       this.addLogEntry('IMPORTANTE: Instalação concluída com sucesso! Use o botão "Verificar Novamente" na tela principal para confirmar o status.', 'header');
-
+  
       setTimeout(() => {
         if (this.ui.closeButton) {
           this.ui.closeButton.click(); // Usar o botão para fechar e garantir cleanup
@@ -714,19 +1163,19 @@ class InstallationManager {
       }, 5000);
     } else {
       this.addLogEntry(`❌ Instalação falhou: ${data.error || 'Erro desconhecido'}`, 'error');
-
+  
       // Marcar etapa atual como erro
       this.updateStepStatus(this.state.currentStep, 'error', 'Erro');
-
+  
       if (this.ui.closeButton) {
         this.ui.closeButton.style.display = 'block';
         this.ui.closeButton.innerHTML = '<i class="fas fa-exclamation-circle"></i> Instalação Falhou';
       }
-
+  
       // Atualizar status icon
       if (this.ui.statusIcon) {
         this.ui.statusIcon.className = 'status-indicator red';
       }
     }
-  }
+  }  
 }

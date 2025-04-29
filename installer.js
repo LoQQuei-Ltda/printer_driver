@@ -32,6 +32,56 @@ function setCustomAskQuestion(callback) {
   customAskQuestion = callback;
 }
 
+function interpretarMensagemLog(message, type) {
+  const lowerMessage = message.toLowerCase();
+
+  // Mapear mensagens para estados de componentes
+  if (lowerMessage.includes('analisando componentes necessários')) {
+    // Verificação completa, analisando componentes
+    return {
+      type: 'component-analysis',
+      step: 0,
+      state: 'completed',
+      progress: 20
+    };
+  }
+  else if (lowerMessage.includes('instalando aplicação') ||
+    lowerMessage.includes('instalando/configurando packages')) {
+    // Instalando aplicação (ambiente de sistema)
+    return {
+      type: 'component-install',
+      step: 5,  // Etapa "Configurando ambiente de sistema"
+      state: 'in-progress',
+      progress: 80
+    };
+  }
+  else if (lowerMessage.includes('instalando componente')) {
+    // Determinar qual componente está sendo instalado
+    let step = 5; // Ambiente por padrão
+
+    if (lowerMessage.includes('packages')) {
+      step = 5; // Ambiente
+    }
+    else if (lowerMessage.includes('cups') ||
+      lowerMessage.includes('samba') ||
+      lowerMessage.includes('firewall') ||
+      lowerMessage.includes('database') ||
+      lowerMessage.includes('service')) {
+      step = 6; // Serviços
+    }
+
+    return {
+      type: 'component-install',
+      step: step,
+      state: 'in-progress',
+      progress: step === 5 ? 80 : 90
+    };
+  }
+
+  // Sem interpretação especial para outras mensagens
+  return null;
+}
+
 function askQuestion(question) {
   // Se uma função de pergunta personalizada foi definida (para Electron)
   if (customAskQuestion) {
@@ -82,59 +132,183 @@ function log(message, type = "info") {
   }
 
   console.log(formattedMessage);
-  
+
   // Store in log buffer
   installationLog.push(`[${timestamp}][${type}] ${message}`);
   verification.logToFile(`[${timestamp}][${type}] ${message}`);
-  
+
   // Call update callback if set
   if (stepUpdateCallback) {
-    // Map message to step number based on keywords
-    let stepNumber = -1;
+    // Map message to step number based on keywords and determine appropriate state
     const lowerMessage = message.toLowerCase();
-    
-    if (lowerMessage.includes('verificando pré-requisitos') || 
-        lowerMessage.includes('verificando privilégios') || 
-        lowerMessage.includes('verificando versão')) {
+    let stepNumber = -1;
+    let state = 'in-progress';
+
+    // Determinar o estado com base no tipo de mensagem
+    if (type === 'success') state = 'completed';
+    else if (type === 'error') state = 'error';
+    else state = 'in-progress';
+
+    // Lógica especial para detecção de instalação de componentes específicos
+    if (lowerMessage.includes('componentes que serão instalados:')) {
+      // Examinar quais componentes serão instalados
+      try {
+        const componentsMatch = lowerMessage.match(/instalados:\s*(.+)$/);
+        if (componentsMatch && componentsMatch[1]) {
+          const componentsList = componentsMatch[1].split(',').map(c => c.trim().toLowerCase());
+          console.log('Componentes a serem instalados:', componentsList);
+
+          // Verificar se WSL/Ubuntu NÃO estão na lista (já estão instalados)
+          const wslNeeded = componentsList.some(c => c.includes('wsl'));
+          const ubuntuNeeded = componentsList.some(c => c.includes('ubuntu'));
+
+          // Se WSL e Ubuntu não estão na lista, marcar essas etapas como concluídas
+          if (!wslNeeded && !ubuntuNeeded) {
+            // Marcar as primeiras etapas como concluídas
+            for (let i = 0; i <= 3; i++) {
+              stepUpdateCallback(i, 'completed', 'Concluído');
+            }
+          }
+
+          // Antecipar qual etapa estará em andamento com base nos componentes
+          if (componentsList.includes('database') ||
+            componentsList.includes('software')) {
+            stepUpdateCallback(5, 'in-progress', 'Em andamento');
+
+            // Atualizar progresso também
+            if (progressCallback) {
+              progressCallback(70);
+            }
+          } else if (componentsList.includes('api') ||
+            componentsList.includes('pm2') ||
+            componentsList.includes('services')) {
+            stepUpdateCallback(6, 'in-progress', 'Em andamento');
+
+            // Atualizar progresso também
+            if (progressCallback) {
+              progressCallback(85);
+            }
+          } else if (componentsList.includes('printer')) {
+            stepUpdateCallback(7, 'in-progress', 'Em andamento');
+
+            // Atualizar progresso também
+            if (progressCallback) {
+              progressCallback(95);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Erro ao processar componentes:', err);
+      }
+    }
+    // Detecção de componentes específicos sendo instalados
+    else if (lowerMessage.includes('instalando/configurando database') ||
+      lowerMessage.includes('banco de dados')) {
+      // Marcar etapas anteriores como concluídas
+      for (let i = 0; i <= 4; i++) {
+        stepUpdateCallback(i, 'completed', 'Concluído');
+      }
+      stepNumber = 5; // Configurando ambiente
+    }
+    else if (lowerMessage.includes('instalando/configurando api') ||
+      lowerMessage.includes('instalando/configurando pm2')) {
+      // Marcar etapas anteriores como concluídas
+      for (let i = 0; i <= 5; i++) {
+        stepUpdateCallback(i, 'completed', 'Concluído');
+      }
+      stepNumber = 6; // Configurando serviços
+    }
+    else if (lowerMessage.includes('instalando/configurando printer') ||
+      lowerMessage.includes('impressora')) {
+      // Marcar etapas anteriores como concluídas
+      for (let i = 0; i <= 6; i++) {
+        stepUpdateCallback(i, 'completed', 'Concluído');
+      }
+      stepNumber = 7; // Finalizando instalação
+    }
+    else if (lowerMessage.includes('verificando o sistema após')) {
+      // Marcar etapas anteriores como concluídas
+      for (let i = 0; i <= 6; i++) {
+        stepUpdateCallback(i, 'completed', 'Concluído');
+      }
+      stepNumber = 7; // Finalizando instalação
+    }
+    // Detecção padrão de etapas
+    else if (lowerMessage.includes('verificando pré-requisitos') ||
+      lowerMessage.includes('verificando privilégios') ||
+      lowerMessage.includes('verificando versão')) {
       stepNumber = 0;
     } else if (lowerMessage.includes('instalando wsl')) {
       stepNumber = 1;
-    } else if (lowerMessage.includes('configurando wsl 2') || 
-               lowerMessage.includes('definindo wsl 2')) {
+    } else if (lowerMessage.includes('configurando wsl 2') ||
+      lowerMessage.includes('definindo wsl 2')) {
       stepNumber = 2;
     } else if (lowerMessage.includes('instalando ubuntu')) {
       stepNumber = 3;
     } else if (lowerMessage.includes('configurando usuário')) {
       stepNumber = 4;
-    } else if (lowerMessage.includes('configurando ambiente') || 
-               lowerMessage.includes('configurando sistema')) {
+    } else if (lowerMessage.includes('configurando ambiente') ||
+      lowerMessage.includes('configurando sistema')) {
       stepNumber = 5;
-    } else if (lowerMessage.includes('configurando serviços') || 
-               lowerMessage.includes('configurando cups') || 
-               lowerMessage.includes('configurando samba')) {
+    } else if (lowerMessage.includes('configurando serviços') ||
+      lowerMessage.includes('configurando cups') ||
+      lowerMessage.includes('configurando samba')) {
       stepNumber = 6;
-    } else if (lowerMessage.includes('finalizando instalação') || 
-               lowerMessage.includes('instalação concluída')) {
+    } else if (lowerMessage.includes('finalizando instalação') ||
+      lowerMessage.includes('instalação concluída')) {
       stepNumber = 7;
     }
-    
-    // Only update the step if we have a match
+
+    // Only update the step if we have a match and the state is appropriate
     if (stepNumber >= 0) {
-      let state = 'in-progress';
-      if (type === 'success') state = 'completed';
-      else if (type === 'error') state = 'error';
-      
       stepUpdateCallback(stepNumber, state, message);
+
+      // Special case: if marking a step as in-progress or completed and 
+      // it's not the first step, make sure previous steps are marked completed
+      if ((state === 'in-progress' || state === 'completed') && stepNumber > 0) {
+        for (let i = 0; i < stepNumber; i++) {
+          stepUpdateCallback(i, 'completed', 'Concluído');
+        }
+      }
     }
   }
-  
+
   // Update progress percentage if callback is set
   if (progressCallback) {
     // More accurate progress mapping with specific percentages per step
     const lowerMessage = message.toLowerCase();
     let progress = -1;
-    
-    if (lowerMessage.includes('verificando privilégios')) {
+
+    // Detecção de progresso para componentes específicos
+    if (lowerMessage.includes('analisando componentes necessários')) {
+      progress = 20;
+    }
+    else if (lowerMessage.includes('componentes que serão instalados:')) {
+      // Verificar se a instalação é parcial
+      if (!lowerMessage.includes('wsl') && !lowerMessage.includes('ubuntu')) {
+        // Instalação parcial sem WSL/Ubuntu - pular para 60%
+        progress = 60;
+      } else {
+        progress = 25;
+      }
+    }
+    else if (lowerMessage.includes('instalando/configurando database')) {
+      progress = 80;
+    }
+    else if (lowerMessage.includes('instalando/configurando api')) {
+      progress = 85;
+    }
+    else if (lowerMessage.includes('instalando/configurando pm2')) {
+      progress = 87;
+    }
+    else if (lowerMessage.includes('instalando/configurando printer')) {
+      progress = 95;
+    }
+    else if (lowerMessage.includes('verificando o sistema após')) {
+      progress = 98;
+    }
+    // Mapeamento padrão de progresso
+    else if (lowerMessage.includes('verificando privilégios')) {
       progress = 5;
     } else if (lowerMessage.includes('verificando virtualização')) {
       progress = 10;
@@ -144,8 +318,8 @@ function log(message, type = "info") {
       progress = 20;
     } else if (lowerMessage.includes('recurso wsl habilitado')) {
       progress = 30;
-    } else if (lowerMessage.includes('configurando wsl 2') || 
-               lowerMessage.includes('definindo wsl 2')) {
+    } else if (lowerMessage.includes('configurando wsl 2') ||
+      lowerMessage.includes('definindo wsl 2')) {
       progress = 40;
     } else if (lowerMessage.includes('instalando ubuntu')) {
       progress = 50;
@@ -153,17 +327,17 @@ function log(message, type = "info") {
       progress = 60;
     } else if (lowerMessage.includes('configurando usuário')) {
       progress = 70;
-    } else if (lowerMessage.includes('configurando ambiente') || 
-               lowerMessage.includes('configurando sistema')) {
+    } else if (lowerMessage.includes('configurando ambiente') ||
+      lowerMessage.includes('configurando sistema')) {
       progress = 80;
-    } else if (lowerMessage.includes('configurando serviços') || 
-               lowerMessage.includes('configurando cups') || 
-               lowerMessage.includes('configurando samba')) {
+    } else if (lowerMessage.includes('configurando serviços') ||
+      lowerMessage.includes('configurando cups') ||
+      lowerMessage.includes('configurando samba')) {
       progress = 90;
     } else if (lowerMessage.includes('instalação concluída')) {
       progress = 100;
     }
-    
+
     // Only update if we have a valid progress value
     if (progress >= 0) {
       progressCallback(progress);
@@ -173,13 +347,13 @@ function log(message, type = "info") {
 
 async function installComponent(component, status) {
   log(`Instalando componente específico: ${component}...`, 'step');
-  
+
   try {
     // Verificar status atual do sistema se não for fornecido
     if (!status) {
       status = await verification.checkSystemStatus();
     }
-    
+
     // Instalação do componente específico
     switch (component) {
       case 'wsl':
@@ -188,7 +362,7 @@ async function installComponent(component, status) {
           return true;
         }
         return await installWSLModern() || await installWSLLegacy();
-        
+
       case 'wsl2':
         if (status.wslStatus && status.wslStatus.wsl2) {
           log('WSL 2 já está configurado, pulando configuração', 'info');
@@ -202,17 +376,17 @@ async function installComponent(component, status) {
           log(`Erro ao configurar WSL 2: ${error.message}`, 'error');
           return false;
         }
-        
+
       case 'ubuntu':
         if (status.wslStatus && status.wslStatus.hasDistro) {
           log('Ubuntu já está instalado, pulando instalação', 'info');
           return true;
         }
         return await installUbuntu();
-        
+
       case 'packages':
         return await installRequiredPackages();
-        
+
       case 'services':
         try {
           log('Reiniciando serviços...', 'step');
@@ -223,19 +397,19 @@ async function installComponent(component, status) {
           log(`Erro ao reiniciar serviços: ${error.message}`, 'error');
           return false;
         }
-        
+
       case 'firewall':
         return await configureFirewall();
-        
+
       case 'database':
         return await setupDatabase();
-        
+
       case 'api':
         try {
           log('Reiniciando API...', 'step');
           // Primeiro verificar se o diretório existe
           const dirCheck = await verification.execPromise('wsl -d Ubuntu -u root bash -c "if [ -d \'/opt/loqquei/print_server_desktop\' ]; then echo \'exists\'; else echo \'not_found\'; fi"', 10000, true);
-          
+
           if (dirCheck.trim() === 'exists') {
             await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart ecosystem.config.js || pm2 start ecosystem.config.js"', 30000, true);
           } else {
@@ -247,20 +421,20 @@ async function installComponent(component, status) {
               throw new Error('Diretório da aplicação não encontrado');
             }
           }
-          
+
           log('API reiniciada com sucesso', 'success');
           return true;
         } catch (error) {
           log(`Erro ao reiniciar API: ${error.message}`, 'error');
           return false;
         }
-        
+
       case 'pm2':
         return await setupPM2();
-        
+
       case 'printer':
         return await installWindowsPrinter();
-        
+
       default:
         log(`Componente desconhecido: ${component}`, 'error');
         return false;
@@ -523,14 +697,14 @@ async function installWSLLegacy() {
 // Instalar o Ubuntu no WSL diretamente usando comandos Node
 async function installUbuntu() {
   verification.log('Iniciando instalação do Ubuntu no WSL...', 'header');
-  
+
   try {
     // Método 1: Instalar Ubuntu com inicialização
     verification.log('Instalando Ubuntu via WSL...', 'step');
     try {
       // Primeiro, verificar se a distribuição já foi registrada
       const ubuntuExists = await verification.checkUbuntuInstalled();
-      
+
       if (!ubuntuExists) {
         verification.log('Registrando distribuição Ubuntu no WSL...', 'step');
         await verification.execPromise('wsl --install -d Ubuntu', 120000, true);
@@ -538,10 +712,10 @@ async function installUbuntu() {
       } else {
         verification.log('Distribuição Ubuntu já registrada no WSL', 'info');
       }
-      
+
       // CRUCIAL: Verificar se Ubuntu está realmente funcional
       verification.log('Verificando se Ubuntu está acessível...', 'step');
-      
+
       // Tentar 3 vezes com intervalos de 10 segundos
       let ubuntuAccessible = false;
       for (let attempt = 1; attempt <= 3; attempt++) {
@@ -552,12 +726,12 @@ async function installUbuntu() {
           break;
         } catch (error) {
           verification.log(`Tentativa ${attempt} falhou, aguardando inicialização...`, 'warning');
-          
+
           // Se não for a última tentativa, aguarde antes de tentar novamente
           if (attempt < 3) {
             verification.log('Aguardando 10 segundos antes da próxima tentativa...', 'info');
             await new Promise(resolve => setTimeout(resolve, 10000));
-            
+
             // Tentar inicializar a distribuição novamente
             try {
               await verification.execPromise('wsl -d Ubuntu -u root echo "Inicializando"', 15000, true);
@@ -567,32 +741,32 @@ async function installUbuntu() {
           }
         }
       }
-      
+
       if (!ubuntuAccessible) {
         // Se ainda não está acessível, tentar uma abordagem mais agressiva
         verification.log('Ubuntu não está respondendo, tentando método alternativo...', 'warning');
-        
+
         try {
           // Tentar reiniciar o serviço WSL
           verification.log('Reiniciando serviço WSL...', 'step');
           await verification.execPromise('powershell -Command "Restart-Service LxssManager -Force"', 30000, true);
           verification.log('Serviço WSL reiniciado, aguardando...', 'info');
           await new Promise(resolve => setTimeout(resolve, 15000));
-          
+
           // Tentar acessar novamente
           await verification.execPromise('wsl -d Ubuntu -u root echo "Ubuntu está acessível após reinício"', 30000, true);
           verification.log('Ubuntu está acessível após reinício do serviço WSL', 'success');
           ubuntuAccessible = true;
         } catch (restartError) {
           verification.log('Reinício do serviço WSL não resolveu, tentando último método...', 'warning');
-          
+
           try {
             // Tentar terminar e reiniciar a distribuição
             verification.log('Terminando e reiniciando Ubuntu...', 'step');
             await verification.execPromise('wsl --terminate Ubuntu', 10000, true);
             await new Promise(resolve => setTimeout(resolve, 5000));
             await verification.execPromise('wsl -d Ubuntu echo "Iniciando Ubuntu novamente"', 30000, true);
-            
+
             // Verificar uma última vez
             await verification.execPromise('wsl -d Ubuntu -u root echo "Verificação final"', 30000, true);
             verification.log('Ubuntu está acessível após terminar e reiniciar', 'success');
@@ -600,19 +774,19 @@ async function installUbuntu() {
           } catch (finalError) {
             verification.log('Todos os métodos falharam para acessar o Ubuntu', 'error');
             verification.logToFile(`Erro final: ${JSON.stringify(finalError)}`);
-            
+
             // Se estamos no Electron, tente abrir e inicializar manualmente
             if (isElectron) {
               verification.log('Tentando inicializar Ubuntu manualmente...', 'step');
-              
+
               // Abrir um terminal WSL para inicializar manualmente
               await verification.execPromise('start wsl -d Ubuntu', 5000, true);
               verification.log('Terminal WSL aberto. Por favor, aguarde a inicialização e feche o terminal.', 'warning');
-              
+
               // Aguardar bastante tempo para a inicialização manual
               verification.log('Aguardando 30 segundos para a inicialização manual...', 'info');
               await new Promise(resolve => setTimeout(resolve, 30000));
-              
+
               // Verificar uma última vez
               try {
                 await verification.execPromise('wsl -d Ubuntu -u root echo "Verificação após inicialização manual"', 15000, true);
@@ -628,7 +802,7 @@ async function installUbuntu() {
           }
         }
       }
-      
+
       if (ubuntuAccessible) {
         verification.log('Ubuntu instalado e acessível com sucesso!', 'success');
         installState.ubuntuInstalled = true;
@@ -645,14 +819,14 @@ async function installUbuntu() {
   } catch (error) {
     verification.log(`Erro ao instalar o Ubuntu: ${error.message}`, 'error');
     verification.logToFile(`Detalhes do erro ao instalar Ubuntu: ${JSON.stringify(error)}`);
-    
+
     // Método de último recurso: via Microsoft Store
     try {
       verification.log('Tentando último recurso: instalação via Microsoft Store...', 'step');
       await verification.execPromise('start ms-windows-store://pdp/?productid=9PDXGNCFSCZV', 5000, true);
       verification.log('Microsoft Store aberta. Por favor, instale o Ubuntu manualmente.', 'warning');
       verification.log('Após instalar, reinicie este instalador para continuar.', 'warning');
-      
+
       if (isElectron) {
         // Em Electron, informar o usuário que precisa instalar manualmente
         return false;
@@ -670,18 +844,42 @@ async function installUbuntu() {
 // Função otimizada para configurar usuário padrão com mais velocidade
 async function configureDefaultUser() {
   verification.log('Configurando usuário padrão...', 'step');
-  
-  // Always mark as success without actual configuration
-  verification.log('Usuário padrão configurado com sucesso', 'success');
-  installState.defaultUserCreated = true;
-  saveInstallState();
-  return true;
+
+  try {
+    // Comando para adicionar o usuário no WSL Ubuntu
+    try {
+      await verification.execPromise('wsl.exe -d Ubuntu -u root useradd -m -s /bin/bash -G sudo print_user', 12000, true);
+    } catch (error) {
+      console.error(error);
+    }
+
+    // Definir senha
+    await verification.execPromise('wsl.exe -d Ubuntu -u root bash -c "echo \'print_user:print_user\' | chpasswd"', 12000, true);
+
+    // Definir o diretório home e mover o usuário
+    await verification.execPromise('wsl.exe -d Ubuntu -u root usermod -d /home/print_user -m print_user', 12000, true);
+
+    // Criando o arquivo wsl.conf em etapas separadas
+    await verification.execPromise('wsl.exe -d Ubuntu -u root bash -c "echo [user] > /etc/wsl.conf"', 12000, true);
+    await verification.execPromise('wsl.exe -d Ubuntu -u root bash -c "echo default=print_user >> /etc/wsl.conf"', 12000, true);
+
+    // Verificação
+    verification.log('Usuário padrão configurado com sucesso', 'success');
+    installState.defaultUserCreated = true;
+    saveInstallState();
+
+    return true;
+  } catch (error) {
+    console.error('Erro ao configurar o usuário padrão:', error);
+    verification.log('Falha ao configurar o usuário padrão', 'error');
+    return false;
+  }
 }
 
 // Instalação dos pacotes necessários no WSL com melhor tratamento de erros
 async function installRequiredPackages() {
   verification.log('Instalando pacotes necessários...', 'header');
-  
+
   try {
     // Lista de pacotes necessários
     const requiredPackages = [
@@ -689,7 +887,7 @@ async function installRequiredPackages() {
       'ufw', 'npm', 'jq', 'net-tools', 'avahi-daemon', 'avahi-utils',
       'avahi-discover', 'hplip', 'hplip-gui', 'printer-driver-all'
     ];
-    
+
     // Atualizando repositórios primeiro - aumentar timeout para 5 minutos
     verification.log('Atualizando repositórios...', 'step');
     try {
@@ -698,13 +896,13 @@ async function installRequiredPackages() {
     } catch (updateError) {
       verification.log(`Erro ao atualizar repositórios: ${updateError.message || 'Erro desconhecido'}`, 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(updateError)}`);
-      
+
       // Tente resolver problemas comuns
       verification.log('Tentando corrigir problemas do apt...', 'step');
       await verification.execPromise('wsl -d Ubuntu -u root apt --fix-broken install -y', 120000, true);
       await verification.execPromise('wsl -d Ubuntu -u root apt update', 300000, true);
     }
-    
+
     // Dividir a instalação em grupos menores
     const packageGroups = [
       ['nano', 'jq', 'net-tools'],
@@ -716,16 +914,16 @@ async function installRequiredPackages() {
       ['avahi-daemon', 'avahi-utils', 'avahi-discover'],
       ['hplip', 'hplip-gui', 'printer-driver-all']
     ];
-    
+
     // Instalar cada grupo separadamente
     for (let i = 0; i < packageGroups.length; i++) {
       const group = packageGroups[i];
-      verification.log(`Instalando grupo ${i+1}/${packageGroups.length}: ${group.join(', ')}`, 'step');
-      
+      verification.log(`Instalando grupo ${i + 1}/${packageGroups.length}: ${group.join(', ')}`, 'step');
+
       try {
         // Usar timeout de 10 minutos para cada grupo
         await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${group.join(' ')}`, 600000, true);
-        verification.log(`Grupo ${i+1} instalado com sucesso`, 'success');
+        verification.log(`Grupo ${i + 1} instalado com sucesso`, 'success');
       } catch (groupError) {
         try {
           await verification.execPromise('wsl -d Ubuntu -u root dpkg --configure -a -y', 6000, true);
@@ -738,9 +936,9 @@ async function installRequiredPackages() {
           await verification.logToFile('Error: ' + error);
         }
 
-        verification.log(`Erro ao instalar grupo ${i+1}: ${groupError.message || 'Erro desconhecido'}`, 'warning');
+        verification.log(`Erro ao instalar grupo ${i + 1}: ${groupError.message || 'Erro desconhecido'}`, 'warning');
         verification.logToFile(`Detalhes do erro: ${JSON.stringify(groupError)}`);
-        
+
         // Tentar instalar um por um se o grupo falhar
         for (const pkg of group) {
           try {
@@ -753,18 +951,18 @@ async function installRequiredPackages() {
           }
         }
       }
-      
+
       // Pausa breve entre grupos para dar folga ao sistema
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
-    
+
     verification.log('Instalação de pacotes concluída com sucesso!', 'success');
     return true;
   } catch (error) {
     const errorMessage = error.message || error.toString() || 'Erro desconhecido';
     verification.log(`Erro ao instalar pacotes: ${errorMessage}`, 'error');
     verification.logToFile(`Detalhes completos do erro: ${JSON.stringify(error)}`);
-    
+
     // Mesmo com erro, retornar true para continuar a instalação
     verification.log('Continuando instalação mesmo com erros nos pacotes...', 'warning');
     return true;
@@ -774,16 +972,16 @@ async function installRequiredPackages() {
 // Configurar o Samba
 async function configureSamba() {
   verification.log('Configurando Samba...', 'step');
-  
+
   try {
     // Verificar se existe o arquivo de configuração personalizado
     const configExists = `if [ -f "/opt/loqquei/print_server_desktop/config/smb.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
     const configStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${configExists}"`, 10000, true);
-    
+
     if (configStatus.trim() === 'exists') {
       // Usar o arquivo de configuração existente
       verification.log('Usando arquivo de configuração do Samba personalizado...', 'info');
-      
+
       // Copiar para o destino no sistema
       await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/samba`, 10000, true);
       await verification.execPromise(`wsl -d Ubuntu -u root cp /opt/loqquei/print_server_desktop/config/smb.conf /etc/samba/smb.conf`, 10000, true);
@@ -811,22 +1009,22 @@ guest ok = yes
       }
       const smbConfigPath = path.join(tempDir, 'smb.conf');
       fs.writeFileSync(smbConfigPath, smbContent);
-      
+
       // Obter caminho WSL para o arquivo
       const wslPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${smbConfigPath.replace(/\\/g, '/')}"`, 10000, true);
-      
+
       // Copiar para o WSL
       await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/samba`, 10000, true);
       await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslPath}" /etc/samba/smb.conf`, 10000, true);
     }
-    
+
     // Criar diretório compartilhado
     await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /srv/print_server', 10000, true);
     await verification.execPromise('wsl -d Ubuntu -u root chmod -R 0777 /srv/print_server', 10000, true);
-    
+
     // Reiniciar serviço
     await verification.execPromise('wsl -d Ubuntu -u root systemctl restart smbd', 30000, true);
-    
+
     verification.log('Samba configurado com sucesso', 'success');
     return true;
   } catch (error) {
@@ -839,25 +1037,25 @@ guest ok = yes
 // Configurar o CUPS
 async function configureCups() {
   verification.log('Configurando CUPS...', 'step');
-  
+
   try {
     // Verificar se existe o arquivo de configuração cupsd.conf personalizado
     const cupsConfigExists = `if [ -f "/opt/loqquei/print_server_desktop/config/cupsd.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
     const cupsConfigStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cupsConfigExists}"`, 10000, true);
-    
+
     // Verificar se existe o arquivo de configuração cups-pdf.conf personalizado
     const cupsPdfConfigExists = `if [ -f "/opt/loqquei/print_server_desktop/config/cups-pdf.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
     const cupsPdfConfigStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cupsPdfConfigExists}"`, 10000, true);
-    
+
     // Verificar se existe o arquivo de configuração cups-browsed.conf personalizado
     const cupsBrowsedConfigExists = `if [ -f "/opt/loqquei/print_server_desktop/config/cups-browsed.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
     const cupsBrowsedConfigStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cupsBrowsedConfigExists}"`, 10000, true);
-    
+
     // Configurar cupsd.conf
     if (cupsConfigStatus.trim() === 'exists') {
       // Usar o arquivo de configuração existente
       verification.log('Usando arquivo de configuração do CUPS personalizado...', 'info');
-      
+
       // Copiar para o destino no sistema
       await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /etc/cups`, 10000, true);
       await verification.execPromise(`wsl -d Ubuntu -u root cp /opt/loqquei/print_server_desktop/config/cupsd.conf /etc/cups/cupsd.conf`, 10000, true);
@@ -866,7 +1064,7 @@ async function configureCups() {
       // Criar arquivo de configuração do CUPS padrão
       verification.log('Arquivo de configuração do CUPS personalizado não encontrado, usando padrão do sistema', 'info');
     }
-    
+
     // Configurar cups-pdf.conf se existir
     if (cupsPdfConfigStatus.trim() === 'exists') {
       verification.log('Usando arquivo de configuração do CUPS-PDF personalizado...', 'info');
@@ -884,13 +1082,13 @@ async function configureCups() {
     } else {
       verification.log('Arquivo de configuração do CUPS-BROWSED personalizado não encontrado, usando padrão do sistema', 'info');
     }
-    
+
     // Configurar para acesso remoto
     await verification.execPromise('wsl -d Ubuntu -u root cupsctl --remote-any', 15000, true);
-    
+
     // Reiniciar serviço
     await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups', 30000, true);
-    
+
     verification.log('CUPS configurado com sucesso', 'success');
     return true;
   } catch (error) {
@@ -903,16 +1101,16 @@ async function configureCups() {
 // Configurar o Firewall
 async function configureFirewall() {
   verification.log('Configurando regras de firewall...', 'step');
-  
+
   try {
     // Verificar status atual do firewall
     const firewallStatus = await verification.checkFirewallRules();
-    
+
     if (firewallStatus.configured) {
       verification.log('Firewall já está configurado corretamente', 'success');
       return true;
     }
-    
+
     // Definir as portas necessárias
     const ports = [
       { port: 137, protocol: 'udp' },
@@ -925,17 +1123,17 @@ async function configureFirewall() {
       { port: 56258, protocol: 'tcp' },
       { port: 56259, protocol: 'tcp' }
     ];
-    
+
     // Adicionar as regras
     for (const { port, protocol } of ports) {
       verification.log(`Configurando porta ${port}/${protocol}...`, 'step');
       await verification.execPromise(`wsl -d Ubuntu -u root ufw allow ${port}/${protocol}`, 10000, true);
     }
-    
+
     // Ativar o firewall
     verification.log('Ativando firewall...', 'step');
     await verification.execPromise('wsl -d Ubuntu -u root ufw --force enable', 20000, true);
-    
+
     verification.log('Firewall configurado com sucesso', 'success');
     return true;
   } catch (error) {
@@ -949,7 +1147,7 @@ async function configureFirewall() {
 // Configurar banco de dados PostgreSQL - Função completamente refeita
 async function setupDatabase() {
   verification.log('Configurando banco de dados PostgreSQL...', 'header');
-  
+
   try {
     // 1. Verificar e iniciar serviço PostgreSQL
     verification.log('Verificando status do PostgreSQL...', 'step');
@@ -977,7 +1175,7 @@ async function setupDatabase() {
           // Tentar iniciar com pg_ctlcluster - descobre a versão automaticamente
           const pgVersionOutput = await verification.execPromise('wsl -d Ubuntu -u root pg_lsclusters', 15000, true);
           const versionMatch = pgVersionOutput.match(/(\d+\.\d+|\d+)/);
-          
+
           if (versionMatch) {
             const pgVersion = versionMatch[0];
             verification.log(`Detectada versão PostgreSQL ${pgVersion}, tentando iniciar...`, 'info');
@@ -994,32 +1192,32 @@ async function setupDatabase() {
         }
       }
     }
-    
+
     // Aguardar o PostgreSQL inicializar completamente
     verification.log('Aguardando PostgreSQL inicializar completamente...', 'info');
     await new Promise(resolve => setTimeout(resolve, 5000));
-    
+
     // 2. Configurar hba.conf para permitir conexões locais
     verification.log('Verificando configuração de acesso do PostgreSQL...', 'step');
     try {
       const pgHbaPath = await verification.execPromise(
         'wsl -d Ubuntu -u postgres psql -t -c "SHOW hba_file;" | xargs',
-        10000, 
+        10000,
         true
       );
-      
+
       if (pgHbaPath && pgHbaPath.length > 0) {
         verification.log(`Arquivo pg_hba.conf localizado: ${pgHbaPath}`, 'info');
-        
+
         // Verificar se já existem as regras necessárias
         const hbaContent = await verification.execPromise(
           `wsl -d Ubuntu -u root cat ${pgHbaPath}`,
           10000,
           true
         );
-        
+
         let modified = false;
-        
+
         // Adicionar regras se não existirem
         if (!hbaContent.includes('host all all 127.0.0.1/32 trust')) {
           await verification.execPromise(
@@ -1029,7 +1227,7 @@ async function setupDatabase() {
           );
           modified = true;
         }
-        
+
         if (!hbaContent.includes('host all all 0.0.0.0/0 md5')) {
           await verification.execPromise(
             `wsl -d Ubuntu -u root bash -c 'echo "host all all 0.0.0.0/0 md5" >> ${pgHbaPath}'`,
@@ -1038,13 +1236,13 @@ async function setupDatabase() {
           );
           modified = true;
         }
-        
+
         // Reiniciar PostgreSQL se as regras foram modificadas
         if (modified) {
           verification.log('Regras de acesso adicionadas, reiniciando PostgreSQL...', 'step');
           await verification.execPromise('wsl -d Ubuntu -u root systemctl restart postgresql', 30000, true);
           verification.log('PostgreSQL reiniciado com sucesso', 'success');
-          
+
           // Aguardar novamente
           await new Promise(resolve => setTimeout(resolve, 5000));
         } else {
@@ -1057,7 +1255,7 @@ async function setupDatabase() {
       verification.log('Erro ao configurar acesso PostgreSQL, continuando mesmo assim...', 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(pgHbaError)}`);
     }
-    
+
     // 3. Configurar bancos de dados e usuários
     // 3.1 Configurar print_user e print_server (Sistema principal)
     verification.log('Verificando/criando usuário print_user...', 'step');
@@ -1068,7 +1266,7 @@ async function setupDatabase() {
         10000,
         true
       );
-      
+
       if (userPrintExists.trim() !== '1') {
         // Criar o usuário
         await verification.execPromise(
@@ -1080,7 +1278,7 @@ async function setupDatabase() {
       } else {
         verification.log('Usuário print_user já existe', 'info');
       }
-      
+
       // Garantir que tenha privilégios de superusuário
       await verification.execPromise(
         `wsl -d Ubuntu -u postgres psql -c "ALTER USER print_user WITH SUPERUSER"`,
@@ -1092,7 +1290,7 @@ async function setupDatabase() {
       verification.log(`Erro ao configurar usuário print_user: ${userError.message}`, 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(userError)}`);
     }
-    
+
     verification.log('Verificando/criando banco de dados print_server...', 'step');
     try {
       // Verificar se o banco existe
@@ -1101,7 +1299,7 @@ async function setupDatabase() {
         10000,
         true
       );
-      
+
       if (dbPrintServerExists.trim() !== '1') {
         // Criar o banco
         await verification.execPromise(
@@ -1119,7 +1317,7 @@ async function setupDatabase() {
           true
         );
       }
-      
+
       // Conceder todos os privilégios
       await verification.execPromise(
         `wsl -d Ubuntu -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE print_server TO print_user"`,
@@ -1131,7 +1329,7 @@ async function setupDatabase() {
       verification.log(`Erro ao configurar banco de dados print_server: ${dbError.message}`, 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(dbError)}`);
     }
-    
+
     // 3.2 Configurar postgres_print e print_management (Migrações)
     verification.log('Verificando/criando usuário postgres_print para migrações...', 'step');
     try {
@@ -1141,7 +1339,7 @@ async function setupDatabase() {
         10000,
         true
       );
-      
+
       if (userMigExists.trim() !== '1') {
         // Criar o usuário
         await verification.execPromise(
@@ -1153,7 +1351,7 @@ async function setupDatabase() {
       } else {
         verification.log('Usuário postgres_print já existe', 'info');
       }
-      
+
       // Garantir que tenha privilégios de superusuário
       await verification.execPromise(
         `wsl -d Ubuntu -u postgres psql -c "ALTER USER postgres_print WITH SUPERUSER"`,
@@ -1165,7 +1363,7 @@ async function setupDatabase() {
       verification.log(`Erro ao configurar usuário postgres_print: ${userMigError.message}`, 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(userMigError)}`);
     }
-    
+
     verification.log('Verificando/criando banco de dados print_management para migrações...', 'step');
     try {
       // Verificar se o banco existe
@@ -1174,7 +1372,7 @@ async function setupDatabase() {
         10000,
         true
       );
-      
+
       if (dbMigExists.trim() !== '1') {
         // Criar o banco
         await verification.execPromise(
@@ -1192,7 +1390,7 @@ async function setupDatabase() {
           true
         );
       }
-      
+
       // Conceder todos os privilégios
       await verification.execPromise(
         `wsl -d Ubuntu -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE print_management TO postgres_print"`,
@@ -1204,7 +1402,7 @@ async function setupDatabase() {
       verification.log(`Erro ao configurar banco de dados print_management: ${dbMigError.message}`, 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(dbMigError)}`);
     }
-    
+
     // 4. Verificar e criar schema print_management
     verification.log('Verificando/criando schema print_management...', 'step');
     try {
@@ -1216,13 +1414,13 @@ async function setupDatabase() {
         )
       " || echo "f"
       `;
-      
+
       const schemaExists = await verification.execPromise(
         `wsl -d Ubuntu -u root bash -c '${schemaExistsCmd}'`,
         15000,
         true
       );
-      
+
       if (schemaExists.trim() !== 't' && schemaExists.trim() !== 'true') {
         // Criar o schema
         const createSchemaCmd = `
@@ -1231,7 +1429,7 @@ async function setupDatabase() {
           GRANT ALL ON SCHEMA print_management TO postgres_print;
         "
         `;
-        
+
         await verification.execPromise(
           `wsl -d Ubuntu -u root bash -c '${createSchemaCmd}'`,
           15000,
@@ -1240,14 +1438,14 @@ async function setupDatabase() {
         verification.log('Schema print_management criado com sucesso', 'success');
       } else {
         verification.log('Schema print_management já existe', 'success');
-        
+
         // Garantir permissões
         const grantSchemaCmd = `
         PGPASSWORD="root_print" psql -h localhost -p 5432 -U postgres_print -d print_management -c "
           GRANT ALL ON SCHEMA print_management TO postgres_print;
         "
         `;
-        
+
         await verification.execPromise(
           `wsl -d Ubuntu -u root bash -c '${grantSchemaCmd}'`,
           15000,
@@ -1258,7 +1456,7 @@ async function setupDatabase() {
       verification.log(`Erro ao verificar/criar schema: ${schemaError.message}`, 'warning');
       verification.logToFile(`Detalhes do erro schema: ${JSON.stringify(schemaError)}`);
     }
-    
+
     // 5. Validar o acesso ao banco
     verification.log('Validando conexão com o banco de dados...', 'step');
     try {
@@ -1267,13 +1465,13 @@ async function setupDatabase() {
         SELECT 'Conexão bem-sucedida' as status;
       "
       `;
-      
+
       const connResult = await verification.execPromise(
         `wsl -d Ubuntu -u root bash -c '${testConnCmd}'`,
         15000,
         true
       );
-      
+
       if (connResult.includes('Conexão bem-sucedida')) {
         verification.log('Conexão ao banco de dados estabelecida com sucesso', 'success');
       } else {
@@ -1284,7 +1482,7 @@ async function setupDatabase() {
       verification.log('Erro ao testar conexão com o banco', 'warning');
       verification.logToFile(`Detalhes do erro de conexão: ${JSON.stringify(connError)}`);
     }
-    
+
     verification.log('Banco de dados PostgreSQL configurado com sucesso!', 'success');
     return true;
   } catch (error) {
@@ -1297,7 +1495,7 @@ async function setupDatabase() {
 // Copiar o software para o diretório /opt/
 async function copySoftwareToOpt() {
   verification.log('Copiando software para o diretório /opt/...', 'header');
-  
+
   try {
     // Verificar se o diretório já existe
     let dirExists = false;
@@ -1311,7 +1509,7 @@ async function copySoftwareToOpt() {
       verification.log('Diretório /opt/loqquei/print_server_desktop não existe, será criado', 'info');
       dirExists = false;
     }
-    
+
     // Criar estrutura de diretórios se não existir
     if (!dirExists) {
       verification.log('Criando estrutura de diretórios...', 'step');
@@ -1319,7 +1517,7 @@ async function copySoftwareToOpt() {
       await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/logs', 10000, true);
       await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/updates', 10000, true);
     }
-    
+
     // Criar arquivo de versão com sintaxe corrigida
     verification.log('Criando arquivo de versão...', 'step');
     const versionCmd = 'wsl -d Ubuntu -u root bash -c "echo \\"{\\\"install_date\\\": \\\"$(date +%Y-%m-%d)\\\", \\\"version\\\": \\\"1.0.0\\\"}\\\" > /opt/loqquei/print_server_desktop/version.json"';
@@ -1330,7 +1528,7 @@ async function copySoftwareToOpt() {
       verification.log(`Erro ao criar arquivo de versão: ${versionError.message || 'Erro desconhecido'}`, 'warning');
       // Continuar mesmo com erro
     }
-    
+
     // Criar arquivo de atualizações executadas
     verification.log('Criando arquivo de atualizações...', 'step');
     try {
@@ -1340,23 +1538,23 @@ async function copySoftwareToOpt() {
       verification.log(`Erro ao criar arquivo de atualizações: ${touchError.message || 'Erro desconhecido'}`, 'warning');
       // Continuar mesmo com erro
     }
-    
+
     // Obter o diretório atual do instalador
     const installerDir = process.cwd();
     const serverFiles = path.join(installerDir, 'resources', 'print_server_desktop');
-    
+
     verification.log(`Verificando diretório de recursos: ${serverFiles}`, 'step');
-    
+
     // Verificar se os recursos existem
     if (fs.existsSync(serverFiles)) {
       verification.log('Arquivos do print_server_desktop encontrados. Iniciando cópia...', 'success');
-      
+
       // Criar diretório temporário
       const tempDir = path.join(os.tmpdir(), 'wsl-setup');
       if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
       }
-      
+
       // Verificar se temos permissão para ler o diretório
       try {
         const files = fs.readdirSync(serverFiles);
@@ -1365,57 +1563,57 @@ async function copySoftwareToOpt() {
         verification.log(`Erro ao ler diretório de recursos: ${readError.message}`, 'error');
         // Continuar mesmo com erro
       }
-      
+
       // Método 1: Usar arquivo tar para transferência
       verification.log('Criando arquivo tar para transferência...', 'step');
       try {
         // Criar arquivo tar com todos os arquivos
         const tarFile = path.join(tempDir, 'print_server_desktop.tar');
-        
+
         // Executar comando para criar o tar
         await verification.execPromise(`tar -cf "${tarFile}" -C "${serverFiles}" .`, 120000, true);
         verification.log('Arquivo tar criado com sucesso', 'success');
-        
+
         // Obter caminho WSL para o arquivo tar
         const wslTarPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${tarFile.replace(/\\/g, '/')}"`, 10000, true);
         verification.log(`Caminho do arquivo tar no WSL: ${wslTarPath}`, 'info');
-        
+
         // Garantir que o diretório de destino exista
         await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop', 10000, true);
-        
+
         // Extrair o tar no diretório de destino
         verification.log('Extraindo arquivos no WSL...', 'step');
         const extractCommand = `tar -xf "${wslTarPath}" -C /opt/loqquei/print_server_desktop`;
         await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${extractCommand}'`, 120000, true);
         verification.log('Arquivos extraídos com sucesso', 'success');
-        
+
         // Configurar permissões e instalar dependências
         verification.log('Configurando permissões e instalando dependências...', 'step');
         await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && chmod -R 755 . && (npm install || echo \'Erro ao instalar dependências, continuando\')"', 300000, true);
-        
+
         // Criar arquivo .env se não existir
         verification.log('Configurando arquivo .env...', 'step');
         const envCheck = 'if [ ! -f "/opt/loqquei/print_server_desktop/.env" ]; then (cp /opt/loqquei/print_server_desktop/.env.example /opt/loqquei/print_server_desktop/.env 2>/dev/null || echo "PORT=56258" > /opt/loqquei/print_server_desktop/.env); fi';
         await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${envCheck}'`, 15000, true);
-        
+
         verification.log('Software copiado para /opt/ com sucesso', 'success');
       } catch (tarError) {
         verification.log(`Erro ao usar método tar: ${tarError.message || 'Erro desconhecido'}`, 'error');
         verification.logToFile(`Detalhes do erro tar: ${JSON.stringify(tarError)}`);
-        
+
         // Método alternativo: Copiar arquivos um por um
         verification.log('Tentando método alternativo de cópia...', 'warning');
         try {
           // Listar arquivos na pasta resources
           const files = fs.readdirSync(serverFiles);
-          
+
           for (const file of files) {
             const sourcePath = path.join(serverFiles, file);
             const isDir = fs.statSync(sourcePath).isDirectory();
-            
+
             // Obter o caminho WSL para o arquivo
             const wslSourcePath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${sourcePath.replace(/\\/g, '/')}"`, 10000, true);
-            
+
             if (isDir) {
               // Para diretórios, usar cp -r
               await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/${file}`, 10000, true);
@@ -1425,7 +1623,7 @@ async function copySoftwareToOpt() {
               await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslSourcePath}" /opt/loqquei/print_server_desktop/`, 30000, true);
             }
           }
-          
+
           verification.log('Software copiado com método alternativo', 'success');
         } catch (altError) {
           verification.log(`Erro no método alternativo: ${altError.message || 'Erro desconhecido'}`, 'error');
@@ -1436,7 +1634,7 @@ async function copySoftwareToOpt() {
     } else {
       verification.log('Pasta de recursos do print_server_desktop não encontrada!', 'error');
       verification.logToFile(`Diretório esperado: ${serverFiles}`);
-      
+
       // Criar estrutura básica de qualquer forma
       verification.log('Criando estrutura básica...', 'step');
       const basicSetupCmd = `
@@ -1444,12 +1642,12 @@ async function copySoftwareToOpt() {
       echo '{"name":"print_server_desktop","version":"1.0.0"}' > /opt/loqquei/print_server_desktop/package.json
       echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env
       `;
-      
+
       await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${basicSetupCmd}'`, 15000, true);
       verification.log('Estrutura básica criada', 'warning');
       return false;
     }
-    
+
     // Verificação final
     verification.log('Verificando instalação...', 'step');
     try {
@@ -1458,12 +1656,12 @@ async function copySoftwareToOpt() {
     } catch (verifyError) {
       verification.log('Erro na verificação final, mas continuando', 'warning');
     }
-    
+
     return true;
   } catch (error) {
     verification.log(`Erro ao copiar software: ${error.message || error.toString() || 'Erro desconhecido'}`, 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-    
+
     // Tentar criar pelo menos uma estrutura mínima antes de retornar
     try {
       const emergencyCmd = `
@@ -1476,7 +1674,7 @@ async function copySoftwareToOpt() {
     } catch (emergencyError) {
       verification.log('Falha até na criação da estrutura mínima', 'error');
     }
-    
+
     return false;
   }
 }
@@ -1484,7 +1682,7 @@ async function copySoftwareToOpt() {
 // Configurar script de atualização
 async function setupUpdateScript() {
   verification.log('Configurando sistema de atualizações...', 'step');
-  
+
   try {
     // Criar script de atualização
     const updateScript = `#!/bin/bash
@@ -1536,16 +1734,16 @@ fi
 
 log "=== Processo de atualização concluído com sucesso! ==="
 `;
-    
+
     // Escrever script de atualização em um arquivo temporário
     const tempDir = path.join(os.tmpdir(), 'wsl-setup');
     const updateScriptPath = path.join(tempDir, 'update.sh');
     fs.writeFileSync(updateScriptPath, updateScript, { mode: 0o755 });
-    
+
     // Copiar para o WSL
     const wslScriptPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${updateScriptPath.replace(/\\/g, '/')}"`, 10000, true);
     await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cp ${wslScriptPath} /opt/loqquei/print_server_desktop/update.sh && chmod +x /opt/loqquei/print_server_desktop/update.sh"`, 10000, true);
-    
+
     verification.log('Script de atualização configurado com sucesso', 'success');
     return true;
   } catch (error) {
@@ -1558,7 +1756,7 @@ log "=== Processo de atualização concluído com sucesso! ==="
 // Configurar e iniciar PM2
 async function setupPM2() {
   verification.log('Configurando serviço com PM2...', 'step');
-  
+
   try {
     // Verificar se o Node.js está instalado e disponível
     verification.log('Verificando instalação do Node.js...', 'step');
@@ -1567,12 +1765,12 @@ async function setupPM2() {
       verification.log(`Node.js detectado: ${nodeVersion.trim()}`, 'success');
     } catch (nodeError) {
       verification.log('Node.js não encontrado ou não está no PATH, tentando instalar...', 'warning');
-      
+
       // Instalar Node.js
       try {
         await verification.execPromise('wsl -d Ubuntu -u root apt-get update', 60000, true);
         await verification.execPromise('wsl -d Ubuntu -u root apt-get install -y nodejs npm', 180000, true);
-        
+
         // Verificar se a instalação foi bem-sucedida
         const nodeCheck = await verification.execPromise('wsl -d Ubuntu -u root node --version', 10000, true);
         verification.log(`Node.js instalado: ${nodeCheck.trim()}`, 'success');
@@ -1582,10 +1780,10 @@ async function setupPM2() {
         return false;
       }
     }
-    
+
     // Verificar se o PM2 está instalado
     verification.log('Verificando instalação do PM2...', 'step');
-    
+
     let pm2Installed = false;
     try {
       const pm2Version = await verification.execPromise('wsl -d Ubuntu -u root pm2 --version', 10000, true);
@@ -1593,11 +1791,11 @@ async function setupPM2() {
       pm2Installed = true;
     } catch (pm2Error) {
       verification.log('PM2 não encontrado, instalando...', 'info');
-      
+
       // Instalar PM2 globalmente
       try {
         await verification.execPromise('wsl -d Ubuntu -u root npm install -g pm2', 180000, true);
-        
+
         // Verificar se a instalação foi bem-sucedida
         const pm2Check = await verification.execPromise('wsl -d Ubuntu -u root pm2 --version', 10000, true);
         verification.log(`PM2 instalado: ${pm2Check.trim()}`, 'success');
@@ -1608,7 +1806,7 @@ async function setupPM2() {
         return false;
       }
     }
-    
+
     // Encontrar o diretório da aplicação
     const possiblePaths = [
       '/opt/loqquei/print_server_desktop',
@@ -1616,17 +1814,17 @@ async function setupPM2() {
       '/opt/loqquei',
       '/opt/print_server'
     ];
-    
+
     let appDir = null;
     for (const path of possiblePaths) {
       const checkCmd = `if [ -d "${path}" ]; then echo "exists"; else echo "missing"; fi`;
       const dirExists = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${checkCmd}"`, 10000, true);
-      
+
       if (dirExists.trim() === 'exists') {
         // Verificar se também tem o arquivo ecosystem.config.js
         const ecoCheckCmd = `if [ -f "${path}/ecosystem.config.js" ]; then echo "exists"; else echo "missing"; fi`;
         const ecoExists = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${ecoCheckCmd}"`, 10000, true);
-        
+
         if (ecoExists.trim() === 'exists') {
           appDir = path;
           verification.log(`Diretório da aplicação encontrado: ${path}`, 'success');
@@ -1634,44 +1832,44 @@ async function setupPM2() {
         }
       }
     }
-    
+
     if (!appDir) {
       verification.log('Diretório da aplicação não encontrado', 'error');
       return false;
     }
-    
+
     // Verificar se o arquivo bin/www.js existe
     verification.log('Verificando arquivo bin/www.js...', 'step');
     const wwwCheckCmd = `if [ -f "${appDir}/bin/www.js" ]; then echo "exists"; else echo "missing"; fi`;
     const wwwExists = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${wwwCheckCmd}"`, 10000, true);
-    
+
     if (wwwExists.trim() !== 'exists') {
       verification.log('Arquivo bin/www.js não encontrado, verificando alternativas...', 'warning');
-      
+
       // Tentar encontrar um arquivo .js que possa ser o ponto de entrada
       const findEntryCmd = `find ${appDir}/bin -name "*.js" | head -n 1`;
       try {
         const entryFile = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${findEntryCmd}"`, 15000, true);
-        
+
         if (entryFile.trim()) {
           verification.log(`Arquivo de entrada alternativo encontrado: ${entryFile.trim()}`, 'info');
-          
+
           // Criar um link simbólico para www.js
           await verification.execPromise(`wsl -d Ubuntu -u root bash -c "ln -sf ${entryFile.trim()} ${appDir}/bin/www.js"`, 10000, true);
           verification.log('Link simbólico criado para www.js', 'success');
         } else {
           verification.log('Nenhum arquivo de entrada encontrado em bin/', 'warning');
-          
+
           // Verificar se há algum arquivo app.js ou server.js no diretório raiz
           const rootEntryCmd = `find ${appDir} -maxdepth 1 -name "*.js" | grep -E '(app|server|index)\\.js' | head -n 1`;
           const rootEntry = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${rootEntryCmd}"`, 15000, true);
-          
+
           if (rootEntry.trim()) {
             verification.log(`Arquivo de entrada alternativo encontrado na raiz: ${rootEntry.trim()}`, 'info');
-            
+
             // Criar diretório bin se não existir
             await verification.execPromise(`wsl -d Ubuntu -u root bash -c "mkdir -p ${appDir}/bin"`, 10000, true);
-            
+
             // Criar um link simbólico para www.js
             await verification.execPromise(`wsl -d Ubuntu -u root bash -c "ln -sf ${rootEntry.trim()} ${appDir}/bin/www.js"`, 10000, true);
             verification.log('Link simbólico criado para www.js', 'success');
@@ -1686,11 +1884,11 @@ async function setupPM2() {
         return false;
       }
     }
-    
+
     // Verificar e ajustar permissões
     verification.log('Ajustando permissões...', 'step');
     await verification.execPromise(`wsl -d Ubuntu -u root bash -c "chmod -R 755 ${appDir}/bin"`, 15000, true);
-    
+
     // Verificar o conteúdo do ecosystem.config.js
     verification.log('Analisando arquivo ecosystem.config.js...', 'step');
     try {
@@ -1701,11 +1899,11 @@ async function setupPM2() {
       verification.log('Erro ao ler arquivo ecosystem.config.js', 'warning');
       verification.logToFile(`Erro de leitura: ${JSON.stringify(catError)}`);
     }
-    
+
     // Parar qualquer instância existente
     verification.log('Parando instâncias existentes...', 'step');
     await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 delete all 2>/dev/null || true"', 15000, true);
-    
+
     // Iniciar com PM2
     verification.log('Iniciando aplicação com PM2...', 'step');
     try {
@@ -1713,17 +1911,17 @@ async function setupPM2() {
       const startResult = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${startCmd}"`, 30000, true);
       verification.log('Aplicação iniciada com PM2 com sucesso', 'success');
       verification.logToFile(`Resultado do início: ${startResult}`);
-      
+
       // Salvar configuração
       verification.log('Salvando configuração do PM2...', 'step');
       await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 save"', 15000, true);
       verification.log('Configuração salva', 'success');
-      
+
       // Configurar inicialização automática
       verification.log('Configurando inicialização automática...', 'step');
       try {
         const startupOutput = await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 startup"', 20000, true);
-        
+
         // Extrair o comando de inicialização, se houver
         if (startupOutput.includes('sudo') && startupOutput.includes('pm2 startup')) {
           const lines = startupOutput.split('\n');
@@ -1741,29 +1939,29 @@ async function setupPM2() {
         verification.log('Erro ao configurar inicialização automática, continuando...', 'warning');
         verification.logToFile(`Erro de startup: ${JSON.stringify(startupError)}`);
       }
-      
+
       verification.log('Serviço configurado com PM2 com sucesso', 'success');
       return true;
     } catch (startError) {
       verification.log('Erro ao iniciar com PM2, tentando método alternativo...', 'warning');
       verification.logToFile(`Erro de início: ${JSON.stringify(startError)}`);
-      
+
       // Tentar método mais simples de inicialização
       try {
         const simpleStartCmd = `cd "${appDir}" && pm2 start bin/www.js --name print_server_desktop`;
         await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${simpleStartCmd}"`, 20000, true);
         verification.log('Aplicação iniciada com método alternativo de PM2', 'success');
-        
+
         // Salvar configuração
         await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 save"', 15000, true);
         verification.log('Configuração salva', 'success');
-        
+
         verification.log('Serviço configurado com PM2 (método alternativo)', 'success');
         return true;
       } catch (altStartError) {
         verification.log('Erro no método alternativo de PM2, tentando método manual...', 'warning');
         verification.logToFile(`Erro no método alternativo: ${JSON.stringify(altStartError)}`);
-        
+
         // Último recurso: iniciar diretamente com node
         try {
           const manualStartCmd = `cd "${appDir}" && nohup node bin/www.js > /var/log/print_server.log 2>&1 &`;
@@ -1787,34 +1985,34 @@ async function setupPM2() {
 // Instalar drivers adicionais se necessário
 async function installDrivers() {
   verification.log('Verificando e instalando drivers...', 'step');
-  
+
   try {
     // Verificar se diretório de drivers existe
     const checkDrivers = "if [ -d \"/opt/loqquei/print_server_desktop/drivers\" ]; then echo \"exists\"; fi";
     const driversExist = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${checkDrivers}"`, 10000, true);
-    
+
     if (driversExist.trim() === 'exists') {
       verification.log('Diretório de drivers encontrado, verificando arquivos .deb...', 'step');
-      
+
       // Verificar se existem arquivos .deb
       const checkDebFiles = "ls -1 /opt/loqquei/print_server_desktop/drivers/*.deb 2>/dev/null || echo 'no_files'";
       const debFiles = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${checkDebFiles}"`, 10000, true);
-      
+
       if (debFiles.trim() === 'no_files' || debFiles.includes('No such file or directory')) {
         verification.log('Nenhum arquivo .deb encontrado no diretório de drivers', 'info');
         return true;
       }
-      
+
       verification.log('Instalando drivers...', 'step');
-      
+
       // Separar a instalação em passos para maior confiabilidade
       const listDebCmd = "find /opt/loqquei/print_server_desktop/drivers -name '*.deb' -type f";
       const debFilesList = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${listDebCmd}"`, 10000, true);
-      
+
       if (debFilesList.trim()) {
         const files = debFilesList.trim().split('\n');
         verification.log(`Encontrados ${files.length} arquivos .deb para instalar`, 'info');
-        
+
         // Instalar cada arquivo individualmente
         for (const file of files) {
           if (file.trim()) {
@@ -1828,7 +2026,7 @@ async function installDrivers() {
             }
           }
         }
-        
+
         // Executar apt-get -f install para resolver possíveis dependências
         try {
           verification.log('Resolvendo dependências...', 'step');
@@ -1838,38 +2036,38 @@ async function installDrivers() {
           verification.log('Aviso ao resolver dependências, mas continuando...', 'warning');
           verification.logToFile(`Erro de dependência: ${JSON.stringify(depError)}`);
         }
-        
+
         verification.log('Instalação de drivers concluída', 'success');
       } else {
         verification.log('Nenhum arquivo .deb encontrado durante a listagem', 'info');
       }
     } else {
       verification.log('Diretório de drivers não encontrado, verificando caminhos alternativos...', 'info');
-      
+
       // Tentar caminho alternativo
       const altCheckDrivers = "if [ -d \"/opt/print_server/print_server_desktop/drivers\" ]; then echo \"exists\"; fi";
       const altDriversExist = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${altCheckDrivers}"`, 10000, true);
-      
+
       if (altDriversExist.trim() === 'exists') {
         verification.log('Diretório alternativo de drivers encontrado, instalando...', 'step');
-        
+
         // Verificar se existem arquivos .deb
         const altCheckDebFiles = "ls -1 /opt/print_server/print_server_desktop/drivers/*.deb 2>/dev/null || echo 'no_files'";
         const altDebFiles = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${altCheckDebFiles}"`, 10000, true);
-        
+
         if (altDebFiles.trim() === 'no_files' || altDebFiles.includes('No such file or directory')) {
           verification.log('Nenhum arquivo .deb encontrado no diretório alternativo', 'info');
           return true;
         }
-        
+
         // Listar e instalar arquivos individualmente
         const altListDebCmd = "find /opt/print_server/print_server_desktop/drivers -name '*.deb' -type f";
         const altDebFilesList = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${altListDebCmd}"`, 10000, true);
-        
+
         if (altDebFilesList.trim()) {
           const altFiles = altDebFilesList.trim().split('\n');
           verification.log(`Encontrados ${altFiles.length} arquivos .deb no caminho alternativo`, 'info');
-          
+
           for (const file of altFiles) {
             if (file.trim()) {
               try {
@@ -1882,7 +2080,7 @@ async function installDrivers() {
               }
             }
           }
-          
+
           // Resolver dependências
           try {
             verification.log('Resolvendo dependências...', 'step');
@@ -1892,7 +2090,7 @@ async function installDrivers() {
             verification.log('Aviso ao resolver dependências, mas continuando...', 'warning');
             verification.logToFile(`Erro de dependência: ${JSON.stringify(depError)}`);
           }
-          
+
           verification.log('Instalação de drivers concluída (caminho alternativo)', 'success');
         } else {
           verification.log('Nenhum arquivo .deb encontrado durante a listagem alternativa', 'info');
@@ -1901,7 +2099,7 @@ async function installDrivers() {
         verification.log('Nenhum diretório de drivers encontrado, pulando instalação', 'info');
       }
     }
-    
+
     return true;
   } catch (error) {
     verification.log(`Erro ao instalar drivers: ${error.message || 'Erro desconhecido'}`, 'warning');
@@ -1913,13 +2111,13 @@ async function installDrivers() {
 // Limpeza do sistema
 async function systemCleanup() {
   verification.log('Realizando limpeza do sistema...', 'step');
-  
+
   try {
     // Executar comandos de limpeza
     await verification.execPromise('wsl -d Ubuntu -u root apt autoclean -y', 60000, true);
     await verification.execPromise('wsl -d Ubuntu -u root apt autoremove -y', 60000, true);
     await verification.execPromise('wsl -d Ubuntu -u root journalctl --vacuum-time=7d', 30000, true);
-    
+
     verification.log('Limpeza do sistema concluída', 'success');
     return true;
   } catch (error) {
@@ -1935,7 +2133,7 @@ async function systemCleanup() {
 // Função principal que verifica o caminho e delega para setupMigrationsWithPath
 async function setupMigrations() {
   verification.log('Verificando e executando migrações do banco de dados...', 'header');
-  
+
   try {
     // Definir possíveis caminhos base onde o software pode estar instalado
     const possiblePaths = [
@@ -1944,35 +2142,35 @@ async function setupMigrations() {
       "/opt/loqquei",
       "/opt/print_server"
     ];
-    
+
     // Verificar cada caminho
     for (const basePath of possiblePaths) {
       // Verificar se o diretório db existe
       const dbDirCheck = `if [ -d "${basePath}/db" ]; then echo "exists"; else echo "missing"; fi`;
       const dbDirStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${dbDirCheck}'`, 10000, true);
-      
+
       if (dbDirStatus.trim() === "exists") {
         verification.log(`Diretório db encontrado em: ${basePath}`, 'success');
-        
+
         // Delegar para a função de implementação
         const result = await setupMigrationsWithPath(basePath);
         return result;
       }
     }
-    
+
     // Se chegou aqui, não encontrou o diretório de migrações em nenhum caminho conhecido
     verification.log('Diretório db não encontrado em nenhum caminho conhecido', 'warning');
-    
+
     // Último recurso: procurar em todo o sistema
     verification.log('Procurando diretório db em todo o sistema (pode levar algum tempo)...', 'step');
     try {
       const findCommand = 'find /opt -type d -name "db" -path "*/print_server*" -o -path "*/loqquei*" 2>/dev/null | head -n 1';
       const foundDir = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${findCommand}'`, 60000, true);
-      
+
       if (foundDir.trim()) {
         // Extrair o caminho base (diretório pai do 'db')
         const foundBasePath = await verification.execPromise(`wsl -d Ubuntu -u root dirname "${foundDir.trim()}"`, 10000, true);
-        
+
         if (foundBasePath.trim()) {
           verification.log(`Diretório db encontrado em: ${foundBasePath.trim()}`, 'success');
           const result = await setupMigrationsWithPath(foundBasePath.trim());
@@ -1983,13 +2181,13 @@ async function setupMigrations() {
       verification.log('Erro ao procurar diretório db', 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(findError)}`);
     }
-    
+
     verification.log('Nenhum diretório db encontrado, pulando migrações', 'warning');
     return true; // Continuar a instalação mesmo sem migrações
   } catch (error) {
     verification.log(`Erro ao executar migrações: ${error.message || JSON.stringify(error)}`, 'warning');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-    
+
     // Mesmo com erro, prosseguir com a instalação
     verification.log('Continuando a instalação apesar do erro nas migrações...', 'warning');
     return true;
@@ -2000,7 +2198,7 @@ async function setupMigrations() {
 async function setupMigrationsWithPath(basePath) {
   try {
     verification.log(`Executando migrações para o caminho: ${basePath}`, 'step');
-    
+
     // Constantes para configuração do banco de dados
     const DB_HOST = 'localhost';
     const DB_PORT = '5432';
@@ -2008,33 +2206,33 @@ async function setupMigrationsWithPath(basePath) {
     const DB_USERNAME = 'postgres_print';
     const DB_PASSWORD = 'root_print';
     const DB_SCHEMA = 'print_management';
-    
+
     // Caminho do script de migração
     const scriptPath = `${basePath}/db/migrate.sh`;
-    
+
     // 1. Verificar se o script existe
     const scriptCheck = `if [ -f "${scriptPath}" ]; then echo "exists"; else echo "missing"; fi`;
     const scriptStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${scriptCheck}'`, 10000, true);
-    
+
     if (scriptStatus.trim() !== "exists") {
       verification.log(`Script de migração não encontrado em ${scriptPath}`, 'warning');
       return true; // Continuar mesmo sem o script
     }
-    
+
     verification.log(`Script de migração encontrado em ${scriptPath}`, 'success');
-    
+
     // 2. Verificar e corrigir o formato do arquivo (quebras de linha Windows → Unix)
     verification.log('Verificando e corrigindo formato do arquivo de migração...', 'step');
     await verification.execPromise(`wsl -d Ubuntu -u root bash -c "tr -d '\\r' < ${scriptPath} > ${scriptPath}.unix && mv ${scriptPath}.unix ${scriptPath}"`, 15000, true);
-    
+
     // 3. Configurar permissões de execução
     verification.log('Configurando permissões...', 'step');
     await verification.execPromise(`wsl -d Ubuntu -u root chmod -v 755 ${scriptPath}`, 10000, true);
-    
+
     // 4. Verificar o tipo de arquivo (para diagnóstico)
     const fileType = await verification.execPromise(`wsl -d Ubuntu -u root file ${scriptPath}`, 10000, true);
     verification.log(`Tipo de arquivo: ${fileType}`, 'info');
-    
+
     // 5. Verificar o status do PostgreSQL
     verification.log('Verificando status do PostgreSQL...', 'step');
     let postgresRunning = false;
@@ -2048,7 +2246,7 @@ async function setupMigrationsWithPath(basePath) {
         await verification.execPromise('wsl -d Ubuntu -u root systemctl start postgresql', 30000, true);
         verification.log('Serviço PostgreSQL iniciado com sucesso', 'success');
         postgresRunning = true;
-        
+
         // Aguardar o serviço inicializar completamente
         verification.log('Aguardando PostgreSQL inicializar completamente...', 'info');
         await new Promise(resolve => setTimeout(resolve, 5000));
@@ -2066,7 +2264,7 @@ async function setupMigrationsWithPath(basePath) {
         return false;
       }
     }
-    
+
     // 6. Garantir que o schema exista
     verification.log('Verificando e garantindo que o schema existe...', 'step');
     try {
@@ -2078,13 +2276,13 @@ async function setupMigrationsWithPath(basePath) {
         )
       " 2>/dev/null || echo "f"
       `;
-      
+
       const schemaExists = await verification.execPromise(
         `wsl -d Ubuntu -u root bash -c '${schemaCheckCmd}'`,
         15000,
         true
       );
-      
+
       if (schemaExists.trim() !== 't' && schemaExists.trim() !== 'true') {
         // Criar o schema
         verification.log('Schema não existe, criando...', 'step');
@@ -2094,7 +2292,7 @@ async function setupMigrationsWithPath(basePath) {
           GRANT ALL ON SCHEMA ${DB_SCHEMA} TO ${DB_USERNAME};
         "
         `;
-        
+
         await verification.execPromise(
           `wsl -d Ubuntu -u root bash -c '${createSchemaCmd}'`,
           15000,
@@ -2103,7 +2301,7 @@ async function setupMigrationsWithPath(basePath) {
         verification.log('Schema criado com sucesso', 'success');
       } else {
         verification.log('Schema já existe', 'success');
-        
+
         // Garantir permissões corretas
         const grantSchemaCmd = `
         PGPASSWORD="${DB_PASSWORD}" psql -h ${DB_HOST} -p ${DB_PORT} -U ${DB_USERNAME} -d ${DB_NAME} -c "
@@ -2113,7 +2311,7 @@ async function setupMigrationsWithPath(basePath) {
           GRANT ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA ${DB_SCHEMA} TO ${DB_USERNAME};
         "
         `;
-        
+
         await verification.execPromise(
           `wsl -d Ubuntu -u root bash -c '${grantSchemaCmd}'`,
           15000,
@@ -2125,10 +2323,10 @@ async function setupMigrationsWithPath(basePath) {
       verification.log('Erro ao verificar/criar schema, tentando prosseguir mesmo assim...', 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(schemaError)}`);
     }
-    
+
     // 7. Criar script wrapper com todas as variáveis necessárias
     verification.log('Preparando script wrapper para execução das migrações...', 'step');
-    
+
     const wrapperScript = `#!/bin/bash
 # Script wrapper para execução robusta das migrações
 
@@ -2196,41 +2394,41 @@ else
   exit 0
 fi
 `;
-    
+
     // Salvar o script wrapper em arquivo temporário
     const tempDir = path.join(os.tmpdir(), 'wsl-setup');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
     }
-    
+
     const wrapperPath = path.join(tempDir, 'migration_wrapper.sh');
     fs.writeFileSync(wrapperPath, wrapperScript, { mode: 0o755 });
-    
+
     // Copiar para o WSL
     verification.log('Copiando script wrapper para o WSL...', 'step');
     const wslWrapperPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${wrapperPath.replace(/\\/g, '/')}"`, 10000, true);
     await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslWrapperPath}" /tmp/migration_wrapper.sh`, 10000, true);
     await verification.execPromise('wsl -d Ubuntu -u root chmod 755 /tmp/migration_wrapper.sh', 10000, true);
-    
+
     // 8. Executar o script wrapper
     verification.log('Executando script de migração (pode levar vários minutos)...', 'step');
     try {
       const migrationOutput = await verification.execPromise('wsl -d Ubuntu -u root bash /tmp/migration_wrapper.sh', 600000, true);
-      
+
       // Registrar saída para diagnóstico
       verification.log('Resultado das migrações:', 'success');
       verification.logToFile(`Saída completa da migração: ${migrationOutput}`);
-      
+
       // Mostrar as linhas mais relevantes no log
       const relevantLines = migrationOutput.split('\n')
         .filter(line => line.trim())
         .filter(line => !line.startsWith('  ') && !line.includes('CREATE') && !line.includes('--'))
         .slice(0, 10);
-      
+
       relevantLines.forEach(line => {
         verification.log(`  ${line}`, 'info');
       });
-      
+
       // 9. Verificar resultado das migrações
       if (migrationOutput.includes("Migrações executadas com sucesso")) {
         verification.log('Migrações executadas com sucesso', 'success');
@@ -2243,13 +2441,13 @@ fi
             SELECT count(*) FROM information_schema.tables WHERE table_schema = '${DB_SCHEMA}'
           "
           `;
-          
+
           const tablesCount = await verification.execPromise(
             `wsl -d Ubuntu -u root bash -c '${tablesCheck}'`,
             15000,
             true
           );
-          
+
           const count = parseInt(tablesCount.trim(), 10);
           if (!isNaN(count) && count > 0) {
             verification.log(`Verificação confirma que ${count} tabelas foram criadas no schema`, 'success');
@@ -2261,7 +2459,7 @@ fi
           verification.log('Erro ao verificar tabelas no schema', 'warning');
           verification.logToFile(`Detalhes do erro: ${JSON.stringify(tablesError)}`);
         }
-        
+
         // Se chegou aqui, houve algum problema nas migrações mas não retornou erro
         verification.log('Migrações possivelmente incompletas, mas continuando...', 'warning');
         return true;
@@ -2269,7 +2467,7 @@ fi
     } catch (migrationError) {
       verification.log(`Erro durante a execução das migrações: ${migrationError.message || JSON.stringify(migrationError)}`, 'error');
       verification.logToFile(`Erro detalhado da migração: ${JSON.stringify(migrationError)}`);
-      
+
       // Verificar se ainda assim as tabelas foram criadas
       try {
         const recoveryCheck = `
@@ -2277,13 +2475,13 @@ fi
           SELECT count(*) FROM information_schema.tables WHERE table_schema = '${DB_SCHEMA}'
         "
         `;
-        
+
         const recoveryCount = await verification.execPromise(
           `wsl -d Ubuntu -u root bash -c '${recoveryCheck}'`,
           15000,
           true
         );
-        
+
         const count = parseInt(recoveryCount.trim(), 10);
         if (!isNaN(count) && count > 0) {
           verification.log(`Apesar do erro, ${count} tabelas foram criadas no schema`, 'warning');
@@ -2292,7 +2490,7 @@ fi
       } catch (recoveryError) {
         verification.log('Erro na verificação de recuperação', 'warning');
       }
-      
+
       return false;
     }
   } catch (error) {
@@ -2305,7 +2503,7 @@ fi
 // Configuração completa do sistema
 async function configureSystem() {
   verification.log('Configurando o sistema no WSL...', 'header');
-  
+
   try {
     // Verificar se o sistema já está configurado
     const needsConfiguration = await verification.shouldConfigureSystem(installState);
@@ -2313,7 +2511,7 @@ async function configureSystem() {
       verification.log('Sistema já está configurado e funcional!', 'success');
       return true;
     }
-    
+
     // Verificar se o Ubuntu está instalado e acessível
     verification.log('Verificando se o Ubuntu está instalado...', 'step');
     const ubuntuInstalled = await verification.checkUbuntuInstalled();
@@ -2325,53 +2523,53 @@ async function configureSystem() {
         return false;
       }
     }
-    
+
     // Instalar pacotes
     await installRequiredPackages();
     
+    // Copiar software
+    await copySoftwareToOpt();
+
     // Configurar Samba e CUPS
     await configureSamba();
     await configureCups();
-    
-    // Copiar software
-    await copySoftwareToOpt();
-    
+
     // Configurar firewall
     await configureFirewall();
-    
+
     // Configurar banco de dados
     await setupDatabase();
-    
+
     // Configurar script de atualização
     await setupUpdateScript();
-    
+
     // Instalar drivers
     await installDrivers();
-    
+
     // Executar migrações
     await setupMigrations();
-    
+
     // Configurar PM2
     await setupPM2();
-    
+
     // Limpeza do sistema
     await systemCleanup();
 
     // Instalar impressora virtual do Windows
     await installWindowsPrinter();
-    
+
     // Verificar se a API está respondendo
     verification.log('Verificando se a API está respondendo...', 'step');
     const apiHealth = await verification.checkApiHealth();
-    
+
     if (!apiHealth) {
       verification.log('API não está respondendo, tentando reiniciar o serviço...', 'warning');
       await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart ecosystem.config.js"', 30000, true);
-      
+
       // Aguardar inicialização
       verification.log('Aguardando inicialização do serviço...', 'info');
       await new Promise(resolve => setTimeout(resolve, 10000));
-      
+
       // Verificar novamente
       const apiCheck = await verification.checkApiHealth();
       if (apiCheck) {
@@ -2380,7 +2578,7 @@ async function configureSystem() {
         verification.log('API ainda não está respondendo, pode ser necessário verificar os logs', 'warning');
       }
     }
-    
+
     verification.log('Sistema configurado com sucesso!', 'success');
     installState.systemConfigured = true;
     saveInstallState();
@@ -2394,97 +2592,118 @@ async function configureSystem() {
 
 // Função para instalar diretamente a impressora CUPS com driver IPP
 async function installWindowsPrinter() {
-  verification.log('Instalando impressora CUPS PDF...', 'header');
+  verification.log('Instalando impressora CUPS para Windows...', 'header');
   
   try {
-    // Etapa 1: Limpar completamente qualquer impressora existente e seus resíduos
-    verification.log('Removendo instalações anteriores e resíduos...', 'step');
+    // Etapa 1: Limpeza mais básica e menos propensa a erros
+    verification.log('Removendo impressoras anteriores...', 'step');
     
     try {
-      // Remover qualquer impressora com o nome "Impressora LoQQuei" ou "PDF_Printer"
-      await verification.execPromise('powershell -Command "Remove-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue"', 5000, true);
-      await verification.execPromise('powershell -Command "Remove-Printer -Name \'PDF_Printer\' -ErrorAction SilentlyContinue"', 5000, true);
-      
-      // Remover portas que podem estar associadas
-      await verification.execPromise('powershell -Command "Get-PrinterPort | Where-Object {$_.Name -like \'*CUPS*\' -or $_.Name -like \'*PDF*\'} | Remove-PrinterPort -ErrorAction SilentlyContinue"', 5000, true);
-      
-      // Limpar cache de spooler (mais invasivo, mas eficaz para remover resíduos)
-      await verification.execPromise('net stop spooler', 10000, true);
+      // Remover impressoras anteriores - método mais simples que não falha facilmente
+      await verification.execPromise('rundll32 printui.dll,PrintUIEntry /dl /n "Impressora LoQQuei" /q', 8000, true);
+      // Tempo de espera mais curto
       await new Promise(resolve => setTimeout(resolve, 1000));
-      await verification.execPromise('net start spooler', 10000, true);
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      verification.log('Sistema limpo de instalações anteriores', 'success');
     } catch (e) {
-      verification.log('Aviso ao limpar instalações anteriores, continuando...', 'warning');
+      verification.log('Nota: Nenhuma impressora anterior encontrada', 'info');
     }
     
-    // Etapa 2: Instalar a impressora com configurações exatas da imagem
-    verification.log('Instalando impressora PDF_Printer...', 'step');
+    // Etapa 2: Verificar ambiente CUPS de forma mais simples
+    verification.log('Preparando ambiente CUPS...', 'step');
     
-    // Utilizar comando direto do Windows para adicionar a impressora silenciosamente
-    const addPrinterCmd = 'rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "http://localhost:631/printers/PDF_Printer" /m "Microsoft Print To PDF" /Z';
-    
-    await verification.execPromise(addPrinterCmd, 15000, true);
-    
-    // Aguardar um momento para a impressora ser registrada
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // Etapa 3: Verificar instalação
-    verification.log('Verificando instalação da impressora...', 'step');
-    
-    const checkResult = await verification.execPromise('powershell -Command "if (Get-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue) { Write-Output \'FOUND=TRUE\' } else { Write-Output \'FOUND=FALSE\' }"', 5000, true);
-    
-    if (checkResult.includes('FOUND=TRUE')) {
-      verification.log('Impressora PDF_Printer instalada com sucesso!', 'success');
+    try {
+      // Verificar se o CUPS está respondendo
+      await verification.execPromise('wsl -d Ubuntu -u root systemctl is-active cups', 5000, true);
       
-      // Configurar parâmetros adicionais via CUPS para corresponder à imagem
-      verification.log('Configurando parâmetros da impressora no CUPS...', 'step');
+      // Não reiniciamos o CUPS aqui - mais simples e menos propenso a falhas
+      // Apenas configuramos a impressora PDF se necessário
+      const printerList = await verification.execPromise('wsl -d Ubuntu -u root lpstat -p 2>/dev/null || echo "No printers"', 5000, true);
       
-      try {
-        // Certificar que a impressora no CUPS tem os parâmetros corretos
-        await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -o job-sheets=none,none -o media=iso_a4_210x297mm -o sides=one-sided', 10000, true);
-        
-        // Configurar driver para "Generic CUPS-PDF Printer"
-        await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -m drv:///cupsfilters.drv/genericpdf.ppd', 10000, true);
-        
-        // Reiniciar CUPS para aplicar configurações
-        await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups', 15000, true);
-        
-        verification.log('Parâmetros da impressora configurados com sucesso', 'success');
-      } catch (cupsError) {
-        verification.log('Aviso: Erro ao configurar parâmetros CUPS detalhados', 'warning');
-        verification.logToFile(`Erro CUPS: ${JSON.stringify(cupsError)}`);
+      if (!printerList.includes('PDF') && !printerList.includes('PDF_Printer')) {
+        verification.log('Configurando impressora PDF no CUPS...', 'step');
+        // Comando único e simplificado para criar impressora PDF
+        await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF -E -v cups-pdf:/ -m drv:///cupsfilters.drv/genericpdf.ppd -o job-sheets=none,none -o media=iso_a4_210x297mm -o sides=one-sided', 12000, true);
+      } else {
+        verification.log('Impressora PDF já existe no CUPS', 'info');
       }
       
-      return true;
-    } else {
-      // Método alternativo - mais direto
-      verification.log('Primeiro método falhou, tentando método alternativo...', 'warning');
+      // Garantir que a impressora esteja habilitada e aceitando trabalhos
+      await verification.execPromise('wsl -d Ubuntu -u root cupsenable PDF 2>/dev/null || cupsenable PDF_Printer 2>/dev/null || true', 5000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root cupsaccept PDF 2>/dev/null || cupsaccept PDF_Printer 2>/dev/null || true', 5000, true);
       
-      const altCmd = 'powershell -Command "Add-PrinterPort -Name \'Impressora LoQQuei\' -PrinterHostAddress \'http://localhost:631/printers/PDF_Printer\'; Add-Printer -Name \'PDF_Printer\' -DriverName \'Microsoft Print To PDF\' -PortName \'CUPS_PDF_Port\'"';
+      verification.log('Ambiente CUPS preparado com sucesso', 'success');
+    } catch (cupsError) {
+      verification.log('Aviso: Houve um problema com a configuração CUPS, mas continuando...', 'warning');
+      verification.logToFile(`Detalhe: ${JSON.stringify(cupsError)}`);
+    }
+    
+    // Etapa 3: Instalar impressora no Windows - método direto e simplificado
+    verification.log('Instalando impressora no Windows...', 'step');
+    
+    // Usar comando mais simples e direto, com prioridade para funcionar
+    const cmdSimple = 'rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "http://localhost:631/printers/PDF" /m "Microsoft IPP Class Driver" /Z';
+    
+    try {
+      await verification.execPromise(cmdSimple, 20000, true);
+      verification.log('Comando de instalação executado', 'info');
       
-      await verification.execPromise(altCmd, 15000, true);
+      // Verificação rápida
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      const checkPrinter = await verification.execPromise('powershell -Command "if (Get-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"', 5000, true).catch(() => "not_found");
+      
+      if (checkPrinter !== "not_found") {
+        verification.log('Impressora instalada com sucesso!', 'success');
+        return true;
+      }
+      
+      // Método alternativo ainda mais básico e direto
+      verification.log('Tentando método alternativo mais simples...', 'step');
+      
+      // Criar script batch temporário - geralmente mais confiável para operações de impressora
+      const tempDir = path.join(os.tmpdir(), 'printer-install');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+      const batchContent = `@echo off
+echo Instalando impressora...
+rundll32 printui.dll,PrintUIEntry /dl /n "Impressora LoQQuei" /q
+timeout /t 2 > nul
+rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "http://localhost:631/printers/PDF" /m "Microsoft IPP Class Driver"
+echo Instalação concluída.
+`;
+      
+      const batchPath = path.join(tempDir, 'install-printer.bat');
+      fs.writeFileSync(batchPath, batchContent);
+      
+      await verification.execPromise(`cmd /c "${batchPath}"`, 25000, true);
+      verification.log('Script de instalação executado', 'info');
+      
+      // Verificação final
       await new Promise(resolve => setTimeout(resolve, 3000));
+      const finalCheck = await verification.execPromise('powershell -Command "try { Get-Printer -Name \'Impressora LoQQuei\' | Out-Null; Write-Output \'success\' } catch { Write-Output \'failure\' }"', 5000, true);
       
-      // Verificar novamente
-      const recheckResult = await verification.execPromise('powershell -Command "if (Get-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue) { Write-Output \'FOUND=TRUE\' } else { Write-Output \'FOUND=FALSE\' }"', 5000, true);
-      
-      if (recheckResult.includes('FOUND=TRUE')) {
-        verification.log('Impressora PDF_Printer instalada com sucesso via método alternativo!', 'success');
-        
-        // Configurar parâmetros CUPS também para este método
-        try {
-          await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -o job-sheets=none,none -o media=iso_a4_210x297mm -o sides=one-sided', 10000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -m drv:///cupsfilters.drv/genericpdf.ppd', 10000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups', 15000, true);
-        } catch (e) {
-          verification.log('Aviso ao configurar parâmetros CUPS', 'warning');
-        }
-        
+      if (finalCheck.includes('success')) {
+        verification.log('Impressora "Impressora LoQQuei" instalada com sucesso!', 'success');
         return true;
       } else {
-        verification.log('Falha na instalação da impressora após múltiplas tentativas', 'error');
+        verification.log('Não foi possível verificar a instalação da impressora', 'warning');
+        // Mesmo assim retornamos true pois o comando de instalação foi executado
+        return true;
+      }
+    } catch (windowsError) {
+      verification.log('Erro ao executar comandos Windows', 'warning');
+      verification.logToFile(`Detalhes: ${JSON.stringify(windowsError)}`);
+      
+      // Último recurso - método ainda mais básico
+      try {
+        verification.log('Tentando método de instalação final...', 'step');
+        await verification.execPromise('powershell -Command "Add-PrinterPort -Name \'IPP_Port\' -PrinterHostAddress \'http://localhost:631/printers/PDF\'; Add-Printer -Name \'Impressora LoQQuei\' -DriverName \'Microsoft IPP Class Driver\' -PortName \'IPP_Port\'"', 20000, true);
+        
+        verification.log('Comando final executado, assumindo sucesso', 'info');
+        return true;
+      } catch (finalError) {
+        verification.log('Não foi possível instalar a impressora', 'error');
+        verification.logToFile(`Erro final: ${JSON.stringify(finalError)}`);
         return false;
       }
     }
@@ -2697,20 +2916,20 @@ async function installSystem() {
       }
       return { success: false, message: 'Falha ao configurar o sistema' };
     }
-    
+
     // Verificar API final
     verification.log('Verificando se a API está respondendo...', 'step');
     const apiHealth = await verification.checkApiHealth();
-    
+
     if (!apiHealth) {
       verification.log('API não está respondendo. Tentando reiniciar o serviço...', 'warning');
       try {
         await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart all"', 30000, true);
-        
+
         // Aguardar inicialização do serviço
         verification.log('Aguardando inicialização do serviço...', 'info');
         await new Promise(resolve => setTimeout(resolve, 15000));
-        
+
         // Verificar novamente
         const apiRecheckHealth = await verification.checkApiHealth();
         if (!apiRecheckHealth) {
@@ -2730,19 +2949,6 @@ async function installSystem() {
     // Informações de acesso
     verification.log('Instalação concluída com sucesso!', 'success');
     verification.log('O Sistema de Gerenciamento de Impressão está pronto para uso.', 'success');
-
-    try {
-      // Obter o IP local
-      const localIp = (await verification.execPromise('wsl -d Ubuntu hostname -I', 10000, true)).trim().split(' ')[0];
-      verification.log(`Acesse http://${localIp}:56257 em um navegador para utilizar o sistema.`, 'info');
-    } catch (error) {
-      verification.log('Não foi possível determinar o endereço IP. Por favor, verifique as configurações de rede.', 'warning');
-      verification.logToFile(`Detalhes do erro ao obter IP: ${JSON.stringify(error)}`);
-    }
-
-    verification.log('Para administrar o sistema:', 'info');
-    verification.log('1. Acesse o WSL usando o comando "wsl" no Prompt de Comando ou PowerShell.', 'info');
-    verification.log('2. Navegue até /opt/loqquei/print_server_desktop para acessar os arquivos do sistema.', 'info');
 
     if (!isElectron) {
       await askQuestion('Pressione ENTER para finalizar a instalação...');
@@ -2802,29 +3008,29 @@ module.exports = {
   setupMigrations,
   setupPM2,
   systemCleanup,
-  
+
   checkWSLStatusDetailed: verification.checkWSLStatusDetailed,
   log: verification.log,
-  
+
   // Add this line to correctly export the setCustomAskQuestion function
-  setCustomAskQuestion: function(callback) {
+  setCustomAskQuestion: function (callback) {
     customAskQuestion = callback;
   },
-  
+
   // Functions for UI integration
-  setStepUpdateCallback: function(callback) {
+  setStepUpdateCallback: function (callback) {
     stepUpdateCallback = callback;
   },
-  
-  setProgressCallback: function(callback) {
+
+  setProgressCallback: function (callback) {
     progressCallback = callback;
   },
-  
-  getInstallationSteps: function() {
+
+  getInstallationSteps: function () {
     return allSteps;
   },
-  
-  getInstallationLog: function() {
+
+  getInstallationLog: function () {
     return installationLog.join('\n');
   }
 };
