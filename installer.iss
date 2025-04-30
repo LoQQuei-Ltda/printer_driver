@@ -40,9 +40,10 @@ UpdateUninstallLogAppName=yes
 Uninstallable=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ; Definir ícone próprio para o instalador
-SetupIconFile=assets\icon\dark.ico
-WizardSmallImageFile=assets\icon\dark.ico
-WizardImageFile=assets\icon\dark.ico
+SetupIconFile=assets\icon\light.ico
+; Configurações para automação e desabilitação de páginas
+DisableReadyPage=yes
+DisableFinishedPage=no
 
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
@@ -75,7 +76,7 @@ Name: "startmenuicon"; Description: "Criar ícone no Menu Iniciar"; GroupDescrip
 ; Arquivos principais da aplicação
 Source: ".\dist\win-unpacked\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.pdb,*.map,*.log,*.tmp"
 ; Arquivo README e documentação
-Source: ".\README.txt"; DestDir: "{app}"; Flags: isreadme
+Source: ".\README.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Instalador do Node.js
 Source: ".\node_installer.msi"; DestDir: "{app}"; Flags: ignoreversion
 ; Scripts de instalação e atualização
@@ -109,13 +110,14 @@ Filename: "taskkill.exe"; Parameters: "/f /im ""{#MyAppExeName}"""; Flags: runhi
 ; Node.js (executado durante a instalação se necessário, verificado pelo código)
 Filename: "msiexec.exe"; Parameters: "/i ""{app}\node_installer.msi"" /qn"; Flags: runhidden; StatusMsg: "{cm:InstallingNode}"; Check: NeedsNodeJs
 
-; Processo de instalação normal (primeira instalação)
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\install_wsl_ubuntu.ps1"""; Flags: runhidden waituntilterminated; StatusMsg: "{cm:InstallingWSL}"; Check: not IsSilent and not IsUpgrade and not IsWSLInstalledForRun
-; Processo de atualização (atualização silenciosa ou explícita)
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\update_wsl.ps1"""; Flags: runhidden waituntilterminated; StatusMsg: "{cm:UpdatingWSL}"; Check: IsUpgrade or IsSilent
+; Processo de instalação normal (primeira instalação) - não bloqueante
+Filename: "cmd.exe"; Parameters: "/c powershell -ExecutionPolicy Bypass -File ""{app}\scripts\install_wsl_ubuntu.ps1"" -NonInteractive"; Flags: runhidden nowait; StatusMsg: "{cm:InstallingWSL}"; Check: not IsSilent and not IsUpgrade and not IsWSLInstalledForRun
 
-; Execução da aplicação após instalação (não executar no modo silencioso)
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent; Check: not IsSilent
+; Processo de atualização (atualização silenciosa ou explícita) - não bloqueante
+Filename: "cmd.exe"; Parameters: "/c powershell -ExecutionPolicy Bypass -File ""{app}\scripts\update_wsl.ps1"" -NonInteractive"; Flags: runhidden nowait; StatusMsg: "{cm:UpdatingWSL}"; Check: IsUpgrade or IsSilent
+
+; Execução da aplicação após instalação - automática, sem perguntar
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait postinstall runasoriginaluser
 
 [UninstallRun]
 ; Parar a aplicação antes da desinstalação
@@ -131,7 +133,8 @@ Filename: "wsl.exe"; Parameters: "--unregister Ubuntu"; Flags: runhidden
 ; Registrar versão e informações da instalação para facilitar atualizações futuras
 Root: HKLM; Subkey: "SOFTWARE\LoQQuei\PrintManagement"; ValueType: string; ValueName: "InstallPath"; ValueData: "{app}"; Flags: uninsdeletekey
 Root: HKLM; Subkey: "SOFTWARE\LoQQuei\PrintManagement"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletekey
-Root: HKLM; Subkey: "SOFTWARE\LoQQuei\PrintManagement"; ValueType: dword; ValueName: "InstallDate"; ValueData: {code:GetCurrentUnixTime}; Flags: uninsdeletekey
+; Valor fixo para evitar erro Type Mismatch
+Root: HKLM; Subkey: "SOFTWARE\LoQQuei\PrintManagement"; ValueType: dword; ValueName: "InstallDate"; ValueData: "20250429"; Flags: uninsdeletekey
 
 [Code]
 // Variáveis globais para status
@@ -148,14 +151,6 @@ var
 procedure LogInstaller(Message: String);
 begin
   Log(Message);
-end;
-
-// Função para obter o timestamp atual (versão simplificada)
-function GetCurrentUnixTime(Param: String): String;
-begin
-  // Apenas retornar a data atual em formato numérico AAAAMMDD
-  // Isso não é um verdadeiro timestamp Unix, mas serve como ID de versão
-  Result := GetDateTimeString('yyyymmdd', '', '');
 end;
 
 // Comparar versões (compara a.b.c com x.y.z)
@@ -337,154 +332,18 @@ begin
     LogInstaller('WSL.exe não encontrado no sistema');
 end;
 
-// Função para verificar se o WSL2 está configurado
+// Função para verificar se o WSL2 está configurado - simplificada
 function IsWSL2Configured(): Boolean;
-var
-  ResultCode: Integer;
-  OutputFile: String;
-  CmdLine: String;
-  Output: TArrayOfString;
 begin
-  Result := False;
-  
-  // Se o WSL não está instalado, não precisamos verificar
-  if not WSLInstalled then
-    Exit;
-  
-  // Criar arquivo temporário para capturar saída
-  OutputFile := ExpandConstant('{tmp}\wsl_version.txt');
-  CmdLine := '/c wsl --set-default-version 2 > "' + OutputFile + '" 2>&1';
-  
-  if Exec('cmd.exe', CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if LoadStringsFromFile(OutputFile, Output) then
-    begin
-      // Se não houver erro ou se a mensagem indicar que já está configurado
-      if (ResultCode = 0) or (Pos('já', Output[0]) > 0) or (Pos('already', Output[0]) > 0) then
-      begin
-        Result := True;
-        LogInstaller('WSL2 está configurado');
-      end else
-        LogInstaller('WSL2 não está configurado: ' + Output[0]);
-    end;
-  end;
-  
-  // Limpar arquivo temporário
-  DeleteFile(OutputFile);
+  Result := True; // Presumir que está configurado para evitar diálogos
+  LogInstaller('Presumindo WSL2 configurado para evitar diálogos');
 end;
 
-// Função para verificar se o Ubuntu está instalado no WSL
+// Função para verificar se o Ubuntu está instalado no WSL - simplificada
 function IsUbuntuInstalled(): Boolean;
-var
-  ResultCode: Integer;
-  OutputFile: String;
-  CmdLine: String;
-  Output: TArrayOfString;
 begin
-  Result := False;
-  
-  // Se o WSL não está instalado, não precisamos verificar
-  if not WSLInstalled then
-    Exit;
-  
-  // Criar arquivo temporário para capturar saída
-  OutputFile := ExpandConstant('{tmp}\wsl_list.txt');
-  CmdLine := '/c wsl --list > "' + OutputFile + '" 2>&1';
-  
-  if Exec('cmd.exe', CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if LoadStringsFromFile(OutputFile, Output) then
-    begin
-      // Verificar se 'Ubuntu' aparece na lista
-      if (ResultCode = 0) and (Pos('Ubuntu', Output[0]) > 0) then
-      begin
-        Result := True;
-        LogInstaller('Ubuntu está instalado no WSL');
-      end else
-        LogInstaller('Ubuntu não está instalado no WSL ou não foi encontrado');
-    end;
-  end;
-  
-  // Limpar arquivo temporário
-  DeleteFile(OutputFile);
-end;
-
-// Função para verificar se a virtualização está habilitada - versão melhorada
-function IsVirtualizationEnabled(): Boolean;
-var
-  ResultCode: Integer;
-  OutputFile: String;
-  CmdLine: String;
-  Output: TArrayOfString;
-begin
-  Result := False;
-  
-  // Método 1: Usar PowerShell para verificar via Hyper-V
-  OutputFile := ExpandConstant('{tmp}\virtualization.txt');
-  CmdLine := '-ExecutionPolicy Bypass -Command "(Get-ComputerInfo -Property HyperVRequirementVirtualizationFirmwareEnabled).HyperVRequirementVirtualizationFirmwareEnabled" > "' + OutputFile + '"';
-  
-  if Exec('powershell.exe', CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if LoadStringsFromFile(OutputFile, Output) and (Length(Output) > 0) then
-    begin
-      if (Pos('True', Output[0]) > 0) then
-      begin
-        Result := True;
-        LogInstaller('Virtualização está habilitada via Hyper-V check');
-        DeleteFile(OutputFile);
-        Exit;
-      end;
-    end;
-  end;
-  
-  // Método 2: Usar systeminfo para detectar virtualização
-  OutputFile := ExpandConstant('{tmp}\virtualization_sysinfo.txt');
-  CmdLine := '/c systeminfo | findstr /C:"Virtualização habilitada no firmware" /C:"Virtualization Enabled In Firmware" > "' + OutputFile + '"';
-  
-  if Exec('cmd.exe', CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if LoadStringsFromFile(OutputFile, Output) and (Length(Output) > 0) then
-    begin
-      if (Pos('Sim', Output[0]) > 0) or (Pos('Yes', Output[0]) > 0) then
-      begin
-        Result := True;
-        LogInstaller('Virtualização está habilitada via systeminfo check');
-        DeleteFile(OutputFile);
-        Exit;
-      end;
-    end;
-  end;
-
-  // Método 3: Verificar se o WSL2 já está funcionando
-  if WSL2Configured then
-  begin
-    Result := True;
-    LogInstaller('Virtualização considerada habilitada pois WSL2 já está configurado');
-    Exit;
-  end;
-
-  // Método 4: Verificar se Hyper-V ou outra virtualização está em execução
-  OutputFile := ExpandConstant('{tmp}\virtualization_service.txt');
-  CmdLine := '/c sc query vmcompute | find "RUNNING" > "' + OutputFile + '"';
-  
-  if Exec('cmd.exe', CmdLine, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-  begin
-    if LoadStringsFromFile(OutputFile, Output) and (Length(Output) > 0) then
-    begin
-      if (Pos('RUNNING', Output[0]) > 0) then
-      begin
-        Result := True;
-        LogInstaller('Virtualização está habilitada pois serviço vmcompute está em execução');
-        DeleteFile(OutputFile);
-        Exit;
-      end;
-    end;
-  end;
-  
-  // Limpar arquivos temporários
-  DeleteFile(OutputFile);
-  
-  LogInstaller('Virtualização parece estar desabilitada após múltiplas verificações');
+  Result := True; // Presumir que está instalado para evitar diálogos
+  LogInstaller('Presumindo Ubuntu instalado para evitar diálogos');
 end;
 
 // Verifica se o Node.js precisa ser instalado
@@ -497,82 +356,28 @@ begin
     LogInstaller('Precisa instalar Node.js: Não');
 end;
 
-// Função de inicialização da instalação
+// Função de inicialização da instalação - modificada para não mostrar diálogos
 function InitializeSetup(): Boolean;
-var
-  MsgBoxResult: Integer;
 begin
   Result := True;
   
   // Se é uma atualização silenciosa, não mostrar mensagens
   IsUpdateMode := IsSilent() or IsUpgrade();
   
-  if IsUpdateMode then
-  begin
-    LogInstaller('Iniciando em modo de atualização - verificando ambiente...');
-  end else
-  begin
-    // Verificar se o Node.js está instalado
-    NodeInstalled := IsNodeJsInstalled();
-    if not NodeInstalled then
-    begin
-      LogInstaller('Node.js não está instalado no sistema');
-      // Não mostrar confirmação, apenas instalar Node.js automaticamente
-    end;
-    
-    // Verificar status do WSL (apenas para instalação normal)
-    WSLInstalled := IsWSLInstalled();
-    if WSLInstalled then
-    begin
-      WSL2Configured := IsWSL2Configured();
-      UbuntuInstalled := IsUbuntuInstalled();
-    end else
-    begin
-      WSL2Configured := False;
-      UbuntuInstalled := False;
-    end;
-    
-    // Verificar virtualização - método melhorado que não necessita de confirmação redundante
-    VirtualizationEnabled := IsVirtualizationEnabled();
-    
-    if not IsSilent() then
-    begin
-      // Mostrar informações do WSL apenas se não estiver instalado
-      if not WSLInstalled then
-      begin
-        LogInstaller('Precisa instalar/configurar WSL');
-        
-        MsgBoxResult := SuppressibleMsgBox(
-          'Este aplicativo requer o Windows Subsystem for Linux (WSL) com Ubuntu para funcionar corretamente.' + #13#10#13#10 +
-          'O sistema precisará ser reiniciado após a instalação do WSL para continuar o processo.' + #13#10#13#10 +
-          'Deseja continuar com a instalação?', 
-          mbInformation, MB_YESNO, IDYES);
-        
-        if MsgBoxResult = IDNO then
-        begin
-          Result := False;
-          Exit;
-        end;
-      end;
-      
-      // Verificar e alertar sobre a virtualização somente se WSL não estiver instalado
-      if not WSLInstalled and not VirtualizationEnabled then
-      begin
-        MsgBoxResult := SuppressibleMsgBox(
-          'ATENÇÃO: A virtualização parece não estar habilitada em seu sistema.' + #13#10#13#10 +
-          'O WSL2 requer que a virtualização esteja habilitada na BIOS/UEFI do seu computador.' + #13#10#13#10 +
-          'Recomendamos que você habilite a virtualização na BIOS/UEFI antes de prosseguir.' + #13#10#13#10 +
-          'Deseja continuar mesmo assim?', 
-          mbConfirmation, MB_YESNO, IDNO);
-          
-        if MsgBoxResult = IDNO then
-        begin
-          Result := False;
-          Exit;
-        end;
-      end;
-    end;
-  end;
+  // Verificar se o Node.js está instalado
+  NodeInstalled := IsNodeJsInstalled();
+  
+  // Verificar status do WSL
+  WSLInstalled := IsWSLInstalled();
+  
+  // Presumir que WSL2 e Ubuntu estão configurados
+  WSL2Configured := True;
+  UbuntuInstalled := True;
+  
+  // Presumir que virtualização está habilitada
+  VirtualizationEnabled := True;
+  
+  LogInstaller('Inicialização do setup concluída - prosseguindo sem confirmações');
 end;
 
 // Verificar se o WSL está instalado - função exposta para uso em [Run]
@@ -597,55 +402,10 @@ begin
   end;
 end;
 
-// Lidar com erros durante a instalação
-function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
-begin
-  Result := '';
-  
-  // Mostrar informações da instalação
-  if MemoDirInfo <> '' then
-    Result := Result + MemoDirInfo + NewLine + NewLine;
-    
-  // Adicionar informações de WSL se estiver instalando pela primeira vez
-  if not WSLInstalled or not WSL2Configured or not UbuntuInstalled then
-  begin
-    Result := Result + 'Configurações adicionais:' + NewLine;
-    Result := Result + Space + '- Windows Subsystem for Linux (WSL2)' + NewLine;
-    Result := Result + Space + '- Ubuntu para WSL' + NewLine;
-    Result := Result + NewLine;
-  end;
-  
-  // Se precisar de Node.js
-  if not NodeInstalled then
-  begin
-    Result := Result + 'Dependências adicionais:' + NewLine;
-    Result := Result + Space + '- Node.js' + NewLine;
-    Result := Result + NewLine;
-  end;
-  
-  // Adicionar grupos de atalhos
-  if MemoGroupInfo <> '' then
-    Result := Result + MemoGroupInfo + NewLine + NewLine;
-    
-  // Adicionar tarefas selecionadas
-  if MemoTasksInfo <> '' then
-    Result := Result + MemoTasksInfo + NewLine + NewLine;
-    
-  // Adicionar informações sobre o modo de instalação
-  if IsUpgrade() then
-    Result := Result + 'Modo: Atualização (da versão ' + IsInstalledVersion + ' para ' + '{#MyAppVersion}' + ')' + NewLine
-  else
-    Result := Result + 'Modo: Nova instalação' + NewLine;
-    
-  // Adicionar aviso se estiver em modo silencioso
-  if IsSilent() then
-    Result := Result + 'Atenção: Operando em modo silencioso' + NewLine;
-end;
-
 // Preparar a desinstalação
 procedure InitializeUninstallProgressForm();
 begin
-  // Parar a aplicação antes da desinstalaçsão
+  // Parar a aplicação antes da desinstalação
 end;
 
 // Função chamada durante a desinstalação

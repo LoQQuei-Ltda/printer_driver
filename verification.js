@@ -611,7 +611,6 @@ async function checkFirewallRules() {
 }
 
 // Verifica a configuração do banco de dados
-// Improved checkDatabaseConfiguration function for verification.js
 async function checkDatabaseConfiguration() {
   log("Verificando configuração do banco de dados...", "step");
   
@@ -1116,7 +1115,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await checkIfDefaultUserConfigured());
+    console.log(await checkFirewallRules());
     process.exit(1)
   })()
 }

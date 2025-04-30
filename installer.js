@@ -1125,6 +1125,9 @@ async function configureFirewall() {
     ];
 
     // Adicionar as regras
+    await verification.execPromise(`wsl -d Ubuntu -u root service ufw start`, 10000, true);
+    await verification.execPromise(`wsl -d Ubuntu -u root bash -c "ufw --force enable && systemctl start ufw"`, 10000, true);
+
     for (const { port, protocol } of ports) {
       verification.log(`Configurando porta ${port}/${protocol}...`, 'step');
       await verification.execPromise(`wsl -d Ubuntu -u root ufw allow ${port}/${protocol}`, 10000, true);
