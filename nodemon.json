@@ -1,8 +1,19 @@
 {
-    "env": {
-    },
     "ignore": [
-        "dist/*",
-        "resources/*"
-    ]
-}
+      "node_modules/*",
+      "appData/*",
+      "dist/*",
+      "Output/*",
+      "resources/*",
+      "locks/*",
+      "*.log",
+      "*.json",
+      ".git/*"
+    ],
+    "watch": [
+      "*.js",
+      "view/*.html",
+      "assets/*"
+    ],
+    "ext": "js,html,css"
+  }

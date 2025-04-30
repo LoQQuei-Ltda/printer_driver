@@ -240,6 +240,201 @@ async function setupEnvironment() {
 
     // Mostrar janela de instalação
     createInstallationWindow();
+    
+    // Aguardar a janela de instalação estar pronta
+    await new Promise(resolve => {
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        installationWindow.once('ready-to-show', () => {
+          console.log('Janela de instalação pronta');
+          setTimeout(resolve, 500); // Dar tempo para inicializar
+        });
+      } else {
+        setTimeout(resolve, 1000);
+      }
+    });
+
+    // Aguardar mais tempo para certificar que os handlers IPC estão registrados
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // *** IMPORTANTE - CONFIGURAÇÃO DOS CALLBACKS ***
+    // Configurar callbacks para atualização da interface - assim como no handler IPC
+    installer.setStepUpdateCallback((stepIndex, state, message) => {
+      console.log(`Atualizando etapa ${stepIndex} para estado ${state}: ${message}`);
+      
+      // Verificar se a mensagem indica um componente específico
+      const componentInfo = detectComponentTypeFromMessage(message);
+      
+      // Caso especial: se a mensagem é sobre componente específico, ajustar a etapa
+      if (componentInfo && (state === 'in-progress' || state === 'completed')) {
+        // Sobrescrever o stepIndex com base no tipo de componente
+        stepIndex = componentInfo.step;
+        
+        // Garantir que etapas anteriores sejam marcadas como concluídas
+        if (installationWindow && !installationWindow.isDestroyed()) {
+          try {
+            // Primeiro marcar etapas anteriores como concluídas
+            for (let i = 0; i < stepIndex; i++) {
+              installationWindow.webContents.send('step-update', {
+                step: i,
+                state: 'completed',
+                message: 'Concluído'
+              });
+            }
+            
+            // Depois atualizar a etapa atual
+            installationWindow.webContents.send('step-update', {
+              step: stepIndex,
+              state: state,
+              message: state === 'in-progress' ? 'Em andamento' : 'Concluído'
+            });
+            
+            // Atualizar progresso também
+            installationWindow.webContents.send('progress-update', {
+              percentage: componentInfo.progress
+            });
+          } catch (err) {
+            console.error('Erro ao enviar atualizações para janela de instalação:', err);
+          }
+        }
+      } 
+      // Caso padrão: usar o stepIndex fornecido
+      else if (installationWindow && !installationWindow.isDestroyed()) {
+        try {
+          // Se etapa > 0 e estado in-progress/completed, garantir etapas anteriores concluídas
+          if (stepIndex > 0 && (state === 'in-progress' || state === 'completed')) {
+            // Primeiro marcar etapas anteriores como concluídas
+            for (let i = 0; i < stepIndex; i++) {
+              installationWindow.webContents.send('step-update', {
+                step: i,
+                state: 'completed',
+                message: 'Concluído'
+              });
+            }
+          }
+          
+          // Agora atualizar a etapa atual
+          installationWindow.webContents.send('step-update', {
+            step: stepIndex,
+            state: state,
+            message: message
+          });
+        } catch (err) {
+          console.error('Erro ao enviar atualização de etapa:', err);
+        }
+      }
+    });
+
+    installer.setProgressCallback((percentage) => {
+      // Enviar atualização de progresso para a janela de instalação
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        try {
+          installationWindow.webContents.send('progress-update', {
+            percentage: percentage
+          });
+        } catch (err) {
+          console.error('Erro ao enviar atualização de progresso:', err);
+        }
+      }
+    });
+
+    // Modificar a função de log do installer para enviar mensagens para a janela de instalação
+    const originalLog = installer.log;
+    installer.log = function(message, type = 'info') {
+      // Log original
+      originalLog(message, type);
+      
+      // Detectar quando estamos listando componentes para instalação seletiva
+      const lowerMessage = message.toLowerCase();
+      if (lowerMessage.includes('componentes que serão instalados:')) {
+        // Tentar extrair os componentes
+        try {
+          const componentsMatch = lowerMessage.match(/instalados:\s*(.+)$/);
+          if (componentsMatch && componentsMatch[1]) {
+            const componentsList = componentsMatch[1].split(',').map(c => c.trim().toLowerCase());
+            console.log('Detectados componentes para instalação:', componentsList);
+            
+            // Verificar se WSL e Ubuntu NÃO estão na lista - isso indica instalação parcial
+            const needsWsl = componentsList.some(c => c.includes('wsl'));
+            const needsUbuntu = componentsList.some(c => c.includes('ubuntu'));
+            
+            if (!needsWsl && !needsUbuntu && installationWindow && !installationWindow.isDestroyed()) {
+              // É uma instalação parcial - marcar etapas iniciais como concluídas
+              for (let i = 0; i <= 3; i++) {
+                installationWindow.webContents.send('step-update', {
+                  step: i,
+                  state: 'completed',
+                  message: 'Concluído'
+                });
+              }
+              
+              // Atualizar progresso para refletir estado avançado
+              installationWindow.webContents.send('progress-update', {
+                percentage: 60
+              });
+              
+              // Determinar próxima etapa com base nos componentes
+              let nextStep = 5; // Ambiente por padrão
+              
+              if (componentsList.includes('database') || componentsList.includes('software')) {
+                nextStep = 5; // Ambiente
+              } else if (componentsList.includes('api') || componentsList.includes('pm2') || componentsList.includes('services')) {
+                nextStep = 6; // Serviços
+              } else if (componentsList.includes('printer')) {
+                nextStep = 7; // Finalização
+              }
+              
+              // Atualizar próxima etapa para "Em andamento"
+              installationWindow.webContents.send('step-update', {
+                step: nextStep,
+                state: 'in-progress',
+                message: 'Em andamento'
+              });
+            }
+          }
+        } catch (err) {
+          console.error('Erro ao processar lista de componentes:', err);
+        }
+      }
+      // Tratar caso especial quando estamos instalando componentes específicos
+      else if (lowerMessage.includes('instalando/configurando')) {
+        const componentInfo = detectComponentTypeFromMessage(message);
+        
+        if (componentInfo && installationWindow && !installationWindow.isDestroyed()) {
+          // Marcar etapas anteriores como concluídas
+          for (let i = 0; i < componentInfo.step; i++) {
+            installationWindow.webContents.send('step-update', {
+              step: i,
+              state: 'completed',
+              message: 'Concluído'
+            });
+          }
+          
+          // Atualizar etapa atual para Em andamento
+          installationWindow.webContents.send('step-update', {
+            step: componentInfo.step,
+            state: 'in-progress',
+            message: 'Em andamento'
+          });
+          
+          // Atualizar progresso
+          installationWindow.webContents.send('progress-update', {
+            percentage: componentInfo.progress
+          });
+        }
+      }
+      
+      // Enviar log para a janela de instalação
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        try {
+          installationWindow.webContents.send('log', { 
+            type: type, 
+            message: message 
+          });
+        } catch (err) {
+          console.error('Erro ao enviar log para janela de instalação:', err);
+        }
+      }
+    };
 
     // Configurar a função personalizada de perguntas
     installer.setCustomAskQuestion(function (question) {
@@ -278,7 +473,7 @@ async function setupEnvironment() {
       });
     });
 
-    // Enviar logs para a instalação
+    // Enviar mensagem inicial para a janela de instalação
     if (installationWindow && !installationWindow.isDestroyed()) {
       installationWindow.webContents.send('log', {
         type: 'header',
@@ -290,6 +485,14 @@ async function setupEnvironment() {
     const resultado = await installer.installSystem();
 
     if (resultado.success) {
+      // Enviar notificação de conclusão para a janela de instalação
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        installationWindow.webContents.send('instalacao-completa', {
+          success: true,
+          message: resultado.message || 'Instalação concluída com sucesso'
+        });
+      }
+
       await dialog.showMessageBox({
         type: 'info',
         title: 'Instalação Concluída',
@@ -297,6 +500,14 @@ async function setupEnvironment() {
         detail: 'O sistema está pronto para uso.',
         buttons: ['OK']
       });
+      
+      // Fechar a janela de instalação após 5 segundos
+      setTimeout(() => {
+        if (installationWindow && !installationWindow.isDestroyed()) {
+          installationWindow.close();
+        }
+      }, 5000);
+      
       isInstallingComponents = false;
       return true;
     } else if (resultado.needsReboot) {
@@ -316,6 +527,14 @@ async function setupEnvironment() {
       isInstallingComponents = false;
       return false;
     } else {
+      // Caso de erro
+      if (installationWindow && !installationWindow.isDestroyed()) {
+        installationWindow.webContents.send('instalacao-completa', {
+          success: false,
+          error: resultado.message || 'Erro desconhecido'
+        });
+      }
+
       await dialog.showMessageBox({
         type: 'error',
         title: 'Erro na Instalação',
@@ -478,17 +697,64 @@ function interpretarComponentesInstalacao(message) {
 function detectComponentTypeFromMessage(message) {
   const lowerMessage = message.toLowerCase();
   
-  if (lowerMessage.includes('database') || lowerMessage.includes('banco de dados')) {
-    return { type: 'database', step: 5, progress: 80 };
+  // Detectar componentes específicos com mapeamento de progresso
+  const componentPatterns = [
+    { pattern: 'verificando privilégios', step: 0, progress: 5 },
+    { pattern: 'verificando virtualização', step: 0, progress: 10 },
+    { pattern: 'wsl não está instalado', step: 0, progress: 15 },
+    { pattern: 'instalando wsl', step: 1, progress: 20 },
+    { pattern: 'recurso wsl habilitado', step: 1, progress: 30 },
+    { pattern: 'definindo wsl 2', step: 2, progress: 40 },
+    { pattern: 'kernel do wsl2 instalado', step: 2, progress: 40 },
+    { pattern: 'instalando ubuntu', step: 3, progress: 50 },
+    { pattern: 'ubuntu instalado', step: 3, progress: 60 },
+    { pattern: 'configurando usuário padrão', step: 4, progress: 70 },
+    { pattern: 'analisando componentes necessários', step: 0, progress: 20 },
+    { pattern: 'componentes que serão instalados', step: 0, progress: 25 },
+    { pattern: 'instalando aplicação', step: 5, progress: 75 },
+    { pattern: 'banco de dados', step: 5, progress: 80 },
+    { pattern: 'database', step: 5, progress: 80 },
+    { pattern: 'configurando ambiente', step: 5, progress: 80 },
+    { pattern: 'configurando sistema', step: 5, progress: 80 },
+    { pattern: 'api', step: 6, progress: 85 },
+    { pattern: 'pm2', step: 6, progress: 87 },
+    { pattern: 'configurando cups', step: 6, progress: 90 },
+    { pattern: 'configurando samba', step: 6, progress: 90 },
+    { pattern: 'configurando nginx', step: 6, progress: 90 },
+    { pattern: 'configurando serviços', step: 6, progress: 90 },
+    { pattern: 'firewall configurado', step: 6, progress: 90 },
+    { pattern: 'printer', step: 7, progress: 95 },
+    { pattern: 'impressora', step: 7, progress: 95 },
+    { pattern: 'verificando o sistema após', step: 7, progress: 98 },
+    { pattern: 'instalação concluída', step: 7, progress: 100 }
+  ];
+  
+  // Buscar primeiro padrão correspondente
+  for (const { pattern, step, progress } of componentPatterns) {
+    if (lowerMessage.includes(pattern)) {
+      console.log(`Detectado padrão: "${pattern}" → Etapa ${step}, Progresso ${progress}%`);
+      return { type: pattern, step, progress };
+    }
   }
-  else if (lowerMessage.includes('api')) {
-    return { type: 'api', step: 6, progress: 85 };
-  }
-  else if (lowerMessage.includes('pm2')) {
-    return { type: 'pm2', step: 6, progress: 87 };
-  }
-  else if (lowerMessage.includes('printer') || lowerMessage.includes('impressora')) {
-    return { type: 'printer', step: 7, progress: 95 };
+  
+  // Padrões especiais para instalação específica de componentes
+  if (lowerMessage.includes('instalando/configurando')) {
+    // Extrair qual componente está sendo instalado/configurado
+    const componentMatch = lowerMessage.match(/instalando\/configurando\s+(\w+)/i);
+    const component = componentMatch ? componentMatch[1].toLowerCase() : null;
+    
+    if (component) {
+      if (component === 'database' || component === 'packages' || component.includes('software')) {
+        return { type: component, step: 5, progress: 80 };
+      } else if (component === 'api' || component === 'pm2' || component === 'services') {
+        return { type: component, step: 6, progress: 85 };
+      } else if (component === 'printer') {
+        return { type: component, step: 7, progress: 95 };
+      }
+    }
+    
+    // Padrão genérico para instalação de componentes
+    return { type: 'generic-component', step: 5, progress: 80 };
   }
   
   return null;
@@ -1463,6 +1729,28 @@ function sendProgressUpdateToInstallWindow(percentage) {
   }
 }
 
+function sendCompletionToInstallWindow(success, message) {
+  if (installationWindow && !installationWindow.isDestroyed()) {
+    try {
+      installationWindow.webContents.send('instalacao-completa', {
+        success: success,
+        message: message || (success ? 'Instalação concluída com sucesso' : 'Erro na instalação')
+      });
+      
+      // Se for sucesso, agendar fechamento da janela após 5 segundos
+      if (success) {
+        setTimeout(() => {
+          if (installationWindow && !installationWindow.isDestroyed()) {
+            installationWindow.close();
+          }
+        }, 5000);
+      }
+    } catch (err) {
+      console.error('Erro ao enviar notificação de conclusão:', err);
+    }
+  }
+}
+
 // Instalação do WSL
 ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
   try {
@@ -1543,17 +1831,7 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
     });
 
     // Para a janela de instalação
-    if (installationWindow && !installationWindow.isDestroyed()) {
-      try {
-        console.log('Enviando log inicial para janela de instalação');
-        installationWindow.webContents.send('log', {
-          type: 'header',
-          message: headerMessage
-        });
-      } catch (err) {
-        console.error('Erro ao enviar log para janela de instalação:', err);
-      }
-    }
+    sendLogToInstallWindow('header', headerMessage);
 
     // Configurar callbacks para atualização da interface
     installer.setStepUpdateCallback((stepIndex, state, message) => {
@@ -1568,54 +1846,38 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
         stepIndex = componentInfo.step;
         
         // Garantir que etapas anteriores sejam marcadas como concluídas
-        if (installationWindow && !installationWindow.isDestroyed()) {
-          try {
-            // Primeiro marcar etapas anteriores como concluídas
-            for (let i = 0; i < stepIndex; i++) {
-              installationWindow.webContents.send('step-update', {
-                step: i,
-                state: 'completed',
-                message: 'Concluído'
-              });
-            }
-            
-            // Depois atualizar a etapa atual
-            installationWindow.webContents.send('step-update', {
-              step: stepIndex,
-              state: state,
-              message: state === 'in-progress' ? 'Em andamento' : 'Concluído'
-            });
-            
-            // Atualizar progresso também
-            installationWindow.webContents.send('progress-update', {
-              percentage: componentInfo.progress
-            });
-          } catch (err) {
-            console.error('Erro ao enviar atualizações para janela de instalação:', err);
+        try {
+          // Primeiro marcar etapas anteriores como concluídas
+          for (let i = 0; i < stepIndex; i++) {
+            sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
           }
+          
+          // Depois atualizar a etapa atual
+          sendStepUpdateToInstallWindow(
+            stepIndex, 
+            state, 
+            state === 'in-progress' ? 'Em andamento' : 'Concluído'
+          );
+          
+          // Atualizar progresso também
+          sendProgressUpdateToInstallWindow(componentInfo.progress);
+        } catch (err) {
+          console.error('Erro ao enviar atualizações para janela de instalação:', err);
         }
       } 
       // Caso padrão: usar o stepIndex fornecido
-      else if (installationWindow && !installationWindow.isDestroyed()) {
+      else {
         try {
           // Se etapa > 0 e estado in-progress/completed, garantir etapas anteriores concluídas
           if (stepIndex > 0 && (state === 'in-progress' || state === 'completed')) {
             // Primeiro marcar etapas anteriores como concluídas
             for (let i = 0; i < stepIndex; i++) {
-              installationWindow.webContents.send('step-update', {
-                step: i,
-                state: 'completed',
-                message: 'Concluído'
-              });
+              sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
             }
           }
           
           // Agora atualizar a etapa atual
-          installationWindow.webContents.send('step-update', {
-            step: stepIndex,
-            state: state,
-            message: message
-          });
+          sendStepUpdateToInstallWindow(stepIndex, state, message);
         } catch (err) {
           console.error('Erro ao enviar atualização de etapa:', err);
         }
@@ -1653,20 +1915,14 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
             const needsWsl = componentsList.some(c => c.includes('wsl'));
             const needsUbuntu = componentsList.some(c => c.includes('ubuntu'));
             
-            if (!needsWsl && !needsUbuntu && installationWindow && !installationWindow.isDestroyed()) {
+            if (!needsWsl && !needsUbuntu) {
               // É uma instalação parcial - marcar etapas iniciais como concluídas
               for (let i = 0; i <= 3; i++) {
-                installationWindow.webContents.send('step-update', {
-                  step: i,
-                  state: 'completed',
-                  message: 'Concluído'
-                });
+                sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
               }
               
               // Atualizar progresso para refletir estado avançado
-              installationWindow.webContents.send('progress-update', {
-                percentage: 60
-              });
+              sendProgressUpdateToInstallWindow(60);
               
               // Determinar próxima etapa com base nos componentes
               let nextStep = 5; // Ambiente por padrão
@@ -1680,11 +1936,7 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
               }
               
               // Atualizar próxima etapa para "Em andamento"
-              installationWindow.webContents.send('step-update', {
-                step: nextStep,
-                state: 'in-progress',
-                message: 'Em andamento'
-              });
+              sendStepUpdateToInstallWindow(nextStep, 'in-progress', 'Em andamento');
             }
           }
         } catch (err) {
@@ -1695,41 +1947,22 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
       else if (lowerMessage.includes('instalando/configurando')) {
         const componentInfo = detectComponentTypeFromMessage(message);
         
-        if (componentInfo && installationWindow && !installationWindow.isDestroyed()) {
+        if (componentInfo) {
           // Marcar etapas anteriores como concluídas
           for (let i = 0; i < componentInfo.step; i++) {
-            installationWindow.webContents.send('step-update', {
-              step: i,
-              state: 'completed',
-              message: 'Concluído'
-            });
+            sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
           }
           
           // Atualizar etapa atual para Em andamento
-          installationWindow.webContents.send('step-update', {
-            step: componentInfo.step,
-            state: 'in-progress',
-            message: 'Em andamento'
-          });
+          sendStepUpdateToInstallWindow(componentInfo.step, 'in-progress', 'Em andamento');
           
           // Atualizar progresso
-          installationWindow.webContents.send('progress-update', {
-            percentage: componentInfo.progress
-          });
+          sendProgressUpdateToInstallWindow(componentInfo.progress);
         }
       }
       
-      // Enviar log normalmente para a janela de instalação
-      if (installationWindow && !installationWindow.isDestroyed()) {
-        try {
-          installationWindow.webContents.send('log', { 
-            type: type, 
-            message: message 
-          });
-        } catch (err) {
-          console.error('Erro ao enviar log para janela de instalação:', err);
-        }
-      }
+      // Enviar log para a janela de instalação
+      sendLogToInstallWindow(type, message);
       
       // Enviar para a interface principal também
       event.reply('installation-log', {
@@ -1990,16 +2223,8 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
         message: 'Instalação concluída com sucesso! ' + (resultado.message || '')
       });
 
-      if (installationWindow && !installationWindow.isDestroyed()) {
-        try {
-          installationWindow.webContents.send('instalacao-completa', {
-            success: true,
-            message: resultado.message || 'Instalação concluída com sucesso'
-          });
-        } catch (err) {
-          console.error('Erro ao enviar notificação de conclusão:', err);
-        }
-      }
+      // Enviando notificação de sucesso para a janela de instalação
+      sendCompletionToInstallWindow(true, resultado.message || 'Instalação concluída com sucesso');
 
       // Mostrar diálogo de conclusão
       await dialog.showMessageBox({
@@ -2059,16 +2284,8 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
         message: `Erro na instalação: ${resultado.message || 'Erro desconhecido'}`
       });
 
-      if (installationWindow && !installationWindow.isDestroyed()) {
-        try {
-          installationWindow.webContents.send('instalacao-completa', {
-            success: false,
-            error: resultado.message || 'Erro desconhecido'
-          });
-        } catch (err) {
-          console.error('Erro ao enviar notificação de erro:', err);
-        }
-      }
+      // Notificar a janela de instalação sobre o erro
+      sendCompletionToInstallWindow(false, resultado.message || 'Erro desconhecido');
 
       await dialog.showMessageBox({
         type: 'error',
@@ -2091,16 +2308,7 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
     });
 
     // Notificar a janela de instalação
-    if (installationWindow && !installationWindow.isDestroyed()) {
-      try {
-        installationWindow.webContents.send('instalacao-completa', {
-          success: false,
-          error: error.message || 'Erro desconhecido'
-        });
-      } catch (err) {
-        console.error('Erro ao enviar notificação de erro:', err);
-      }
-    }
+    sendCompletionToInstallWindow(false, error.message || 'Erro desconhecido');
 
     // Mostrar diálogo de erro
     dialog.showMessageBox({
@@ -2538,7 +2746,7 @@ ipcMain.on('listar-arquivos', async (event) => {
 
     await installer.configureDefaultUser()
 
-    if (response.status === 200) {
+    if (response?.status === 200) {
       files = response.data?.data.sort((a, b) => {
         return new Date(b.date) - new Date(a.date);
       });

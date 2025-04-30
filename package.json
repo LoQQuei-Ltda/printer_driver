@@ -9,7 +9,7 @@
   "scripts": {
     "start": "electron .",
     "clean": "rimraf dist && rimraf node_modules/.cache",
-    "dev": "nodemon --exec electron . --watch .",
+    "dev": "nodemon --config nodemon.json --exec electron . --watch .",
     "prebuild": "npm run clean && npm run prepare-server-files",
     "prepare-server-files": "node prepare-server-files.js",
     "build": "electron-builder --win --x64 --config.asar=true --config.compression=maximum",
