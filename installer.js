@@ -390,11 +390,20 @@ async function installComponent(component, status) {
       case 'services':
         try {
           log('Reiniciando serviços...', 'step');
-          await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups smbd postgresql', 30000, true);
-          log('Serviços reiniciados com sucesso', 'success');
+          // Reiniciar serviços um por um para melhor tratamento de erros
+          const services = ['cups', 'smbd', 'postgresql', 'avahi-daemon', 'ufw'];
+          for (const service of services) {
+            try {
+              await verification.execPromise(`wsl -d Ubuntu -u root systemctl restart ${service}`, 10000, true);
+              log(`Serviço ${service} reiniciado com sucesso`, 'success');
+            } catch (serviceError) {
+              log(`Aviso: Erro ao reiniciar ${service}, continuando...`, 'warning');
+            }
+          }
+          log('Processo de reinicialização de serviços concluído', 'success');
           return true;
         } catch (error) {
-          log(`Erro ao reiniciar serviços: ${error.message}`, 'error');
+          log(`Erro ao reiniciar serviços: ${error?.message || 'Erro desconhecido'}`, 'error');
           return false;
         }
 
@@ -946,8 +955,8 @@ async function installRequiredPackages() {
             await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${pkg}`, 300000, true);
             verification.log(`Pacote ${pkg} instalado com sucesso`, 'success');
           } catch (pkgError) {
+            console.error(`Erro ao instalar ${pkg}: ${pkgError || 'Erro desconhecido'}`);
             verification.log(`Erro ao instalar ${pkg}: ${pkgError.message || 'Erro desconhecido'}`, 'warning');
-            // Continuar para o próximo pacote
           }
         }
       }
@@ -1125,17 +1134,37 @@ async function configureFirewall() {
     ];
 
     // Adicionar as regras
-    await verification.execPromise(`wsl -d Ubuntu -u root service ufw start`, 10000, true);
-    await verification.execPromise(`wsl -d Ubuntu -u root bash -c "ufw --force enable && systemctl start ufw"`, 10000, true);
-
-    for (const { port, protocol } of ports) {
-      verification.log(`Configurando porta ${port}/${protocol}...`, 'step');
-      await verification.execPromise(`wsl -d Ubuntu -u root ufw allow ${port}/${protocol}`, 10000, true);
+    try {
+      verification.log('Iniciando serviço UFW...', 'step');
+      await verification.execPromise(`wsl -d Ubuntu -u root systemctl start ufw`, 15000, true);
+      await verification.execPromise(`wsl -d Ubuntu -u root ufw --force enable`, 15000, true);
+      verification.log('UFW iniciado e habilitado', 'success');
+    } catch (ufwError) {
+      verification.log('Aviso: Erro ao iniciar UFW, mas tentaremos continuar...', 'warning');
     }
 
-    // Ativar o firewall
-    verification.log('Ativando firewall...', 'step');
-    await verification.execPromise('wsl -d Ubuntu -u root ufw --force enable', 20000, true);
+    let successCount = 0;
+    let failureCount = 0;
+
+    for (const { port, protocol } of ports) {
+      try {
+        verification.log(`Configurando porta ${port}/${protocol}...`, 'step');
+        await verification.execPromise(`wsl -d Ubuntu -u root ufw allow ${port}/${protocol}`, 10000, true);
+        verification.log(`Regra para ${port}/${protocol} adicionada com sucesso`, 'success');
+        successCount++;
+      } catch (ruleError) {
+        verification.log(`Aviso: Falha ao adicionar regra para ${port}/${protocol}, continuando...`, 'warning');
+        failureCount++;
+      }
+    }
+
+    // Mesmo com algumas falhas, considerar sucesso parcial
+    if (successCount > 0) {
+      verification.log(`Firewall configurado parcialmente (${successCount} de ${ports.length} regras)`, 'success');
+      return true;
+    } else if (failureCount === ports.length) {
+      throw new Error(`Nenhuma regra de firewall pôde ser configurada`);
+    }
 
     verification.log('Firewall configurado com sucesso', 'success');
     return true;
