@@ -1,19 +1,35 @@
 /**
  * Sistema de Gerenciamento de Impressão - Aplicação Desktop
+ * 
+ * Aplicativo principal com suporte multiplataforma (Windows, Linux, macOS)
  */
 
-const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, shell, nativeImage, screen } = require('electron');
+const { 
+  app, 
+  BrowserWindow, 
+  ipcMain, 
+  dialog, 
+  Tray, 
+  Menu, 
+  shell, 
+  screen 
+} = require('electron');
 const { printersSync } = require('./tasks/printers');
-const { execFile, exec } = require('child_process');
-const installer = require('./installer');
-const verification = require('./verification');
 const { printSync } = require('./tasks/print');
 const AppUpdater = require('./updater');
 const { initTask } = require('./task');
 const { initAPI } = require('./api');
 const axios = require('axios');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs-extra');
+const os = require('os');
+const { execFile, exec } = require('child_process');
+const platform = require('./platform');
+const { createInstaller } = require('./installer-factory');
+const util = require('util');
+
+// Convertir exec para Promises
+const execPromise = util.promisify(exec);
 
 // Manter referências globais
 let mainWindow;
@@ -27,8 +43,8 @@ let installationWindow = null;
 let isInstallingInProgress = false;
 let isInstallingComponents = false;
 
+// Configuração do aplicativo
 const appConfig = {
-  //   apiPrincipalServiceUrl: 'https://api.loqquei.com.br/api/v1',
   apiPrincipalServiceUrl: 'http://177.54.87.225:53000/api/v1',
   apiLocalUrl: 'http://localhost:56258/api',
   autoStart: true,
@@ -41,182 +57,66 @@ const appConfig = {
   defaultHeight: 600
 };
 
-verification.execPromise('wsl -d Ubuntu -u root bash -c echo "Ubuntu está acessível"', 10000, true);
-verification.execPromise('wsl -d Ubuntu -u root bash -c pm2 list', 10000, true);
+// Detectar a plataforma atual
+const currentPlatform = platform.detectPlatform();
+const currentArch = platform.detectArch();
+const platformHandler = createInstaller();
 
-const setupWSL = process.argv.includes('--setup-wsl');
-
-if (setupWSL) {
-  console.log('Iniciando verificação e configuração do WSL e Ubuntu...');
-
-  // Verificar se estamos rodando como administrador
-  checkAdminPrivileges().then(isAdmin => {
-    if (!isAdmin) {
-      dialog.showMessageBox({
-        type: 'error',
-        title: 'Privilégios de Administrador',
-        message: 'Esta operação precisa ser executada como administrador.',
-        detail: 'Por favor, execute a aplicação novamente como administrador.',
-        buttons: ['OK']
-      }).then(() => {
-        app.exit(1);
-      });
-      return;
-    }
-
-    // Configurar o ambiente WSL
-    setupEnvironment().then(success => {
-      if (success) {
-        dialog.showMessageBox({
-          type: 'info',
-          title: 'Configuração Concluída',
-          message: 'A configuração do WSL e Ubuntu foi concluída com sucesso.',
-          detail: 'O sistema está pronto para uso.',
-          buttons: ['OK']
-        }).then(() => {
-          app.exit(0);
-        });
-      } else {
-        dialog.showMessageBox({
-          type: 'warning',
-          title: 'Configuração Incompleta',
-          message: 'A configuração do WSL e Ubuntu não foi concluída completamente.',
-          detail: 'Alguns recursos podem não funcionar corretamente.',
-          buttons: ['OK']
-        }).then(() => {
-          app.exit(1);
-        });
-      }
-    }).catch(error => {
-      dialog.showMessageBox({
-        type: 'error',
-        title: 'Erro na Configuração',
-        message: 'Ocorreu um erro durante a configuração do WSL e Ubuntu.',
-        detail: error.message || 'Erro desconhecido',
-        buttons: ['OK']
-      }).then(() => {
-        console.error('Erro ao configurar WSL:', error);
-        app.exit(1);
-      });
-    });
-  }).catch(error => {
-    console.error('Erro ao verificar privilégios:', error);
-    app.exit(1);
-  });
-
-  return;
-}
-
-function interpretarMensagemLog(message, type) {
-  const lowerMessage = message.toLowerCase();
-
-  // Mapear mensagens para estados de componentes
-  if (lowerMessage.includes('analisando componentes necessários')) {
-    // Verificação completa, analisando componentes
-    return {
-      type: 'component-analysis',
-      step: 0,
-      state: 'completed',
-      progress: 20
-    };
-  }
-  else if (lowerMessage.includes('instalando aplicação') ||
-    lowerMessage.includes('instalando/configurando packages')) {
-    // Instalando aplicação (ambiente de sistema)
-    return {
-      type: 'component-install',
-      step: 5,  // Etapa "Configurando ambiente de sistema"
-      state: 'in-progress',
-      progress: 80
-    };
-  }
-  else if (lowerMessage.includes('instalando componente')) {
-    // Determinar qual componente está sendo instalado
-    let step = 5; // Ambiente por padrão
-
-    if (lowerMessage.includes('packages')) {
-      step = 5; // Ambiente
-    }
-    else if (lowerMessage.includes('cups') ||
-      lowerMessage.includes('samba') ||
-      lowerMessage.includes('firewall') ||
-      lowerMessage.includes('database') ||
-      lowerMessage.includes('service')) {
-      step = 6; // Serviços
-    }
-
-    return {
-      type: 'component-install',
-      step: step,
-      state: 'in-progress',
-      progress: step === 5 ? 80 : 90
-    };
-  }
-
-  // Sem interpretação especial para outras mensagens
-  return null;
-}
-
-// Função para verificar privilégios de administrador
+/**
+ * Verifica se o usuário possui privilégios de administrador
+ * @returns {Promise<boolean>} True se tem privilégios, false caso contrário
+ */
 async function checkAdminPrivileges() {
   try {
-    if (process.platform !== 'win32') {
-      return true; // Em sistemas não-Windows, presume-se privilégios suficientes
-    }
-
-    // Verificar se estamos rodando como administrador
-    return new Promise((resolve) => {
-      exec('powershell -Command "([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"',
-        (error, stdout, stderr) => {
-          if (error) {
-            console.error('Erro ao verificar privilégios:', error);
-            resolve(false);
-            return;
-          }
-          resolve(stdout.trim() === 'True');
-        }
-      );
-    });
+    return await platformHandler.checkAdminPrivileges();
   } catch (error) {
     console.error('Erro ao verificar privilégios de administrador:', error);
     return false;
   }
 }
 
-// Elevar privilégios do aplicativo (reiniciar como administrador)
+/**
+ * Tenta elevar privilégios (reiniciar como administrador)
+ * Funciona apenas no Windows
+ */
 function elevatePrivileges() {
   try {
+    if (platform.detectPlatform() !== 'windows') {
+      console.log('Elevação de privilégios é suportada apenas no Windows');
+      return false;
+    }
+
     const appPath = process.execPath;
     const args = process.argv.slice(1);
 
-    // Usar PowerShell para executar como administrador
     execFile('powershell.exe', [
       '-Command',
       `Start-Process -FilePath '${appPath.replace(/(\s+)/g, '`$1')}' -ArgumentList '${args.join(' ')}' -Verb RunAs`
     ]);
 
-    // Encerrar o processo atual
     setTimeout(() => app.exit(), 1000);
+    return true;
   } catch (error) {
     console.error('Erro ao elevar privilégios:', error);
     return false;
   }
 }
 
-// Verificar e configurar o ambiente necessário (WSL e Ubuntu)
+/**
+ * Verifica e configura o ambiente necessário para a plataforma
+ */
 async function setupEnvironment() {
   try {
-    // Se já está instalando componentes, não continuar
-    if (isInstallingComponents) return;
+    if (isInstallingComponents) return false;
     isInstallingComponents = true;
 
     console.log('Verificando componentes do sistema...');
 
-    // Verificar se WSL e Ubuntu já estão instalados
-    const wslStatus = await verification.checkWSLStatusDetailed();
+    // Verificar componentes da plataforma
+    const systemStatus = await platformHandler.checkSystemRequirements();
 
-    // Se tudo estiver instalado, não fazer nada
-    if (wslStatus.installed && wslStatus.wsl2 && wslStatus.hasDistro) {
+    // Se tudo estiver OK, não fazemos nada
+    if (systemStatus.compatible && !systemStatus.errors.length) {
       console.log('Todos os componentes do sistema estão instalados');
       isInstallingComponents = false;
       return true;
@@ -227,7 +127,7 @@ async function setupEnvironment() {
       type: 'question',
       title: 'Instalação de Componentes',
       message: 'Componentes necessários não encontrados',
-      detail: `Este aplicativo requer ${!wslStatus.installed ? 'WSL 2' : ''}${(!wslStatus.installed && !wslStatus.hasDistro) ? ' e ' : ''}${!wslStatus.hasDistro ? 'Ubuntu' : ''} para funcionar corretamente. Deseja instalar esses componentes agora?`,
+      detail: `Este aplicativo requer alguns componentes para funcionar corretamente. Deseja instalar esses componentes agora?`,
       buttons: ['Sim', 'Não'],
       defaultId: 0
     });
@@ -261,225 +161,8 @@ async function setupEnvironment() {
       sendLogToInstallWindow('header', 'Iniciando instalação de componentes do sistema');
     }
 
-    // *** IMPORTANTE - CONFIGURAÇÃO DOS CALLBACKS ***
-    // Configurar callbacks para atualização da interface - igual ao handler IPC
-    installer.setStepUpdateCallback((stepIndex, state, message) => {
-      console.log(`Atualizando etapa ${stepIndex} para estado ${state}: ${message}`);
-      
-      // Verificar se a mensagem indica um componente específico
-      const componentInfo = detectComponentTypeFromMessage(message);
-      
-      // Caso especial: se a mensagem é sobre componente específico, ajustar a etapa
-      if (componentInfo && (state === 'in-progress' || state === 'completed')) {
-        // Sobrescrever o stepIndex com base no tipo de componente
-        stepIndex = componentInfo.step;
-        
-        // Garantir que etapas anteriores sejam marcadas como concluídas
-        if (installationWindow && !installationWindow.isDestroyed()) {
-          try {
-            // Primeiro marcar etapas anteriores como concluídas
-            for (let i = 0; i < stepIndex; i++) {
-              installationWindow.webContents.send('step-update', {
-                step: i,
-                state: 'completed',
-                message: 'Concluído'
-              });
-            }
-            
-            // Depois atualizar a etapa atual
-            installationWindow.webContents.send('step-update', {
-              step: stepIndex,
-              state: state,
-              message: state === 'in-progress' ? 'Em andamento' : 'Concluído'
-            });
-            
-            // Atualizar progresso também
-            installationWindow.webContents.send('progress-update', {
-              percentage: componentInfo.progress
-            });
-          } catch (err) {
-            console.error('Erro ao enviar atualizações para janela de instalação:', err);
-          }
-        }
-      } 
-      // Caso padrão: usar o stepIndex fornecido
-      else if (installationWindow && !installationWindow.isDestroyed()) {
-        try {
-          // Se etapa > 0 e estado in-progress/completed, garantir etapas anteriores concluídas
-          if (stepIndex > 0 && (state === 'in-progress' || state === 'completed')) {
-            // Primeiro marcar etapas anteriores como concluídas
-            for (let i = 0; i < stepIndex; i++) {
-              installationWindow.webContents.send('step-update', {
-                step: i,
-                state: 'completed',
-                message: 'Concluído'
-              });
-            }
-          }
-          
-          // Agora atualizar a etapa atual
-          installationWindow.webContents.send('step-update', {
-            step: stepIndex,
-            state: state,
-            message: message
-          });
-        } catch (err) {
-          console.error('Erro ao enviar atualização de etapa:', err);
-        }
-      }
-    });
-
-    installer.setProgressCallback((percentage) => {
-      // Enviar atualização de progresso para a janela de instalação
-      if (installationWindow && !installationWindow.isDestroyed()) {
-        try {
-          installationWindow.webContents.send('progress-update', {
-            percentage: percentage
-          });
-        } catch (err) {
-          console.error('Erro ao enviar atualização de progresso:', err);
-        }
-      }
-    });
-
-    // Modificar a função de log do installer para enviar mensagens para a janela de instalação
-    const originalLog = installer.log;
-    installer.log = function(message, type = 'info') {
-      // Log original
-      originalLog(message, type);
-      
-      // Detectar quando estamos listando componentes para instalação seletiva
-      const lowerMessage = message.toLowerCase();
-      if (lowerMessage.includes('componentes que serão instalados:')) {
-        // Tentar extrair os componentes
-        try {
-          const componentsMatch = lowerMessage.match(/instalados:\s*(.+)$/);
-          if (componentsMatch && componentsMatch[1]) {
-            const componentsList = componentsMatch[1].split(',').map(c => c.trim().toLowerCase());
-            console.log('Detectados componentes para instalação:', componentsList);
-            
-            // Verificar se WSL e Ubuntu NÃO estão na lista - isso indica instalação parcial
-            const needsWsl = componentsList.some(c => c.includes('wsl'));
-            const needsUbuntu = componentsList.some(c => c.includes('ubuntu'));
-            
-            if (!needsWsl && !needsUbuntu && installationWindow && !installationWindow.isDestroyed()) {
-              // É uma instalação parcial - marcar etapas iniciais como concluídas
-              for (let i = 0; i <= 3; i++) {
-                installationWindow.webContents.send('step-update', {
-                  step: i,
-                  state: 'completed',
-                  message: 'Concluído'
-                });
-              }
-              
-              // Atualizar progresso para refletir estado avançado
-              installationWindow.webContents.send('progress-update', {
-                percentage: 60
-              });
-              
-              // Determinar próxima etapa com base nos componentes
-              let nextStep = 5; // Ambiente por padrão
-              
-              if (componentsList.includes('database') || componentsList.includes('software')) {
-                nextStep = 5; // Ambiente
-              } else if (componentsList.includes('api') || componentsList.includes('pm2') || componentsList.includes('services')) {
-                nextStep = 6; // Serviços
-              } else if (componentsList.includes('printer')) {
-                nextStep = 7; // Finalização
-              }
-              
-              // Atualizar próxima etapa para "Em andamento"
-              installationWindow.webContents.send('step-update', {
-                step: nextStep,
-                state: 'in-progress',
-                message: 'Em andamento'
-              });
-            }
-          }
-        } catch (err) {
-          console.error('Erro ao processar lista de componentes:', err);
-        }
-      }
-      // Tratar caso especial quando estamos instalando componentes específicos
-      else if (lowerMessage.includes('instalando/configurando')) {
-        const componentInfo = detectComponentTypeFromMessage(message);
-        
-        if (componentInfo && installationWindow && !installationWindow.isDestroyed()) {
-          // Marcar etapas anteriores como concluídas
-          for (let i = 0; i < componentInfo.step; i++) {
-            installationWindow.webContents.send('step-update', {
-              step: i,
-              state: 'completed',
-              message: 'Concluído'
-            });
-          }
-          
-          // Atualizar etapa atual para Em andamento
-          installationWindow.webContents.send('step-update', {
-            step: componentInfo.step,
-            state: 'in-progress',
-            message: 'Em andamento'
-          });
-          
-          // Atualizar progresso
-          installationWindow.webContents.send('progress-update', {
-            percentage: componentInfo.progress
-          });
-        }
-      }
-      
-      // Enviar log para a janela de instalação
-      if (installationWindow && !installationWindow.isDestroyed()) {
-        try {
-          installationWindow.webContents.send('log', { 
-            type: type, 
-            message: message 
-          });
-        } catch (err) {
-          console.error('Erro ao enviar log para janela de instalação:', err);
-        }
-      }
-    };
-
-    // Configurar a função personalizada de perguntas
-    installer.setCustomAskQuestion(function (question) {
-      return new Promise((resolve) => {
-        // Log da pergunta
-        installer.log(`Pergunta: ${question}`, 'info');
-
-        if (installationWindow && !installationWindow.isDestroyed()) {
-          // Enviar a pergunta para a interface
-          installationWindow.webContents.send('pergunta', { question });
-
-          // Configurar receptor de resposta via IPC
-          const responseHandler = (responseEvent, resposta) => {
-            ipcMain.removeListener('resposta-pergunta', responseHandler);
-            resolve(resposta);
-          };
-
-          // Escutar pela resposta
-          ipcMain.once('resposta-pergunta', responseHandler);
-        } else {
-          // Fallback: usar dialog
-          dialog.showMessageBox({
-            type: 'question',
-            buttons: ['Sim', 'Não'],
-            defaultId: 0,
-            title: 'Instalador',
-            message: question
-          }).then(result => {
-            const response = result.response === 0 ? 's' : 'n';
-            resolve(response);
-          }).catch(() => {
-            // Em caso de erro, assumir sim
-            resolve('s');
-          });
-        }
-      });
-    });
-
-    // Instalar os componentes necessários
-    const resultado = await installer.installSystem();
+    // Configurar callbacks para atualização da interface
+    const resultado = await platformHandler.install();
 
     if (resultado.success) {
       // Enviar notificação de conclusão para a janela de instalação
@@ -518,9 +201,16 @@ async function setupEnvironment() {
       });
 
       if (rebootChoice.response === 0) {
-        // Reiniciar o computador
-        exec('shutdown /r /t 10');
+        // Reiniciar o computador - método específico por plataforma
+        if (platform.detectPlatform() === 'windows') {
+          exec('shutdown /r /t 10');
+        } else if (platform.detectPlatform() === 'linux') {
+          exec('sudo shutdown -r now');
+        } else if (platform.detectPlatform() === 'macos') {
+          exec('sudo shutdown -r now');
+        }
       }
+      
       isInstallingComponents = false;
       return false;
     } else {
@@ -539,6 +229,7 @@ async function setupEnvironment() {
         detail: resultado.message || 'Verifique o log para mais detalhes.',
         buttons: ['OK']
       });
+      
       isInstallingComponents = false;
       return false;
     }
@@ -549,6 +240,11 @@ async function setupEnvironment() {
   }
 }
 
+/**
+ * Salva configurações de impressão automática
+ * @param {Object} config Configuração de impressão automática
+ * @returns {boolean} True se salvo com sucesso
+ */
 function saveAutoPrintConfig(config) {
   try {
     const userData = getUserData();
@@ -571,6 +267,10 @@ function saveAutoPrintConfig(config) {
   }
 }
 
+/**
+ * Obter configurações de impressão automática
+ * @returns {Object|null} Configurações de impressão automática ou null se erro
+ */
 function getAutoPrintConfig() {
   try {
     const userData = getUserData();
@@ -602,31 +302,42 @@ if (!gotTheLock) {
   });
 }
 
-// Configurar inicialização automática
+/**
+ * Configura inicialização automática do aplicativo
+ */
 function setupAutoLaunch() {
-  const AutoLaunch = require('auto-launch');
-  const autoLauncher = new AutoLaunch({
-    name: 'Sistema de Gerenciamento de Impressão',
-    path: app.getPath('exe'),
-  });
+  try {
+    const AutoLaunch = require('auto-launch');
+    const autoLauncher = new AutoLaunch({
+      name: 'Sistema de Gerenciamento de Impressão',
+      path: app.getPath('exe'),
+    });
 
-  autoLauncher.isEnabled().then((isEnabled) => {
-    if (appConfig.autoStart && !isEnabled) {
-      autoLauncher.enable();
-    } else if (!appConfig.autoStart && isEnabled) {
-      autoLauncher.disable();
-    }
-  });
+    autoLauncher.isEnabled().then((isEnabled) => {
+      if (appConfig.autoStart && !isEnabled) {
+        autoLauncher.enable();
+      } else if (!appConfig.autoStart && isEnabled) {
+        autoLauncher.disable();
+      }
+    });
+  } catch (error) {
+    console.error('Erro ao configurar inicialização automática:', error);
+  }
 }
 
-// Criar diretório de dados se não existir
+/**
+ * Cria o diretório de dados se não existir
+ */
 function ensureDirectories() {
   if (!fs.existsSync(appConfig.dataPath)) {
     fs.mkdirSync(appConfig.dataPath, { recursive: true });
   }
 }
 
-// Verificar se o usuário está autenticado
+/**
+ * Verifica se o usuário está autenticado
+ * @returns {boolean} True se autenticado
+ */
 function isAuthenticated() {
   try {
     if (fs.existsSync(appConfig.userDataFile)) {
@@ -639,7 +350,10 @@ function isAuthenticated() {
   return false;
 }
 
-// Salvar dados do usuário
+/**
+ * Salva dados do usuário
+ * @param {Object} userData Dados do usuário
+ */
 function saveUserData(userData) {
   try {
     ensureDirectories();
@@ -650,114 +364,65 @@ function saveUserData(userData) {
   }
 }
 
-function interpretarComponentesInstalacao(message) {
-  const lowerMessage = message.toLowerCase();
-  
-  // Extrair informações sobre componentes a serem instalados
-  if (lowerMessage.includes('componentes que serão instalados:')) {
+/**
+ * Envia log para a janela de instalação
+ * @param {string} type Tipo de log
+ * @param {string} message Mensagem de log
+ */
+function sendLogToInstallWindow(type, message) {
+  if (installationWindow && !installationWindow.isDestroyed()) {
     try {
-      const componentesMatch = lowerMessage.match(/instalados:\s*(.+)$/);
-      if (componentesMatch && componentesMatch[1]) {
-        const componentes = componentesMatch[1]
-          .split(',')
-          .map(comp => comp.trim().toLowerCase());
-        
-        console.log('Componentes detectados:', componentes);
-        
-        // Verificar quais etapas podem ser marcadas como concluídas
-        const needsWsl = componentes.includes('wsl');
-        const needsUbuntu = componentes.includes('ubuntu');
-        
-        // Se não precisa de WSL nem Ubuntu, marcar essas etapas como concluídas
-        if (!needsWsl && !needsUbuntu) {
-          if (installationWindow && !installationWindow.isDestroyed()) {
-            // Marcar as primeiras etapas como concluídas
-            for (let i = 0; i < 4; i++) {
-              sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
-            }
-            
-            // Atualizar progresso
-            sendProgressUpdateToInstallWindow(60);
-          }
-        }
-        
-        return true;
-      }
+      installationWindow.webContents.send('log', { type, message });
+      console.log(`Log enviado para janela de instalação: [${type}] ${message}`);
     } catch (err) {
-      console.error('Erro ao interpretar componentes:', err);
+      console.error('Erro ao enviar log para a janela de instalação:', err);
     }
+  } else {
+    console.log(`Log não enviado (janela não disponível): [${type}] ${message}`);
   }
-  
-  return false;
 }
 
-function detectComponentTypeFromMessage(message) {
-  const lowerMessage = message.toLowerCase();
-  
-  // Detectar componentes específicos com mapeamento de progresso
-  const componentPatterns = [
-    { pattern: 'verificando privilégios', step: 0, progress: 5 },
-    { pattern: 'verificando virtualização', step: 0, progress: 10 },
-    { pattern: 'wsl não está instalado', step: 0, progress: 15 },
-    { pattern: 'instalando wsl', step: 1, progress: 20 },
-    { pattern: 'recurso wsl habilitado', step: 1, progress: 30 },
-    { pattern: 'definindo wsl 2', step: 2, progress: 40 },
-    { pattern: 'kernel do wsl2 instalado', step: 2, progress: 40 },
-    { pattern: 'instalando ubuntu', step: 3, progress: 50 },
-    { pattern: 'ubuntu instalado', step: 3, progress: 60 },
-    { pattern: 'configurando usuário padrão', step: 4, progress: 70 },
-    { pattern: 'analisando componentes necessários', step: 0, progress: 20 },
-    { pattern: 'componentes que serão instalados', step: 0, progress: 25 },
-    { pattern: 'instalando aplicação', step: 5, progress: 75 },
-    { pattern: 'banco de dados', step: 5, progress: 80 },
-    { pattern: 'database', step: 5, progress: 80 },
-    { pattern: 'configurando ambiente', step: 5, progress: 80 },
-    { pattern: 'configurando sistema', step: 5, progress: 80 },
-    { pattern: 'api', step: 6, progress: 85 },
-    { pattern: 'pm2', step: 6, progress: 87 },
-    { pattern: 'configurando cups', step: 6, progress: 90 },
-    { pattern: 'configurando samba', step: 6, progress: 90 },
-    { pattern: 'configurando nginx', step: 6, progress: 90 },
-    { pattern: 'configurando serviços', step: 6, progress: 90 },
-    { pattern: 'firewall configurado', step: 6, progress: 90 },
-    { pattern: 'printer', step: 7, progress: 95 },
-    { pattern: 'impressora', step: 7, progress: 95 },
-    { pattern: 'verificando o sistema após', step: 7, progress: 98 },
-    { pattern: 'instalação concluída', step: 7, progress: 100 }
-  ];
-  
-  // Buscar primeiro padrão correspondente
-  for (const { pattern, step, progress } of componentPatterns) {
-    if (lowerMessage.includes(pattern)) {
-      console.log(`Detectado padrão: "${pattern}" → Etapa ${step}, Progresso ${progress}%`);
-      return { type: pattern, step, progress };
+/**
+ * Função para enviar atualizações de etapa para a janela de instalação
+ * @param {number} step Número da etapa
+ * @param {string} state Estado da etapa
+ * @param {string} message Mensagem
+ */
+function sendStepUpdateToInstallWindow(step, state, message) {
+  if (installationWindow && !installationWindow.isDestroyed()) {
+    try {
+      console.log(`Enviando atualização de etapa: ${step}, ${state}, ${message}`);
+      installationWindow.webContents.send('step-update', {
+        step: step,
+        state: state,
+        message: message
+      });
+    } catch (err) {
+      console.error('Erro ao enviar atualização de etapa:', err);
     }
   }
-  
-  // Padrões especiais para instalação específica de componentes
-  if (lowerMessage.includes('instalando/configurando')) {
-    // Extrair qual componente está sendo instalado/configurado
-    const componentMatch = lowerMessage.match(/instalando\/configurando\s+(\w+)/i);
-    const component = componentMatch ? componentMatch[1].toLowerCase() : null;
-    
-    if (component) {
-      if (component === 'database' || component === 'packages' || component.includes('software')) {
-        return { type: component, step: 5, progress: 80 };
-      } else if (component === 'api' || component === 'pm2' || component === 'services') {
-        return { type: component, step: 6, progress: 85 };
-      } else if (component === 'printer') {
-        return { type: component, step: 7, progress: 95 };
-      }
-    }
-    
-    // Padrão genérico para instalação de componentes
-    return { type: 'generic-component', step: 5, progress: 80 };
-  }
-  
-  return null;
 }
 
-// Obter dados do usuário
+/**
+ * Função para enviar atualizações de progresso para a janela de instalação
+ * @param {number} percentage Porcentagem de progresso
+ */
+function sendProgressUpdateToInstallWindow(percentage) {
+  if (installationWindow && !installationWindow.isDestroyed()) {
+    try {
+      installationWindow.webContents.send('progress-update', {
+        percentage: percentage
+      });
+    } catch (err) {
+      console.error('Erro ao enviar atualização de progresso:', err);
+    }
+  }
+}
+
+/**
+ * Obter dados do usuário
+ * @returns {Object|null} Dados do usuário ou null se erro
+ */
 function getUserData() {
   try {
     if (fs.existsSync(appConfig.userDataFile)) {
@@ -769,7 +434,9 @@ function getUserData() {
   return null;
 }
 
-// Salvar preferências da janela
+/**
+ * Salva preferências da janela
+ */
 function saveWindowPreferences() {
   try {
     if (mainWindow) {
@@ -790,7 +457,10 @@ function saveWindowPreferences() {
   }
 }
 
-// Obter preferências da janela
+/**
+ * Obter preferências da janela
+ * @returns {Object} Preferências da janela
+ */
 function getWindowPreferences() {
   try {
     if (fs.existsSync(appConfig.windowPrefsFile)) {
@@ -808,11 +478,12 @@ function getWindowPreferences() {
   };
 }
 
-// Criar janela de login
+/**
+ * Criar janela de login
+ */
 function createLoginWindow() {
   // Importar o ícone da aplicação
-  const iconPath = path.join(__dirname, `assets/icon/${currentTheme}.ico`);
-  console.log(iconPath);
+  const iconPath = getIconPath();
 
   // Obter tamanho da tela
   const primaryDisplay = screen.getPrimaryDisplay();
@@ -860,11 +531,31 @@ function createLoginWindow() {
   });
 }
 
-// Criar janela principal
+/**
+ * Obtém o caminho do ícone apropriado para a plataforma atual
+ * @returns {string} Caminho do ícone
+ */
+function getIconPath() {
+  const currentPlatform = platform.detectPlatform();
+  
+  switch (currentPlatform) {
+    case 'windows':
+      return path.join(__dirname, `assets/icon/${currentTheme}.ico`);
+    case 'linux':
+      return path.join(__dirname, 'assets/icon/icon.png');
+    case 'macos':
+      return path.join(__dirname, 'assets/icon/icon.icns');
+    default:
+      return path.join(__dirname, `assets/icon/${currentTheme}.ico`);
+  }
+}
+
+/**
+ * Criar janela principal
+ */
 function createMainWindow() {
   // Importar o ícone da aplicação
-  const iconPath = path.join(__dirname, `assets/icon/${currentTheme}.ico`);
-  console.log(iconPath);
+  const iconPath = getIconPath();
 
   // Obter tamanho da tela
   const primaryDisplay = screen.getPrimaryDisplay();
@@ -959,6 +650,7 @@ function createMainWindow() {
     mainWindow.webContents.send('window-shown');
   });
 
+  // Adicionar notificação de atualização na interface
   mainWindow.webContents.on('did-finish-load', () => {
     mainWindow.webContents.executeJavaScript(`
       // Add update notification UI
@@ -1010,7 +702,6 @@ function createMainWindow() {
             
           case 'downloading':
           case 'installing':
-          case 'updating-wsl':
             notification.innerHTML = \`
               <div style="display:flex;align-items:center;">
                 <div class="spinner" style="width:16px;height:16px;margin-right:8px;"></div>
@@ -1021,7 +712,6 @@ function createMainWindow() {
             break;
             
           case 'update-error':
-          case 'wsl-update-error':
             notification.innerHTML = \`
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
                 <div style="font-weight:500;">Erro na atualização</div>
@@ -1067,10 +757,12 @@ function createMainWindow() {
   global.appWindow = mainWindow;
 }
 
-// Criar janela de instalação
+/**
+ * Criar janela de instalação
+ */
 function createInstallationWindow() {
   // Importar o ícone da aplicação
-  const iconPath = path.join(__dirname, `assets/icon/${currentTheme}.ico`);
+  const iconPath = getIconPath();
 
   // Fechar a janela existente se houver
   if (installationWindow && !installationWindow.isDestroyed()) {
@@ -1119,10 +811,12 @@ function createInstallationWindow() {
   return installationWindow;
 }
 
-// Criar ícone na bandeja
+/**
+ * Criar ícone na bandeja
+ */
 function createTray() {
-  // Usar o ícone de acordo com o tema atual
-  const iconPath = path.join(__dirname, `assets/icon/${currentTheme}.ico`);
+  // Usar o ícone de acordo com o tema atual e plataforma
+  const iconPath = getIconPath();
 
   // Criar o ícone na bandeja
   try {
@@ -1183,6 +877,9 @@ function createTray() {
   }
 }
 
+/**
+ * Atualiza o menu da bandeja
+ */
 function updateTrayMenu() {
   if (!tray || tray.isDestroyed()) return;
 
@@ -1224,6 +921,9 @@ function updateTrayMenu() {
   tray.setContextMenu(contextMenu);
 }
 
+/**
+ * Alterna o estado da impressão automática a partir da bandeja
+ */
 function toggleAutoPrintFromTray() {
   // Obter configuração atual
   const autoPrintConfig = getAutoPrintConfig();
@@ -1279,31 +979,13 @@ function toggleAutoPrintFromTray() {
   }
 }
 
-// Função auxiliar para executar comandos
-function execPromise(command, timeoutMs = 60000, quiet = false) {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`Tempo limite excedido (${timeoutMs / 1000}s): ${command}`));
-    }, timeoutMs);
-
-    execFile('cmd.exe', ['/c', command], { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
-      clearTimeout(timeout);
-
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve(stdout.trim());
-    });
-  });
-}
-
 // Este método será chamado quando o Electron terminar a inicialização
 app.whenReady().then(async () => {
   // Verificar se temos privilégios de administrador
   const isAdmin = await checkAdminPrivileges();
 
-  if (!isAdmin) {
+  if (!isAdmin && platform.detectPlatform() === 'windows') {
+    // No Windows, podemos tentar elevar privilégios
     // Mostrar diálogo perguntando se deseja continuar com elevação
     const choice = await dialog.showMessageBox({
       type: 'question',
@@ -1443,33 +1125,7 @@ ipcMain.on('verificar-sistema-detalhado', async (event) => {
     console.log('Recebida solicitação de verificação detalhada do sistema');
 
     // Verificar status do sistema com verificação completa
-    const systemStatus = await verification.checkSystemStatus();
-
-    // Verificar status do software (mais detalhado)
-    if (systemStatus.wslStatus.installed && systemStatus.wslStatus.hasDistro) {
-      systemStatus.softwareStatus = await verification.checkSoftwareConfigurations();
-    }
-
-    // Verificar status da impressora virtual do Windows
-    systemStatus.printerStatus = await verification.checkWindowsPrinterInstalled();
-
-    // Determinar se o sistema precisa ser configurado - agora mais rigoroso
-    systemStatus.needsConfiguration = !systemStatus.systemConfigured;
-    if (systemStatus.softwareStatus) {
-      systemStatus.needsConfiguration = !systemStatus.softwareStatus.fullyConfigured;
-
-      // Levar em consideração portas de firewall específicas
-      if (systemStatus.softwareStatus.firewallStatus &&
-        !systemStatus.softwareStatus.firewallStatus.configured) {
-        systemStatus.needsConfiguration = true;
-      }
-
-      // Levar em consideração configuração da impressora
-      if (systemStatus.printerStatus &&
-        (!systemStatus.printerStatus.installed || !systemStatus.printerStatus.correctConfig)) {
-        systemStatus.needsConfiguration = true;
-      }
-    }
+    const systemStatus = await platformHandler.checkSystemRequirements();
 
     // Salvar o status em cache global para fallback
     global.lastSystemStatus = systemStatus;
@@ -1517,8 +1173,7 @@ ipcMain.on('update-app-icon', (event, { theme }) => {
   currentTheme = theme;
 
   // Caminho para o novo ícone
-  const iconPath = path.join(__dirname, `assets/icon/${theme}.ico`);
-  console.log(iconPath);
+  const iconPath = getIconPath();
 
   // Verificar se o arquivo existe
   if (fs.existsSync(iconPath)) {
@@ -1568,7 +1223,7 @@ ipcMain.on('show-auto-print-modal', (event) => {
 // Login
 ipcMain.on('login', async (event, credentials) => {
   try {
-    let response
+    let response;
     try {
       response = await axios.post(`${appConfig.apiPrincipalServiceUrl}/login/desktop`, {
         email: credentials.email,
@@ -1666,106 +1321,7 @@ ipcMain.on('get-user', (event) => {
   event.reply('user-data', userData);
 });
 
-// Verificar status de instalação do WSL
-ipcMain.on('verificar-instalacao', async (event) => {
-  try {
-    const wslStatus = await installer.checkWSLStatusDetailed();
-
-    // Verificar se o usuário padrão está configurado
-    let userConfigured = false;
-    if (wslStatus.installed && wslStatus.wsl2 && wslStatus.hasDistro) {
-      try {
-        const output = await execPromise('wsl -d Ubuntu -u root id print_user', 10000, true);
-        userConfigured = output.trim() !== '';
-      } catch (error) {
-        console.error('Erro ao verificar usuário:', error);
-      }
-    }
-
-    event.reply('status-instalacao', {
-      wslInstalled: wslStatus.installed,
-      wsl2Configured: wslStatus.wsl2,
-      distroInstalled: wslStatus.hasDistro,
-      userConfigured: userConfigured
-    });
-  } catch (error) {
-    console.error('Erro ao verificar status de instalação:', error);
-    event.reply('status-instalacao', {
-      wslInstalled: false,
-      wsl2Configured: false,
-      distroInstalled: false,
-      userConfigured: false,
-      error: error.message
-    });
-  }
-});
-
-function sendLogToInstallWindow(type, message) {
-  if (installationWindow && !installationWindow.isDestroyed()) {
-    try {
-      installationWindow.webContents.send('log', { type, message });
-      console.log(`Log enviado para janela de instalação: [${type}] ${message}`);
-    } catch (err) {
-      console.error('Erro ao enviar log para a janela de instalação:', err);
-    }
-  } else {
-    console.log(`Log não enviado (janela não disponível): [${type}] ${message}`);
-  }
-}
-
-// Função para enviar atualizações de etapa para a janela de instalação
-function sendStepUpdateToInstallWindow(step, state, message) {
-  if (installationWindow && !installationWindow.isDestroyed()) {
-    try {
-      console.log(`Enviando atualização de etapa: ${step}, ${state}, ${message}`);
-      installationWindow.webContents.send('step-update', {
-        step: step,
-        state: state,
-        message: message
-      });
-    } catch (err) {
-      console.error('Erro ao enviar atualização de etapa:', err);
-    }
-  }
-}
-
-// Função para enviar atualizações de progresso para a janela de instalação
-function sendProgressUpdateToInstallWindow(percentage) {
-  if (installationWindow && !installationWindow.isDestroyed()) {
-    try {
-      installationWindow.webContents.send('progress-update', {
-        percentage: percentage
-      });
-    } catch (err) {
-      console.error('Erro ao enviar atualização de progresso:', err);
-    }
-  }
-}
-
-// Função para enviar notificação de conclusão para a janela de instalação
-function sendCompletionToInstallWindow(success, message) {
-  if (installationWindow && !installationWindow.isDestroyed()) {
-    try {
-      installationWindow.webContents.send('instalacao-completa', {
-        success: success,
-        message: message || (success ? 'Instalação concluída com sucesso' : 'Erro na instalação')
-      });
-      
-      // Se for sucesso, agendar fechamento da janela após 5 segundos
-      if (success) {
-        setTimeout(() => {
-          if (installationWindow && !installationWindow.isDestroyed()) {
-            installationWindow.close();
-          }
-        }, 5000);
-      }
-    } catch (err) {
-      console.error('Erro ao enviar notificação de conclusão:', err);
-    }
-  }
-}
-
-// Instalação do WSL
+// Iniciar instalação
 ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
   try {
     // Evitar instalações múltiplas
@@ -1786,18 +1342,28 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
     if (!isAdmin) {
       isInstallingInProgress = false;
 
-      const choice = await dialog.showMessageBox({
-        type: 'question',
-        title: 'Privilégios de Administrador',
-        message: 'Esta operação precisa ser executada como administrador.',
-        detail: 'Deseja tentar executar com privilégios elevados?',
-        buttons: ['Sim', 'Não'],
-        defaultId: 0
-      });
+      if (platform.detectPlatform() === 'windows') {
+        const choice = await dialog.showMessageBox({
+          type: 'question',
+          title: 'Privilégios de Administrador',
+          message: 'Esta operação precisa ser executada como administrador.',
+          detail: 'Deseja tentar executar com privilégios elevados?',
+          buttons: ['Sim', 'Não'],
+          defaultId: 0
+        });
 
-      if (choice.response === 0) {
-        // Tentar elevar privilégios
-        elevatePrivileges();
+        if (choice.response === 0) {
+          // Tentar elevar privilégios
+          elevatePrivileges();
+        }
+      } else {
+        await dialog.showMessageBox({
+          type: 'warning',
+          title: 'Privilégios Insuficientes',
+          message: 'Esta operação precisa ser executada com privilégios de administrador.',
+          detail: 'Por favor, reinicie o aplicativo com privilégios adequados.',
+          buttons: ['OK']
+        });
       }
 
       event.reply('installation-log', {
@@ -1807,440 +1373,19 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
       return;
     }
 
-    // Determinar o tipo de instalação
-    const forceReinstall = options.forceReinstall === true;
+    // Criar janela de instalação
+    createInstallationWindow();
 
-    // Criar janela de instalação se não existir
-    if (!installationWindow || installationWindow.isDestroyed()) {
-      createInstallationWindow();
-
-      // Aguardar a janela ser criada e carregada
-      await new Promise((resolve) => {
-        const checkReady = () => {
-          if (installationWindow && !installationWindow.isDestroyed()) {
-            installationWindow.once('ready-to-show', () => {
-              console.log('Janela de instalação pronta');
-              setTimeout(resolve, 500); // Dar tempo para inicializar
-            });
-          } else {
-            setTimeout(checkReady, 100);
-          }
-        };
-        checkReady();
-      });
-
-      // Aguardar mais tempo para certificar que os handlers IPC estão registrados
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-
-    // Enviar mensagem inicial para ambas as interfaces
-    const headerMessage = forceReinstall
-      ? 'Iniciando reinstalação completa do sistema'
-      : 'Iniciando instalação dos componentes necessários';
-
-    // Para a janela principal (renderer que solicitou)
-    event.reply('installation-log', {
-      type: 'header',
-      message: headerMessage
-    });
-
-    // Para a janela de instalação
-    sendLogToInstallWindow('header', headerMessage);
-
-    // Configurar callbacks para atualização da interface
-    installer.setStepUpdateCallback((stepIndex, state, message) => {
-      console.log(`Atualizando etapa ${stepIndex} para estado ${state}: ${message}`);
-      
-      // Verificar se a mensagem indica um componente específico
-      const componentInfo = detectComponentTypeFromMessage(message);
-      
-      // Caso especial: se a mensagem é sobre componente específico, ajustar a etapa
-      if (componentInfo && (state === 'in-progress' || state === 'completed')) {
-        // Sobrescrever o stepIndex com base no tipo de componente
-        stepIndex = componentInfo.step;
-        
-        // Garantir que etapas anteriores sejam marcadas como concluídas
-        try {
-          // Primeiro marcar etapas anteriores como concluídas
-          for (let i = 0; i < stepIndex; i++) {
-            sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
-          }
-          
-          // Depois atualizar a etapa atual
-          sendStepUpdateToInstallWindow(
-            stepIndex, 
-            state, 
-            state === 'in-progress' ? 'Em andamento' : 'Concluído'
-          );
-          
-          // Atualizar progresso também
-          sendProgressUpdateToInstallWindow(componentInfo.progress);
-        } catch (err) {
-          console.error('Erro ao enviar atualizações para janela de instalação:', err);
-        }
-      } 
-      // Caso padrão: usar o stepIndex fornecido
-      else {
-        try {
-          // Se etapa > 0 e estado in-progress/completed, garantir etapas anteriores concluídas
-          if (stepIndex > 0 && (state === 'in-progress' || state === 'completed')) {
-            // Primeiro marcar etapas anteriores como concluídas
-            for (let i = 0; i < stepIndex; i++) {
-              sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
-            }
-          }
-          
-          // Agora atualizar a etapa atual
-          sendStepUpdateToInstallWindow(stepIndex, state, message);
-        } catch (err) {
-          console.error('Erro ao enviar atualização de etapa:', err);
-        }
-      }
-      
-      // Enviar também para a janela principal
-      event.reply('installation-log', {
-        type: state === 'error' ? 'error' : (state === 'completed' ? 'success' : 'info'),
-        message: `[Etapa ${stepIndex + 1}] ${message}`
-      });
-    });
-
-    installer.setProgressCallback((percentage) => {
-      // Usar a função auxiliar para enviar a atualização
-      sendProgressUpdateToInstallWindow(percentage);
-    });
-
-    // Modificar a função de log do installer para enviar mensagens para ambas as janelas
-    const originalLog = installer.log;
-    installer.log = function(message, type = 'info') {
-      // Log original
-      originalLog(message, type);
-      
-      // Detectar quando estamos listando componentes para instalação seletiva
-      const lowerMessage = message.toLowerCase();
-      if (lowerMessage.includes('componentes que serão instalados:')) {
-        // Tentar extrair os componentes
-        try {
-          const componentsMatch = lowerMessage.match(/instalados:\s*(.+)$/);
-          if (componentsMatch && componentsMatch[1]) {
-            const componentsList = componentsMatch[1].split(',').map(c => c.trim().toLowerCase());
-            console.log('Detectados componentes para instalação:', componentsList);
-            
-            // Verificar se WSL e Ubuntu NÃO estão na lista - isso indica instalação parcial
-            const needsWsl = componentsList.some(c => c.includes('wsl'));
-            const needsUbuntu = componentsList.some(c => c.includes('ubuntu'));
-            
-            if (!needsWsl && !needsUbuntu) {
-              // É uma instalação parcial - marcar etapas iniciais como concluídas
-              for (let i = 0; i <= 3; i++) {
-                sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
-              }
-              
-              // Atualizar progresso para refletir estado avançado
-              sendProgressUpdateToInstallWindow(60);
-              
-              // Determinar próxima etapa com base nos componentes
-              let nextStep = 5; // Ambiente por padrão
-              
-              if (componentsList.includes('database') || componentsList.includes('software')) {
-                nextStep = 5; // Ambiente
-              } else if (componentsList.includes('api') || componentsList.includes('pm2') || componentsList.includes('services')) {
-                nextStep = 6; // Serviços
-              } else if (componentsList.includes('printer')) {
-                nextStep = 7; // Finalização
-              }
-              
-              // Atualizar próxima etapa para "Em andamento"
-              sendStepUpdateToInstallWindow(nextStep, 'in-progress', 'Em andamento');
-            }
-          }
-        } catch (err) {
-          console.error('Erro ao processar lista de componentes:', err);
-        }
-      }
-      // Tratar caso especial quando estamos instalando componentes específicos
-      else if (lowerMessage.includes('instalando/configurando')) {
-        const componentInfo = detectComponentTypeFromMessage(message);
-        
-        if (componentInfo) {
-          // Marcar etapas anteriores como concluídas
-          for (let i = 0; i < componentInfo.step; i++) {
-            sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
-          }
-          
-          // Atualizar etapa atual para Em andamento
-          sendStepUpdateToInstallWindow(componentInfo.step, 'in-progress', 'Em andamento');
-          
-          // Atualizar progresso
-          sendProgressUpdateToInstallWindow(componentInfo.progress);
-        }
-      }
-      
-      // Enviar log para a janela de instalação
-      sendLogToInstallWindow(type, message);
-      
-      // Enviar para a interface principal também
-      event.reply('installation-log', {
-        type: type,
-        message: message
-      });
-    };
-
-    // Configurar a função personalizada de perguntas
-    installer.setCustomAskQuestion(function (question) {
-      return new Promise((resolve) => {
-        // Log da pergunta
-        installer.log(`Pergunta: ${question}`, 'info');
-
-        // Salvar o callback global para resposta
-        global.askQuestionCallback = resolve;
-
-        if (installationWindow && !installationWindow.isDestroyed()) {
-          // Enviar a pergunta para a interface
-          try {
-            installationWindow.webContents.send('pergunta', { question });
-          } catch (err) {
-            console.error('Erro ao enviar pergunta para janela de instalação:', err);
-
-            // Fallback: usar dialog
-            dialog.showMessageBox({
-              type: 'question',
-              buttons: ['Sim', 'Não'],
-              defaultId: 0,
-              title: 'Instalador',
-              message: question
-            }).then(result => {
-              const response = result.response === 0 ? 's' : 'n';
-              if (global.askQuestionCallback) {
-                global.askQuestionCallback(response);
-                global.askQuestionCallback = null;
-              }
-            }).catch(() => {
-              // Em caso de erro, assumir sim
-              if (global.askQuestionCallback) {
-                global.askQuestionCallback('s');
-                global.askQuestionCallback = null;
-              }
-            });
-          }
-        } else {
-          // Fallback: usar dialog
-          dialog.showMessageBox({
-            type: 'question',
-            buttons: ['Sim', 'Não'],
-            defaultId: 0,
-            title: 'Instalador',
-            message: question
-          }).then(result => {
-            const response = result.response === 0 ? 's' : 'n';
-            if (global.askQuestionCallback) {
-              global.askQuestionCallback(response);
-              global.askQuestionCallback = null;
-            }
-          }).catch(() => {
-            // Em caso de erro, assumir sim
-            if (global.askQuestionCallback) {
-              global.askQuestionCallback('s');
-              global.askQuestionCallback = null;
-            }
-          });
-        }
-      });
-    });
-
-    // EXECUTAR A INSTALAÇÃO
-    console.log(`Iniciando instalação ${forceReinstall ? 'completa' : 'seletiva'}...`);
-    event.reply('installation-log', {
-      type: 'info',
-      message: `Iniciando ${forceReinstall ? 'reinstalação completa' : 'instalação de componentes necessários'}. Este processo pode levar vários minutos.`
-    });
-
-    // Executar a instalação apropriada
-    let resultado;
-    if (forceReinstall) {
-      resultado = await installer.installSystem();
-    } else {
-      // Para instalação seletiva, verificar o que precisa ser instalado
-      const status = await verification.checkSystemStatus();
-      installer.log('Analisando componentes necessários...', 'header');
-
-      let componentsToInstall = [];
-
-      // Verificar quais componentes precisam ser instalados
-      if (!status.wslStatus.installed) {
-        componentsToInstall.push('wsl');
-      }
-
-      if (!status.wslStatus.wsl2) {
-        componentsToInstall.push('wsl2');
-      }
-
-      if (!status.wslStatus.hasDistro) {
-        componentsToInstall.push('ubuntu');
-      }
-
-      // Verificar software status apenas se Ubuntu estiver instalado
-      if (status.wslStatus.hasDistro) {
-        try {
-          // Verificar status de software mais detalhadamente
-          const softwareStatus = await verification.checkSoftwareConfigurations();
-
-          // Verificar pacotes necessários
-          if (softwareStatus.packagesStatus && !softwareStatus.packagesStatus.allInstalled) {
-            componentsToInstall.push('packages');
-          }
-
-          // Verificar serviços
-          if (softwareStatus.servicesStatus && !softwareStatus.servicesStatus.allRunning) {
-            componentsToInstall.push('services');
-          }
-
-          // Verificar firewall
-          if (softwareStatus.firewallStatus && !softwareStatus.firewallStatus.configured) {
-            componentsToInstall.push('firewall');
-          }
-
-          // Verificar banco de dados
-          if (softwareStatus.dbStatus && !softwareStatus.dbStatus.configured) {
-            componentsToInstall.push('database');
-          }
-
-          // Verificar API
-          if (!softwareStatus.apiHealth) {
-            componentsToInstall.push('api');
-          }
-
-          // Verificar PM2
-          if (!softwareStatus.pm2Running) {
-            componentsToInstall.push('pm2');
-          }
-
-          // Verificar diretório /opt
-          if (!softwareStatus.optDirExists) {
-            componentsToInstall.push('software');
-          }
-        } catch (error) {
-          installer.log(`Erro ao verificar componentes do software: ${error.message}`, 'warning');
-          // Em caso de erro, adicionar dependências essenciais
-          componentsToInstall.push('packages');
-          componentsToInstall.push('services');
-          componentsToInstall.push('software');
-        }
-      }
-
-      // Verificar impressora
-      try {
-        const printerStatus = await verification.checkWindowsPrinterInstalled();
-        if (!printerStatus || !printerStatus.installed) {
-          componentsToInstall.push('printer');
-        }
-      } catch (error) {
-        installer.log(`Erro ao verificar impressora: ${error.message}`, 'warning');
-        componentsToInstall.push('printer');
-      }
-
-      if (componentsToInstall.length === 0) {
-        installer.log('Todos os componentes já estão instalados corretamente!', 'success');
-        resultado = { success: true, message: 'Sistema já está configurado corretamente' };
-      } else {
-        installer.log(`Componentes que serão instalados: ${componentsToInstall.join(', ')}`, 'info');
-
-        // Instalar componentes na ordem correta
-        let success = true;
-        let errorMessage = '';
-
-        // Instalar primeiro os componentes de base (WSL, Ubuntu)
-        const baseComponents = ['wsl', 'wsl2', 'ubuntu'];
-        const firstComponents = componentsToInstall.filter(c => baseComponents.includes(c));
-
-        if (firstComponents.length > 0) {
-          installer.log('Instalando componentes de base...', 'step');
-
-          for (const component of firstComponents) {
-            installer.log(`Instalando ${component}...`, 'step');
-            const result = await installer.installComponent(component, status);
-
-            if (!result) {
-              success = false;
-              errorMessage = `Falha ao instalar ${component}`;
-              installer.log(`Erro ao instalar ${component}`, 'error');
-              break;
-            }
-          }
-        }
-
-        // Se a instalação dos componentes de base for bem-sucedida, continuar com o restante
-        if (success) {
-          const remainingComponents = componentsToInstall.filter(c => !baseComponents.includes(c));
-
-          if (remainingComponents.includes('software')) {
-            // Instalar software (copiar para /opt)
-            installer.log('Instalando aplicação...', 'step');
-            const softwareResult = await installer.copySoftwareToOpt();
-            if (!softwareResult) {
-              success = false;
-              errorMessage = 'Falha ao instalar aplicação';
-            }
-          }
-
-          // Continuar com os demais componentes
-          if (success && remainingComponents.length > 0) {
-            for (const component of remainingComponents.filter(c => c !== 'software')) {
-              installer.log(`Instalando/configurando ${component}...`, 'step');
-              const result = await installer.installComponent(component, status);
-
-              if (!result) {
-                success = false;
-                errorMessage = `Falha ao instalar ${component}`;
-                installer.log(`Erro ao instalar ${component}`, 'error');
-                break;
-              }
-            }
-          }
-        }
-
-        // Verificar o sistema após a instalação
-        if (success) {
-          installer.log('Verificando o sistema após a instalação...', 'step');
-
-          try {
-            // Verificar novamente os componentes que foram instalados
-            const updatedStatus = await verification.checkSystemStatus();
-            const allComponentsInstalled = componentsToInstall.every(component => {
-              // Verificar se o componente foi instalado com sucesso
-              switch (component) {
-                case 'wsl': return updatedStatus.wslStatus.installed;
-                case 'wsl2': return updatedStatus.wslStatus.wsl2;
-                case 'ubuntu': return updatedStatus.wslStatus.hasDistro;
-                case 'printer': return updatedStatus.printerStatus && updatedStatus.printerStatus.installed;
-                default: return true; // Para outros componentes, assumir sucesso
-              }
-            });
-
-            if (allComponentsInstalled) {
-              installer.log('Todos os componentes foram instalados com sucesso!', 'success');
-            } else {
-              installer.log('Alguns componentes podem não ter sido instalados corretamente', 'warning');
-            }
-          } catch (verifyError) {
-            installer.log(`Erro ao verificar o sistema após a instalação: ${verifyError.message}`, 'warning');
-          }
-        }
-
-        resultado = { success, message: success ? 'Componentes instalados com sucesso' : errorMessage };
-      }
-    }
+    // Executar a instalação usando o gerenciador de plataforma
+    const resultado = await platformHandler.install();
 
     if (resultado.success) {
-      // Informar GUI sobre sucesso
       event.reply('installation-log', {
         type: 'success',
         message: 'Instalação concluída com sucesso! ' + (resultado.message || '')
       });
 
-      // Enviando notificação de sucesso para a janela de instalação
-      sendCompletionToInstallWindow(true, resultado.message || 'Instalação concluída com sucesso');
-
-      // Mostrar diálogo de conclusão
+      // Notificar conclusão
       await dialog.showMessageBox({
         type: 'info',
         title: 'Instalação Concluída',
@@ -2249,33 +1394,12 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
         buttons: ['OK']
       });
 
-      // Atualizar o status do sistema após a instalação
-      try {
-        // Enviar evento para a janela principal verificar a instalação
-        event.reply('verificar-instalacao');
-
-        // Atualizar a interface do sistema
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('update-system-status', {
-            needsVerification: true
-          });
+      // Fechar janela de instalação após 5 segundos
+      setTimeout(() => {
+        if (installationWindow && !installationWindow.isDestroyed()) {
+          installationWindow.close();
         }
-
-        // Se a janela de verificação do sistema estiver aberta, verificar novamente
-        try {
-          const systemTab = await mainWindow?.webContents?.executeJavaScript(`
-            !document.getElementById('systemTab').classList.contains('hidden')
-          `);
-
-          if (systemTab) {
-            mainWindow.webContents.send('check-system-now');
-          }
-        } catch (tabCheckError) {
-          console.error('Erro ao verificar aba de sistema:', tabCheckError);
-        }
-      } catch (verifyError) {
-        console.error('Erro ao solicitar verificação pós-instalação:', verifyError);
-      }
+      }, 5000);
     } else if (resultado.needsReboot) {
       // Caso precise reiniciar
       const rebootChoice = await dialog.showMessageBox({
@@ -2288,8 +1412,14 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
       });
 
       if (rebootChoice.response === 0) {
-        // Reiniciar o computador
-        exec('shutdown /r /t 10');
+        // Reiniciar o computador - método específico por plataforma
+        if (platform.detectPlatform() === 'windows') {
+          exec('shutdown /r /t 10');
+        } else if (platform.detectPlatform() === 'linux') {
+          exec('sudo shutdown -r now');
+        } else if (platform.detectPlatform() === 'macos') {
+          exec('sudo shutdown -r now');
+        }
       }
     } else {
       // Caso de erro
@@ -2297,9 +1427,6 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
         type: 'error',
         message: `Erro na instalação: ${resultado.message || 'Erro desconhecido'}`
       });
-
-      // Notificar a janela de instalação sobre o erro
-      sendCompletionToInstallWindow(false, resultado.message || 'Erro desconhecido');
 
       await dialog.showMessageBox({
         type: 'error',
@@ -2321,9 +1448,6 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
       message: `Erro inesperado ao iniciar instalação: ${error.message || 'Erro desconhecido'}`
     });
 
-    // Notificar a janela de instalação
-    sendCompletionToInstallWindow(false, error.message || 'Erro desconhecido');
-
     // Mostrar diálogo de erro
     dialog.showMessageBox({
       type: 'error',
@@ -2335,276 +1459,7 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
   }
 });
 
-// Receber resposta da pergunta
-ipcMain.on('resposta-pergunta', (event, resposta) => {
-  if (global.askQuestionCallback) {
-    global.askQuestionCallback(resposta);
-    global.askQuestionCallback = null;
-  }
-});
-
-ipcMain.on('check-system-now', (event) => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('check-system-now');
-  }
-});
-
-// Handler para atualizações de progresso por etapa
-ipcMain.on('get-installation-steps', (event) => {
-  const steps = installer.getInstallationSteps();
-  event.reply('installation-steps', steps);
-});
-
-// Handler para exportar log de instalação
-ipcMain.on('export-installation-log', (event, logContent) => {
-  try {
-    // Se logContent for uma string, usar diretamente
-    // Caso contrário, usar como nome de arquivo
-    let filename, content;
-
-    if (typeof logContent === 'string' && logContent.includes('\n')) {
-      // É o conteúdo do log
-      content = logContent;
-      filename = `instalacao_log_${new Date().toISOString().slice(0, 10)}.txt`;
-    } else {
-      // É o nome do arquivo
-      filename = logContent || `instalacao_log_${new Date().toISOString().slice(0, 10)}.txt`;
-      content = installer.getInstallationLog();
-    }
-
-    const downloadsPath = app.getPath('downloads');
-    const logPath = path.join(downloadsPath, filename);
-
-    fs.writeFileSync(logPath, content, 'utf8');
-
-    // Avisar que o log foi exportado com sucesso
-    if (installationWindow && !installationWindow.isDestroyed()) {
-      installationWindow.webContents.send('log', {
-        type: 'success',
-        message: `Log exportado para: ${logPath}`
-      });
-    }
-
-    event.reply('export-installation-log-response', {
-      success: true,
-      path: logPath
-    });
-  } catch (error) {
-    console.error('Erro ao exportar log de instalação:', error);
-
-    if (installationWindow && !installationWindow.isDestroyed()) {
-      installationWindow.webContents.send('log', {
-        type: 'error',
-        message: `Erro ao exportar log: ${error.message}`
-      });
-    }
-
-    event.reply('export-installation-log-response', {
-      success: false,
-      error: error.message
-    });
-  }
-});
-
-async function installSpecificComponent(component) {
-  try {
-    // Se já está instalando componentes, não continuar
-    if (isInstallingComponents) {
-      return { success: false, message: 'Já existe uma instalação em andamento' };
-    }
-    isInstallingComponents = true;
-
-    console.log(`Instalando componente específico: ${component}`);
-
-    // Criar janela de instalação se não existir
-    if (!installationWindow || installationWindow.isDestroyed()) {
-      createInstallationWindow();
-
-      // Aguardar até que a janela de instalação esteja pronta
-      await new Promise((resolve) => {
-        if (installationWindow) {
-          installationWindow.once('ready-to-show', () => {
-            console.log('Janela de instalação pronta para exibição');
-            resolve();
-          });
-
-          // Timeout como fallback (5 segundos)
-          setTimeout(() => {
-            console.log('Timeout ao aguardar janela de instalação');
-            resolve();
-          }, 5000);
-        } else {
-          console.log('Janela de instalação não foi criada');
-          resolve();
-        }
-      });
-    }
-
-    // Enviar log para a janela de instalação
-    if (installationWindow && !installationWindow.isDestroyed()) {
-      installationWindow.webContents.send('log', {
-        type: 'header',
-        message: `Iniciando instalação do componente: ${component}`
-      });
-    }
-
-    // Configurar a função de log customizada para o installer
-    const originalLog = installer.log;
-    installer.log = function (message, type = 'info') {
-      // Log original
-      originalLog(message, type);
-
-      // Verificar mensagens específicas de instalação de componentes
-      const lowerMessage = message.toLowerCase();
-      if (lowerMessage.includes('instalando aplicação') ||
-        lowerMessage.includes('instalando/configurando packages')) {
-
-        // Forçar atualização da UI para mostrar instalação de ambiente em andamento
-        if (installationWindow && !installationWindow.isDestroyed()) {
-          // Marcar etapas anteriores como concluídas
-          for (let i = 0; i < 5; i++) {
-            installationWindow.webContents.send('step-update', {
-              step: i,
-              state: 'completed',
-              message: 'Concluído'
-            });
-          }
-
-          // Marcar etapa atual (ambiente)
-          installationWindow.webContents.send('step-update', {
-            step: 5,
-            state: 'in-progress',
-            message: 'Em andamento'
-          });
-
-          // Atualizar barra de progresso
-          installationWindow.webContents.send('progress-update', {
-            percentage: 80
-          });
-        }
-      }
-
-      // Enviar log normalmente
-      if (installationWindow && !installationWindow.isDestroyed()) {
-        installationWindow.webContents.send('log', {
-          type: type,
-          message: message
-        });
-      }
-
-      // Enviar para a interface principal também
-      event.reply('installation-log', {
-        type: type,
-        message: message
-      });
-    };
-
-
-    // Configurar a função personalizada de perguntas
-    installer.setCustomAskQuestion(function (question) {
-      return new Promise((resolve) => {
-        installer.log(`Pergunta: ${question}`, 'info');
-
-        if (installationWindow && !installationWindow.isDestroyed()) {
-          // Enviar a pergunta para a interface
-          installationWindow.webContents.send('pergunta', { question });
-
-          // Configurar receptor de resposta via IPC
-          const responseHandler = (responseEvent, resposta) => {
-            ipcMain.removeListener('resposta-pergunta', responseHandler);
-            resolve(resposta);
-          };
-
-          // Escutar pela resposta
-          ipcMain.once('resposta-pergunta', responseHandler);
-        } else {
-          // Fallback: usar dialog
-          dialog.showMessageBox({
-            type: 'question',
-            buttons: ['Sim', 'Não'],
-            defaultId: 0,
-            title: 'Instalador',
-            message: question
-          }).then(result => {
-            const response = result.response === 0 ? 's' : 'n';
-            resolve(response);
-          }).catch(() => {
-            // Em caso de erro, assumir sim
-            resolve('s');
-          });
-        }
-      });
-    });
-
-    // Executar a instalação do componente específico
-    let result = null;
-    switch (component) {
-      case 'wsl':
-        result = await installer.installWSLModern() || await installer.installWSLLegacy();
-        break;
-      case 'wsl2':
-        try {
-          await verification.execPromise('wsl --set-default-version 2', 30000);
-          result = true;
-        } catch (error) {
-          result = false;
-        }
-        break;
-      case 'ubuntu':
-        result = await installer.installUbuntu();
-        break;
-      case 'user':
-        result = await installer.configureDefaultUser();
-        break;
-      case 'packages':
-        result = await installer.installRequiredPackages();
-        break;
-      case 'services':
-        // Reiniciar os serviços básicos
-        try {
-          await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups smbd postgresql', 30000, true);
-          result = true;
-        } catch (error) {
-          result = false;
-        }
-        break;
-      case 'firewall':
-        result = await installer.configureFirewall();
-        break;
-      case 'database':
-        result = await installer.setupDatabase();
-        break;
-      case 'api':
-        try {
-          await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart ecosystem.config.js"', 30000, true);
-          result = true;
-        } catch (error) {
-          result = false;
-        }
-        break;
-      case 'pm2':
-        result = await installer.setupPM2();
-        break;
-      case 'printer':
-        result = await installer.installWindowsPrinter();
-        break;
-      default:
-        result = false;
-    }
-
-    isInstallingComponents = false;
-
-    return {
-      success: !!result,
-      message: result ? 'Componente instalado com sucesso' : 'Falha na instalação do componente'
-    };
-  } catch (error) {
-    isInstallingComponents = false;
-    console.error(`Erro ao instalar componente ${component}:`, error);
-    return { success: false, message: error.message || 'Erro desconhecido' };
-  }
-}
-
+// Instalar componente específico
 ipcMain.on('instalar-componente', async (event, { component }) => {
   try {
     // Check if already installing
@@ -2630,17 +1485,19 @@ ipcMain.on('instalar-componente', async (event, { component }) => {
     if (!isAdmin) {
       isInstallingComponents = false;
 
-      const choice = await dialog.showMessageBox({
-        type: 'question',
-        title: 'Privilégios de Administrador',
-        message: 'Esta operação precisa ser executada como administrador.',
-        detail: 'Deseja tentar executar com privilégios elevados?',
-        buttons: ['Sim', 'Não'],
-        defaultId: 0
-      });
+      if (platform.detectPlatform() === 'windows') {
+        const choice = await dialog.showMessageBox({
+          type: 'question',
+          title: 'Privilégios de Administrador',
+          message: 'Esta operação precisa ser executada como administrador.',
+          detail: 'Deseja tentar executar com privilégios elevados?',
+          buttons: ['Sim', 'Não'],
+          defaultId: 0
+        });
 
-      if (choice.response === 0) {
-        elevatePrivileges();
+        if (choice.response === 0) {
+          elevatePrivileges();
+        }
       }
 
       event.reply('componente-instalado', {
@@ -2650,63 +1507,8 @@ ipcMain.on('instalar-componente', async (event, { component }) => {
       return;
     }
 
-    // Use cached status if available to avoid redundant checks
-    const status = global.lastSystemStatus || await verification.checkSystemStatus();
-
-    // Definir ouvinte de log para receber atualizações
-    const originalLog = installer.log;
-    installer.log = function (message, type = 'info') {
-      // Log original
-      originalLog(message, type);
-
-      // Verificar mensagens específicas de instalação de componentes
-      const lowerMessage = message.toLowerCase();
-      if (lowerMessage.includes('instalando aplicação') ||
-        lowerMessage.includes('instalando/configurando packages')) {
-
-        // Forçar atualização da UI para mostrar instalação de ambiente em andamento
-        if (installationWindow && !installationWindow.isDestroyed()) {
-          // Marcar etapas anteriores como concluídas
-          for (let i = 0; i < 5; i++) {
-            installationWindow.webContents.send('step-update', {
-              step: i,
-              state: 'completed',
-              message: 'Concluído'
-            });
-          }
-
-          // Marcar etapa atual (ambiente)
-          installationWindow.webContents.send('step-update', {
-            step: 5,
-            state: 'in-progress',
-            message: 'Em andamento'
-          });
-
-          // Atualizar barra de progresso
-          installationWindow.webContents.send('progress-update', {
-            percentage: 80
-          });
-        }
-      }
-
-      // Enviar log normalmente
-      if (installationWindow && !installationWindow.isDestroyed()) {
-        installationWindow.webContents.send('log', {
-          type: type,
-          message: message
-        });
-      }
-
-      // Enviar para a interface principal também
-      event.reply('installation-log', {
-        type: type,
-        message: message
-      });
-    };
-
-
-    // Install only the requested component
-    const result = await installer.installComponent(component, status);
+    // Instalar componente específico usando o platformHandler
+    const result = await platformHandler.installComponent(component);
 
     isInstallingComponents = false;
 
@@ -2722,11 +1524,6 @@ ipcMain.on('instalar-componente', async (event, { component }) => {
         type: 'success',
         message: `Componente ${component} instalado com sucesso!`
       });
-
-      // Verificar o sistema novamente e atualizar a interface
-      setTimeout(() => {
-        event.reply('verificar-instalacao');
-      }, 1000);
     }
   } catch (error) {
     isInstallingComponents = false;
@@ -2750,15 +1547,13 @@ ipcMain.on('listar-arquivos', async (event) => {
       return;
     }
 
-    let files = null
-    let response
+    let files = null;
+    let response;
     try {
       response = await axios.get(`${appConfig.apiLocalUrl}/files`);
     } catch (error) {
-      console.error(error.data);
+      console.error(error.response?.data);
     }
-
-    await installer.configureDefaultUser()
 
     if (response?.status === 200) {
       files = response.data?.data.sort((a, b) => {
@@ -2791,8 +1586,8 @@ ipcMain.on('listar-impressoras', async (event) => {
       return;
     }
 
-    let printers = null
-    let response
+    let printers = null;
+    let response;
     try {
       response = await axios.get(`${appConfig.apiLocalUrl}/printers`);
     } catch (error) {
@@ -2827,7 +1622,7 @@ ipcMain.on('imprimir-arquivo', async (event, { fileId, printerId }) => {
       return;
     }
 
-    let response
+    let response;
     try {
       response = await axios.post(`${appConfig.apiLocalUrl}/print`, {
         fileId: fileId,
@@ -2860,6 +1655,7 @@ ipcMain.on('imprimir-arquivo', async (event, { fileId, printerId }) => {
   }
 });
 
+// Excluir arquivo
 ipcMain.on('excluir-arquivo', async (event, { fileId }) => {
   try {
     const userData = getUserData();
@@ -2923,16 +1719,19 @@ ipcMain.on('atualizar-impressoras', async (event) => {
   }
 });
 
+// Navegar para uma rota específica na interface
 ipcMain.on('navegar-para', (event, dados) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('navegar-para', dados);
   }
 });
 
+// Exportar módulo
 module.exports = {
   userData: getUserData(),
   getAutoPrintConfig,
   appConfig
 };
 
+// Inicializar tarefas adicionais
 initTask();

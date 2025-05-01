@@ -17,6 +17,7 @@
     "build:linux": "electron-builder build --linux --publish never",
     "build:mac": "electron-builder build --mac --publish never",
     "build:all": "electron-builder build -mwl --publish never",
+    "build:win-linux": "electron-builder build -wl --publish never",
     "postinstall": "electron-builder install-app-deps",
     "depcheck": "npx depcheck"
   },

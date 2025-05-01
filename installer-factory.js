@@ -18,7 +18,7 @@ function createInstaller(options = {}) {
     // Carregar o instalador específico da plataforma
     switch (currentPlatform) {
       case platform.PLATFORMS.WINDOWS:
-        const WindowsInstaller = require('./platforms/windows/installer');
+        const WindowsInstaller = require('./platforms/win/installer');
         return new WindowsInstaller(options);
         
       case platform.PLATFORMS.LINUX:
