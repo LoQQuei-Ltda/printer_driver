@@ -12,11 +12,15 @@
     "dev": "nodemon --config nodemon.json --exec electron . --watch .",
     "prebuild": "npm run clean && npm run prepare-server-files",
     "prepare-server-files": "node prepare-server-files.js",
-    "build": "electron-builder --win --x64 --config.asar=true --config.compression=maximum",
+    "build": "electron-builder build --publish never",
+    "build:win": "electron-builder build --win --publish never",
+    "build:linux": "electron-builder build --linux --publish never",
+    "build:mac": "electron-builder build --mac --publish never",
+    "build:all": "electron-builder build -mwl --publish never",
     "postinstall": "electron-builder install-app-deps",
     "depcheck": "npx depcheck"
   },
-  "author": "LoQQuei-Ltda",
+  "author": "LoQQuei",
   "license": "MIT",
   "devDependencies": {
     "depcheck": "^1.4.7",
@@ -34,10 +38,48 @@
     "asar": true,
     "compression": "maximum",
     "icon": "assets/icon/icon.ico",
+    "mac": {
+      "category": "public.app-category.utilities",
+      "icon": "assets/icon/icon.icns",
+      "darkModeSupport": true,
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
     "win": {
-      "target": "nsis",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        }
+      ],
       "icon": "assets/icon/icon.ico",
       "requestedExecutionLevel": "requireAdministrator"
+    },
+    "linux": {
+      "target": [
+        "deb",
+        "rpm",
+        "AppImage"
+      ],
+      "category": "Utility",
+      "icon": "assets/icon/icon.png",
+      "maintainer": "LoQQuei"
     },
     "nsis": {
       "oneClick": false,
@@ -45,6 +87,22 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Gerenciamento de Impressão"
+    },
+    "deb": {
+      "depends": [
+        "cups",
+        "samba",
+        "postgresql",
+        "avahi-daemon"
+      ]
+    },
+    "rpm": {
+      "depends": [
+        "cups",
+        "samba",
+        "postgresql",
+        "avahi-daemon"
+      ]
     },
     "files": [
       "**/*",
@@ -62,18 +120,15 @@
     ],
     "extraResources": [
       {
-        "from": "node_modules/",
-        "to": "node_modules/",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
         "from": "resources/",
         "to": "resources/",
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "platforms/${os}/",
+        "to": "platforms/"
       }
     ],
     "extraFiles": [
@@ -94,7 +149,11 @@
     "body-parser": "^2.2.0",
     "compare-versions": "^6.1.1",
     "cors": "^2.8.5",
+    "electron-store": "^10.0.1",
     "express": "^5.1.0",
-    "node-schedule": "^2.1.1"
+    "fs-extra": "^11.3.0",
+    "node-schedule": "^2.1.1",
+    "sudo-prompt": "^9.2.1",
+    "systeminformation": "^5.25.11"
   }
 }
