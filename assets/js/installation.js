@@ -143,7 +143,7 @@ class InstallationManager {
     ipcRenderer.send('installation-page-ready');
   
     console.log('Gerenciador de instalação inicializado');
-  }  
+  }
 
   processLogForSteps(message, type) {
     const lowerMessage = message.toLowerCase();

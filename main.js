@@ -256,8 +256,13 @@ async function setupEnvironment() {
     // Aguardar mais tempo para certificar que os handlers IPC estão registrados
     await new Promise(resolve => setTimeout(resolve, 1000));
 
+    // Enviar mensagem inicial para a janela de instalação
+    if (installationWindow && !installationWindow.isDestroyed()) {
+      sendLogToInstallWindow('header', 'Iniciando instalação de componentes do sistema');
+    }
+
     // *** IMPORTANTE - CONFIGURAÇÃO DOS CALLBACKS ***
-    // Configurar callbacks para atualização da interface - assim como no handler IPC
+    // Configurar callbacks para atualização da interface - igual ao handler IPC
     installer.setStepUpdateCallback((stepIndex, state, message) => {
       console.log(`Atualizando etapa ${stepIndex} para estado ${state}: ${message}`);
       
@@ -472,14 +477,6 @@ async function setupEnvironment() {
         }
       });
     });
-
-    // Enviar mensagem inicial para a janela de instalação
-    if (installationWindow && !installationWindow.isDestroyed()) {
-      installationWindow.webContents.send('log', {
-        type: 'header',
-        message: 'Iniciando instalação de componentes do sistema'
-      });
-    }
 
     // Instalar os componentes necessários
     const resultado = await installer.installSystem();
@@ -1110,9 +1107,17 @@ function createInstallationWindow() {
     installationWindow = null;
   });
 
+  // Importante: configurar handler para o evento 'installation-page-ready'
+  // Este evento é emitido pelo renderer quando a página está totalmente carregada
+  ipcMain.once('installation-page-ready', () => {
+    console.log('Página de instalação pronta para receber logs');
+    if (installationWindow && !installationWindow.isDestroyed()) {
+      sendLogToInstallWindow('info', 'Interface de instalação inicializada com sucesso');
+    }
+  });
+
   return installationWindow;
 }
-
 
 // Criar ícone na bandeja
 function createTray() {
@@ -1324,7 +1329,13 @@ app.whenReady().then(async () => {
   createTray();
 
   // Verificar e configurar componentes do sistema
-  await setupEnvironment();
+  // Importante: Aguardamos a conclusão da verificação/instalação antes de prosseguir
+  try {
+    await setupEnvironment();
+    console.log('Configuração do ambiente concluída ou não necessária');
+  } catch (error) {
+    console.error('Erro durante a configuração do ambiente:', error);
+  }
 
   // Verificar se o usuário está autenticado
   if (isAuthenticated()) {
@@ -1702,6 +1713,7 @@ function sendLogToInstallWindow(type, message) {
   }
 }
 
+// Função para enviar atualizações de etapa para a janela de instalação
 function sendStepUpdateToInstallWindow(step, state, message) {
   if (installationWindow && !installationWindow.isDestroyed()) {
     try {
@@ -1717,6 +1729,7 @@ function sendStepUpdateToInstallWindow(step, state, message) {
   }
 }
 
+// Função para enviar atualizações de progresso para a janela de instalação
 function sendProgressUpdateToInstallWindow(percentage) {
   if (installationWindow && !installationWindow.isDestroyed()) {
     try {
@@ -1729,6 +1742,7 @@ function sendProgressUpdateToInstallWindow(percentage) {
   }
 }
 
+// Função para enviar notificação de conclusão para a janela de instalação
 function sendCompletionToInstallWindow(success, message) {
   if (installationWindow && !installationWindow.isDestroyed()) {
     try {
