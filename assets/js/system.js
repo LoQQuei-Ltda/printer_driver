@@ -752,7 +752,7 @@ function initiateInstallation(forceReinstall = false) {
   
   if (installButton) installButton.disabled = true;
   if (reinstallButton) reinstallButton.disabled = true;
-  if (checkButton) checkButton.disabled = true;
+  // if (checkButton) checkButton.disabled = true;
   
   // Botão de instalação específica
   const componentButtons = document.querySelectorAll('.install-component, .help-button');

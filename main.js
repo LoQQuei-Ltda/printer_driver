@@ -2167,8 +2167,23 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
           // Em caso de erro, adicionar dependências essenciais
           componentsToInstall.push('packages');
           componentsToInstall.push('services');
+          componentsToInstall.push('firewall');
+          componentsToInstall.push('database');
+          componentsToInstall.push('api');
+          componentsToInstall.push('pm2');
           componentsToInstall.push('software');
         }
+      } else {
+        installer.log('Ubuntu não instalado, adicionando todos os componentes necessários', 'info');
+    
+        // Adicionar todos os componentes de software necessários
+        componentsToInstall.push('packages');
+        componentsToInstall.push('services');
+        componentsToInstall.push('firewall');
+        componentsToInstall.push('database');
+        componentsToInstall.push('api');
+        componentsToInstall.push('pm2');
+        componentsToInstall.push('software');
       }
 
       // Verificar impressora

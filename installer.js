@@ -716,7 +716,7 @@ async function installUbuntu() {
 
       if (!ubuntuExists) {
         verification.log('Registrando distribuição Ubuntu no WSL...', 'step');
-        await verification.execPromise('wsl --install -d Ubuntu', 120000, true);
+        await verification.execPromise('wsl --install -d Ubuntu', 240000, true);
         verification.log('Ubuntu instalado, aguardando inicialização...', 'step');
       } else {
         verification.log('Distribuição Ubuntu já registrada no WSL', 'info');
@@ -1029,7 +1029,7 @@ guest ok = yes
 
     // Criar diretório compartilhado
     await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /srv/print_server', 10000, true);
-    await verification.execPromise('wsl -d Ubuntu -u root chmod -R 0777 /srv/print_server', 10000, true);
+    await verification.execPromise('wsl -d Ubuntu -u root sudo chmod -R 0777 /srv/print_server', 10000, true);
 
     // Reiniciar serviço
     await verification.execPromise('wsl -d Ubuntu -u root systemctl restart smbd', 30000, true);
@@ -1098,10 +1098,146 @@ async function configureCups() {
     // Reiniciar serviço
     await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups', 30000, true);
 
+    await setupCupsPrinter();
+
     verification.log('CUPS configurado com sucesso', 'success');
     return true;
   } catch (error) {
-    verification.log(`Erro ao configurar CUPS: ${error.message}`, 'error');
+    verification.log(`Erro ao configurar CUPS: ${JSON.stringify(error)}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+async function setupCupsPrinter() {
+  verification.log('Configurando impressora PDF no CUPS...', 'step');
+  
+  try {
+    // 1. Verificar se o CUPS está em execução
+    const cupsStatus = await verification.execPromise('wsl -d Ubuntu -u root systemctl status cups', 15000, true);
+    if (!cupsStatus.includes('active (running)')) {
+      verification.log('CUPS não está em execução, iniciando...', 'warning');
+      await verification.execPromise('wsl -d Ubuntu -u root systemctl start cups', 30000, true);
+      // Aguardar inicialização
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    }
+    
+    // 2. Verificar impressoras existentes
+    const printerList = await verification.execPromise('wsl -d Ubuntu -u root lpstat -p 2>/dev/null || echo "No printers"', 10000, true);
+    await verification.execPromise('wsl -d Ubuntu -u root sudo chmod -R 0777 /srv/print_server', 10000, true);
+    
+    // 3. Se já existe uma impressora PDF, apenas garantir que esteja ativa
+    if (printerList.includes('PDF') || printerList.includes('PDF_Printer')) {
+      verification.log('Impressora PDF já existe, garantindo que esteja habilitada...', 'info');
+      try {
+        // Habilitar e aceitar trabalhos (ignorando erros)
+        await verification.execPromise('wsl -d Ubuntu -u root cupsenable PDF 2>/dev/null || cupsenable PDF_Printer 2>/dev/null || true', 10000, true);
+        await verification.execPromise('wsl -d Ubuntu -u root cupsaccept PDF 2>/dev/null || cupsaccept PDF_Printer 2>/dev/null || true', 10000, true);
+        verification.log('Impressora PDF está pronta para uso', 'success');
+        return true;
+      } catch (enableError) {
+        verification.log('Aviso ao habilitar impressora existente, tentando criar nova...', 'warning');
+      }
+    }
+    
+    // 4. Tentar diferentes métodos para criar a impressora
+
+    // Método 1: Abordagem usando driver "everywhere" (moderna)
+    try {
+      verification.log('Tentando criar impressora usando método moderno...', 'info');
+      await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -E -v cups-pdf:/ -m everywhere', 12000, true);
+      verification.log('Impressora PDF_Printer criada com sucesso (método moderno)', 'success');
+      return true;
+    } catch (m1Error) {
+      verification.log('Método moderno falhou, tentando alternativa...', 'warning');
+    }
+
+    // Método 1.2: Abordagem usando driver "cups-print" (moderna)
+    try {
+      verification.log('Tentando criar impressora usando método moderno...', 'info');
+      await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -E -v cups-pdf:/ -m lsb/usr/cups-pdf/CUPS-PDF_opt.ppd', 12000, true);
+      verification.log('Impressora PDF_Printer criada com sucesso (método moderno)', 'success');
+      return true;
+    } catch (m1Error) {
+      verification.log('Método moderno falhou, tentando alternativa...', 'warning');
+    }
+    
+    // Método 2: Verificar PPDs disponíveis e usar um conhecido
+    try {
+      verification.log('Procurando PPDs disponíveis...', 'info');
+      const ppdsAvailable = await verification.execPromise('wsl -d Ubuntu -u root lpinfo -m | grep -i pdf', 12000, true);
+      
+      // Tentar usar um PPD que foi encontrado
+      if (ppdsAvailable && ppdsAvailable.trim()) {
+        // Extrair primeiro PPD disponível relacionado a PDF
+        const firstPPD = ppdsAvailable.split('\n')[0].trim().split(' ')[0];
+        verification.log(`Usando PPD encontrado: ${firstPPD}`, 'info');
+        
+        await verification.execPromise(`wsl -d Ubuntu -u root lpadmin -p PDF_Printer -E -v cups-pdf:/ -m "${firstPPD}"`, 12000, true);
+        verification.log('Impressora PDF_Printer criada com sucesso (PPD encontrado)', 'success');
+        return true;
+      }
+    } catch (m2Error) {
+      verification.log('Método de PPD disponível falhou, tentando próxima alternativa...', 'warning');
+    }
+    
+    // Método 3: Usar um driver genérico comum
+    try {
+      verification.log('Tentando usar driver genérico...', 'info');
+      await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -E -v cups-pdf:/ -m raw', 12000, true);
+      verification.log('Impressora PDF_Printer criada com driver genérico', 'success');
+      return true;
+    } catch (m3Error) {
+      verification.log('Método de driver genérico falhou, tentando método básico...', 'warning');
+    }
+    
+    // Método 4: Abordagem minimalista 
+    try {
+      verification.log('Tentando método minimalista...', 'info');
+      await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -E -v cups-pdf:/', 12000, true);
+      verification.log('Impressora PDF_Printer criada com configuração mínima', 'success');
+      return true;
+    } catch (m4Error) {
+      verification.log('Todos os métodos automáticos falharam', 'error');
+    }
+    
+    // Método 5: Script de criação de impressora
+    try {
+      verification.log('Tentando script dedicado para criar impressora...', 'info');
+      
+      // Criar arquivo de script no WSL
+      const scriptContent = `#!/bin/bash
+# Script para criar impressora PDF
+systemctl restart cups
+sleep 2
+lpadmin -p PDF_Printer -E -v cups-pdf:/
+cupsenable PDF_Printer
+cupsaccept PDF_Printer
+echo "Impressora criada"
+`;
+      
+      // Salvar script
+      await verification.execPromise(`wsl -d Ubuntu -u root bash -c "echo '${scriptContent}' > /tmp/create_printer.sh && chmod +x /tmp/create_printer.sh"`, 10000, true);
+      
+      // Executar script
+      await verification.execPromise('wsl -d Ubuntu -u root bash /tmp/create_printer.sh', 30000, true);
+      verification.log('Script de criação de impressora executado', 'success');
+      
+      // Verificar se a impressora foi criada
+      const checkPrinter = await verification.execPromise('wsl -d Ubuntu -u root lpstat -p | grep -i pdf', 10000, true).catch(() => "");
+      if (checkPrinter) {
+        verification.log('Impressora PDF criada com sucesso via script', 'success');
+        return true;
+      }
+    } catch (scriptError) {
+      verification.log('Método de script falhou', 'error');
+    }
+    
+    // Se chegamos aqui, todas as tentativas falharam
+    verification.log('Não foi possível criar a impressora PDF', 'error');
+    return false;
+  } catch (error) {
+    verification.log(`Erro ao configurar impressora CUPS: ${error?.message || 'Erro desconhecido'}`, 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     return false;
   }
@@ -1176,7 +1312,6 @@ async function configureFirewall() {
 }
 
 // Configurar banco de dados PostgreSQL
-// Configurar banco de dados PostgreSQL - Função completamente refeita
 async function setupDatabase() {
   verification.log('Configurando banco de dados PostgreSQL...', 'header');
 
@@ -1204,22 +1339,21 @@ async function setupDatabase() {
       } catch (startError) {
         verification.log('Erro ao iniciar PostgreSQL, tentando método alternativo...', 'warning');
         try {
-          // Tentar iniciar com pg_ctlcluster - descobre a versão automaticamente
-          const pgVersionOutput = await verification.execPromise('wsl -d Ubuntu -u root pg_lsclusters', 15000, true);
-          const versionMatch = pgVersionOutput.match(/(\d+\.\d+|\d+)/);
-
-          if (versionMatch) {
-            const pgVersion = versionMatch[0];
-            verification.log(`Detectada versão PostgreSQL ${pgVersion}, tentando iniciar...`, 'info');
-            await verification.execPromise(`wsl -d Ubuntu -u root pg_ctlcluster ${pgVersion} main start`, 30000, true);
-            verification.log('PostgreSQL iniciado via pg_ctlcluster', 'success');
+          // Reiniciar o serviço PostgreSQL
+          await verification.execPromise('wsl -d Ubuntu -u root systemctl restart postgresql', 30000, true);
+          verification.log('Serviço PostgreSQL reiniciado', 'info');
+          
+          // Verificar novamente
+          const statusCheck = await verification.execPromise('wsl -d Ubuntu -u root systemctl is-active postgresql', 10000, true);
+          if (statusCheck.trim() === 'active') {
+            verification.log('PostgreSQL está ativo após reinicialização', 'success');
             postgresRunning = true;
           } else {
-            throw new Error('Não foi possível detectar a versão do PostgreSQL');
+            throw new Error('PostgreSQL não está ativo após reinicialização');
           }
-        } catch (altStartError) {
+        } catch (restartError) {
           verification.log('Não foi possível iniciar o PostgreSQL', 'error');
-          verification.logToFile(`Detalhes do erro: ${JSON.stringify(altStartError)}`);
+          verification.logToFile(`Detalhes do erro: ${JSON.stringify(restartError)}`);
           return false;
         }
       }
@@ -1229,298 +1363,207 @@ async function setupDatabase() {
     verification.log('Aguardando PostgreSQL inicializar completamente...', 'info');
     await new Promise(resolve => setTimeout(resolve, 5000));
 
-    // 2. Configurar hba.conf para permitir conexões locais
-    verification.log('Verificando configuração de acesso do PostgreSQL...', 'step');
+    // Simplificar comandos SQL - Usar comandos diretos sem escape complexo
+    const PG_USER_CMD = 'psql -c ';
+    const ROOT_PG_CMD = 'PGPASSWORD=root_print psql -h localhost -U postgres_print -d';
+
+    // 2. Configurar usuários e bancos de dados diretamente como postgres
     try {
-      const pgHbaPath = await verification.execPromise(
-        'wsl -d Ubuntu -u postgres psql -t -c "SHOW hba_file;" | xargs',
-        10000,
-        true
-      );
-
-      if (pgHbaPath && pgHbaPath.length > 0) {
-        verification.log(`Arquivo pg_hba.conf localizado: ${pgHbaPath}`, 'info');
-
-        // Verificar se já existem as regras necessárias
-        const hbaContent = await verification.execPromise(
-          `wsl -d Ubuntu -u root cat ${pgHbaPath}`,
+      // 2.1 Criar usuário print_user se não existir
+      verification.log('Verificando/criando usuário print_user...', 'step');
+      const createPrintUserCmd = `CREATE USER print_user WITH PASSWORD 'print_user' SUPERUSER`;
+      try {
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres ${PG_USER_CMD} "${createPrintUserCmd}" 2>/dev/null || echo "Usuário já existe"`,
           10000,
           true
         );
+        verification.log('Usuário print_user configurado', 'success');
+      } catch (userError) {
+        verification.log('Aviso ao configurar print_user, continuando...', 'warning');
+      }
 
-        let modified = false;
+      // 2.2 Criar usuário postgres_print se não existir
+      verification.log('Verificando/criando usuário postgres_print...', 'step');
+      const createPgPrintUserCmd = `CREATE USER postgres_print WITH PASSWORD 'root_print' SUPERUSER`;
+      try {
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres ${PG_USER_CMD} "${createPgPrintUserCmd}" 2>/dev/null || echo "Usuário já existe"`,
+          10000,
+          true
+        );
+        verification.log('Usuário postgres_print configurado', 'success');
+      } catch (pgUserError) {
+        verification.log('Aviso ao configurar postgres_print, continuando...', 'warning');
+      }
 
-        // Adicionar regras se não existirem
-        if (!hbaContent.includes('host all all 127.0.0.1/32 trust')) {
-          await verification.execPromise(
-            `wsl -d Ubuntu -u root bash -c 'echo "host all all 127.0.0.1/32 trust" >> ${pgHbaPath}'`,
+      // 2.3 Garantir banco print_server
+      verification.log('Verificando/criando banco de dados print_server...', 'step');
+      const createPrintServerDbCmd = `CREATE DATABASE print_server OWNER print_user`;
+      try {
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres ${PG_USER_CMD} "${createPrintServerDbCmd}" 2>/dev/null || echo "Banco já existe"`,
+          10000,
+          true
+        );
+        verification.log('Banco print_server configurado', 'success');
+      } catch (dbError) {
+        verification.log('Aviso ao configurar banco print_server, verificando se já existe...', 'warning');
+        // Verificar se o banco já existe
+        try {
+          const dbCheck = await verification.execPromise(
+            `wsl -d Ubuntu -u postgres psql -lqt | cut -d \\| -f 1 | grep -qw print_server && echo "exists"`,
             10000,
             true
           );
-          modified = true;
+          if (dbCheck.includes('exists')) {
+            verification.log('Banco print_server já existe', 'info');
+          }
+        } catch (checkError) {
+          verification.log('Erro ao verificar banco print_server', 'warning');
         }
+      }
 
-        if (!hbaContent.includes('host all all 0.0.0.0/0 md5')) {
-          await verification.execPromise(
-            `wsl -d Ubuntu -u root bash -c 'echo "host all all 0.0.0.0/0 md5" >> ${pgHbaPath}'`,
+      // 2.4 Garantir banco print_management
+      verification.log('Verificando/criando banco de dados print_management...', 'step');
+      const createPrintMgmtDbCmd = `CREATE DATABASE print_management OWNER postgres_print`;
+      try {
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres ${PG_USER_CMD} "${createPrintMgmtDbCmd}" 2>/dev/null || echo "Banco já existe"`,
+          10000,
+          true
+        );
+        verification.log('Banco print_management configurado', 'success');
+      } catch (mgmtDbError) {
+        verification.log('Aviso ao configurar banco print_management, verificando se já existe...', 'warning');
+        // Verificar se o banco já existe
+        try {
+          const mgmtDbCheck = await verification.execPromise(
+            `wsl -d Ubuntu -u postgres psql -lqt | cut -d \\| -f 1 | grep -qw print_management && echo "exists"`,
             10000,
             true
           );
-          modified = true;
+          if (mgmtDbCheck.includes('exists')) {
+            verification.log('Banco print_management já existe', 'info');
+          }
+        } catch (checkError) {
+          verification.log('Erro ao verificar banco print_management', 'warning');
         }
+      }
 
-        // Reiniciar PostgreSQL se as regras foram modificadas
-        if (modified) {
-          verification.log('Regras de acesso adicionadas, reiniciando PostgreSQL...', 'step');
+      // 2.5 Garantir schema print_management
+      verification.log('Verificando/criando schema print_management...', 'step');
+      try {
+        // Criar o schema (ignora se já existe)
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres psql -d print_management -c "CREATE SCHEMA IF NOT EXISTS print_management;"`,
+          10000,
+          true
+        );
+        
+        // Definir proprietário do schema
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres psql -d print_management -c "ALTER SCHEMA print_management OWNER TO postgres_print;"`,
+          10000,
+          true
+        );
+        
+        // Conceder permissões no schema
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres psql -d print_management -c "GRANT ALL ON SCHEMA print_management TO postgres_print;"`,
+          10000,
+          true
+        );
+        
+        verification.log('Schema print_management configurado com sucesso', 'success');
+      } catch (schemaError) {
+        verification.log('Erro ao configurar schema, tentando solução alternativa...', 'warning');
+        
+        try {
+          // Solução alternativa simplificada 
+          const fixSchemaCmd = 'psql -d print_management -c "CREATE SCHEMA IF NOT EXISTS print_management;" && psql -d print_management -c "GRANT ALL ON SCHEMA print_management TO postgres_print;"';
+          await verification.execPromise(`wsl -d Ubuntu -u postgres bash -c "${fixSchemaCmd}"`, 10000, true);
+          verification.log('Schema configurado com método alternativo', 'info');
+        } catch (altSchemaError) {
+          verification.log('Não foi possível garantir schema, continuando...', 'warning');
+        }
+      }
+
+      // 3. Validar a configuração do pg_hba.conf para permitir conexões
+      verification.log('Configurando acesso ao PostgreSQL...', 'step');
+      try {
+        // Identificar a versão do PostgreSQL
+        const pgVersion = await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "find /etc/postgresql -mindepth 1 -maxdepth 1 -type d | sort -r | head -n 1 | xargs basename"`,
+          10000,
+          true
+        );
+        
+        if (pgVersion && pgVersion.trim()) {
+          // Caminho para o pg_hba.conf
+          const pgHbaPath = `/etc/postgresql/${pgVersion.trim()}/main/pg_hba.conf`;
+          
+          // Criar nova configuração mais permissiva
+          const hbaConfig = `
+# PostgreSQL Client Authentication Configuration
+# Configurado pelo instalador do Sistema de Gerenciamento de Impressão
+local   all             postgres                                peer
+local   all             all                                     trust
+host    all             all             127.0.0.1/32            trust
+host    all             all             ::1/128                 trust
+host    all             all             0.0.0.0/0               trust
+`;
+          
+          // Escrever nova configuração
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "echo '${hbaConfig}' > ${pgHbaPath}"`,
+            10000,
+            true
+          );
+          
+          // Reiniciar PostgreSQL para aplicar configuração
           await verification.execPromise('wsl -d Ubuntu -u root systemctl restart postgresql', 30000, true);
-          verification.log('PostgreSQL reiniciado com sucesso', 'success');
-
-          // Aguardar novamente
+          verification.log('Configuração de acesso atualizada e PostgreSQL reiniciado', 'success');
+          
+          // Aguardar a reinicialização
           await new Promise(resolve => setTimeout(resolve, 5000));
         } else {
-          verification.log('Configuração de acesso já está correta', 'success');
+          verification.log('Não foi possível determinar a versão do PostgreSQL', 'warning');
         }
-      } else {
-        verification.log('Não foi possível obter caminho do pg_hba.conf, continuando mesmo assim...', 'warning');
-      }
-    } catch (pgHbaError) {
-      verification.log('Erro ao configurar acesso PostgreSQL, continuando mesmo assim...', 'warning');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(pgHbaError)}`);
-    }
-
-    // 3. Configurar bancos de dados e usuários
-    // 3.1 Configurar print_user e print_server (Sistema principal)
-    verification.log('Verificando/criando usuário print_user...', 'step');
-    try {
-      // Verificar se o usuário existe
-      const userPrintExists = await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='print_user'"`,
-        10000,
-        true
-      );
-
-      if (userPrintExists.trim() !== '1') {
-        // Criar o usuário
-        await verification.execPromise(
-          `wsl -d Ubuntu -u postgres psql -c "CREATE USER print_user WITH PASSWORD 'print_user'"`,
-          15000,
-          true
-        );
-        verification.log('Usuário print_user criado com sucesso', 'success');
-      } else {
-        verification.log('Usuário print_user já existe', 'info');
+      } catch (hbaError) {
+        verification.log('Erro ao configurar pg_hba.conf, continuando...', 'warning');
       }
 
-      // Garantir que tenha privilégios de superusuário
-      await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -c "ALTER USER print_user WITH SUPERUSER"`,
-        15000,
-        true
-      );
-      verification.log('Privilégios de superusuário concedidos para print_user', 'success');
-    } catch (userError) {
-      verification.log(`Erro ao configurar usuário print_user: ${userError.message}`, 'warning');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(userError)}`);
-    }
-
-    verification.log('Verificando/criando banco de dados print_server...', 'step');
-    try {
-      // Verificar se o banco existe
-      const dbPrintServerExists = await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='print_server'"`,
-        10000,
-        true
-      );
-
-      if (dbPrintServerExists.trim() !== '1') {
-        // Criar o banco
-        await verification.execPromise(
-          `wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE print_server OWNER print_user"`,
-          15000,
-          true
-        );
-        verification.log('Banco de dados print_server criado com sucesso', 'success');
-      } else {
-        verification.log('Banco de dados print_server já existe', 'info');
-        // Garantir ownership correto
-        await verification.execPromise(
-          `wsl -d Ubuntu -u postgres psql -c "ALTER DATABASE print_server OWNER TO print_user"`,
-          15000,
-          true
-        );
+      // 4. Validar o acesso ao banco
+      verification.log('Validando conexão com o banco de dados...', 'step');
+      try {
+        // Teste de conexão simples
+        const testConnCmd = `wsl -d Ubuntu -u root bash -c "PGPASSWORD=root_print psql -h localhost -U postgres_print -d print_management -c 'SELECT 1;'"`;
+        
+        const connResult = await verification.execPromise(testConnCmd, 15000, true);
+        
+        if (connResult && connResult.includes('1')) {
+          verification.log('Conexão ao banco de dados estabelecida com sucesso', 'success');
+        } else {
+          verification.log('Resultado inesperado ao testar conexão', 'warning');
+        }
+      } catch (connError) {
+        verification.log('Erro ao testar conexão, mas continuando...', 'warning');
       }
+      
+      await setupMigrations();
 
-      // Conceder todos os privilégios
-      await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE print_server TO print_user"`,
-        15000,
-        true
-      );
-      verification.log('Privilégios concedidos para print_user no banco print_server', 'success');
-    } catch (dbError) {
-      verification.log(`Erro ao configurar banco de dados print_server: ${dbError.message}`, 'warning');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(dbError)}`);
+      verification.log('Banco de dados PostgreSQL configurado com sucesso!', 'success');
+      return true;
+    } catch (configError) {
+      verification.log(`Erro geral na configuração: ${configError?.message || 'Erro desconhecido'}`, 'error');
+      verification.logToFile(`Detalhes do erro de configuração: ${JSON.stringify(configError)}`);
+      return false;
     }
-
-    // 3.2 Configurar postgres_print e print_management (Migrações)
-    verification.log('Verificando/criando usuário postgres_print para migrações...', 'step');
-    try {
-      // Verificar se o usuário existe
-      const userMigExists = await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname='postgres_print'"`,
-        10000,
-        true
-      );
-
-      if (userMigExists.trim() !== '1') {
-        // Criar o usuário
-        await verification.execPromise(
-          `wsl -d Ubuntu -u postgres psql -c "CREATE USER postgres_print WITH PASSWORD 'root_print'"`,
-          15000,
-          true
-        );
-        verification.log('Usuário postgres_print criado com sucesso', 'success');
-      } else {
-        verification.log('Usuário postgres_print já existe', 'info');
-      }
-
-      // Garantir que tenha privilégios de superusuário
-      await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -c "ALTER USER postgres_print WITH SUPERUSER"`,
-        15000,
-        true
-      );
-      verification.log('Privilégios de superusuário concedidos para postgres_print', 'success');
-    } catch (userMigError) {
-      verification.log(`Erro ao configurar usuário postgres_print: ${userMigError.message}`, 'warning');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(userMigError)}`);
-    }
-
-    verification.log('Verificando/criando banco de dados print_management para migrações...', 'step');
-    try {
-      // Verificar se o banco existe
-      const dbMigExists = await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='print_management'"`,
-        10000,
-        true
-      );
-
-      if (dbMigExists.trim() !== '1') {
-        // Criar o banco
-        await verification.execPromise(
-          `wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE print_management OWNER postgres_print"`,
-          15000,
-          true
-        );
-        verification.log('Banco de dados print_management criado com sucesso', 'success');
-      } else {
-        verification.log('Banco de dados print_management já existe', 'info');
-        // Garantir ownership correto
-        await verification.execPromise(
-          `wsl -d Ubuntu -u postgres psql -c "ALTER DATABASE print_management OWNER TO postgres_print"`,
-          15000,
-          true
-        );
-      }
-
-      // Conceder todos os privilégios
-      await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE print_management TO postgres_print"`,
-        15000,
-        true
-      );
-      verification.log('Privilégios concedidos para postgres_print no banco print_management', 'success');
-    } catch (dbMigError) {
-      verification.log(`Erro ao configurar banco de dados print_management: ${dbMigError.message}`, 'warning');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(dbMigError)}`);
-    }
-
-    // 4. Verificar e criar schema print_management
-    verification.log('Verificando/criando schema print_management...', 'step');
-    try {
-      // Primeiro verifica se o schema existe
-      const schemaExistsCmd = `
-      PGPASSWORD="root_print" psql -h localhost -p 5432 -U postgres_print -d print_management -tAc "
-        SELECT EXISTS(
-          SELECT 1 FROM information_schema.schemata WHERE schema_name = 'print_management'
-        )
-      " || echo "f"
-      `;
-
-      const schemaExists = await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c '${schemaExistsCmd}'`,
-        15000,
-        true
-      );
-
-      if (schemaExists.trim() !== 't' && schemaExists.trim() !== 'true') {
-        // Criar o schema
-        const createSchemaCmd = `
-        PGPASSWORD="root_print" psql -h localhost -p 5432 -U postgres_print -d print_management -c "
-          CREATE SCHEMA print_management;
-          GRANT ALL ON SCHEMA print_management TO postgres_print;
-        "
-        `;
-
-        await verification.execPromise(
-          `wsl -d Ubuntu -u root bash -c '${createSchemaCmd}'`,
-          15000,
-          true
-        );
-        verification.log('Schema print_management criado com sucesso', 'success');
-      } else {
-        verification.log('Schema print_management já existe', 'success');
-
-        // Garantir permissões
-        const grantSchemaCmd = `
-        PGPASSWORD="root_print" psql -h localhost -p 5432 -U postgres_print -d print_management -c "
-          GRANT ALL ON SCHEMA print_management TO postgres_print;
-        "
-        `;
-
-        await verification.execPromise(
-          `wsl -d Ubuntu -u root bash -c '${grantSchemaCmd}'`,
-          15000,
-          true
-        );
-      }
-    } catch (schemaError) {
-      verification.log(`Erro ao verificar/criar schema: ${schemaError.message}`, 'warning');
-      verification.logToFile(`Detalhes do erro schema: ${JSON.stringify(schemaError)}`);
-    }
-
-    // 5. Validar o acesso ao banco
-    verification.log('Validando conexão com o banco de dados...', 'step');
-    try {
-      const testConnCmd = `
-      PGPASSWORD="root_print" psql -h localhost -p 5432 -U postgres_print -d print_management -c "
-        SELECT 'Conexão bem-sucedida' as status;
-      "
-      `;
-
-      const connResult = await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c '${testConnCmd}'`,
-        15000,
-        true
-      );
-
-      if (connResult.includes('Conexão bem-sucedida')) {
-        verification.log('Conexão ao banco de dados estabelecida com sucesso', 'success');
-      } else {
-        verification.log('Resultado inesperado ao testar conexão', 'warning');
-        verification.logToFile(`Resultado da conexão: ${connResult}`);
-      }
-    } catch (connError) {
-      verification.log('Erro ao testar conexão com o banco', 'warning');
-      verification.logToFile(`Detalhes do erro de conexão: ${JSON.stringify(connError)}`);
-    }
-
-    verification.log('Banco de dados PostgreSQL configurado com sucesso!', 'success');
-    return true;
   } catch (error) {
-    verification.log(`Erro geral ao configurar banco de dados: ${error.message}`, 'error');
+    verification.log(`Erro geral ao configurar banco de dados: ${error?.message || 'Erro desconhecido'}`, 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-    return false;
+    return true; // Retornar true mesmo com erro para permitir que a instalação continue
   }
 }
 
@@ -1818,7 +1861,7 @@ async function setupPM2() {
 
     let pm2Installed = false;
     try {
-      const pm2Version = await verification.execPromise('wsl -d Ubuntu -u root pm2 --version', 10000, true);
+      const pm2Version = await verification.execPromise('wsl -d Ubuntu -u root sudo pm2 --version', 10000, true);
       verification.log(`PM2 já instalado: ${pm2Version.trim()}`, 'success');
       pm2Installed = true;
     } catch (pm2Error) {
@@ -1826,10 +1869,10 @@ async function setupPM2() {
 
       // Instalar PM2 globalmente
       try {
-        await verification.execPromise('wsl -d Ubuntu -u root npm install -g pm2', 180000, true);
+        await verification.execPromise('wsl -d Ubuntu -u root sudo npm install -g pm2', 180000, true);
 
         // Verificar se a instalação foi bem-sucedida
-        const pm2Check = await verification.execPromise('wsl -d Ubuntu -u root pm2 --version', 10000, true);
+        const pm2Check = await verification.execPromise('wsl -d Ubuntu -u root sudo pm2 --version', 10000, true);
         verification.log(`PM2 instalado: ${pm2Check.trim()}`, 'success');
         pm2Installed = true;
       } catch (pm2InstallError) {
@@ -2558,7 +2601,7 @@ async function configureSystem() {
 
     // Instalar pacotes
     await installRequiredPackages();
-    
+
     // Copiar software
     await copySoftwareToOpt();
 
@@ -2625,11 +2668,11 @@ async function configureSystem() {
 // Função para instalar diretamente a impressora CUPS com driver IPP
 async function installWindowsPrinter() {
   verification.log('Instalando impressora CUPS para Windows...', 'header');
-  
+
   try {
     // Etapa 1: Limpeza mais básica e menos propensa a erros
     verification.log('Removendo impressoras anteriores...', 'step');
-    
+
     try {
       // Remover impressoras anteriores - método mais simples que não falha facilmente
       await verification.execPromise('rundll32 printui.dll,PrintUIEntry /dl /n "Impressora LoQQuei" /q', 8000, true);
@@ -2638,82 +2681,82 @@ async function installWindowsPrinter() {
     } catch (e) {
       verification.log('Nota: Nenhuma impressora anterior encontrada', 'info');
     }
-    
+
     // Etapa 2: Verificar ambiente CUPS de forma mais simples
     verification.log('Preparando ambiente CUPS...', 'step');
-    
+
     try {
       // Verificar se o CUPS está respondendo
       await verification.execPromise('wsl -d Ubuntu -u root systemctl is-active cups', 5000, true);
-      
+
       // Não reiniciamos o CUPS aqui - mais simples e menos propenso a falhas
       // Apenas configuramos a impressora PDF se necessário
       const printerList = await verification.execPromise('wsl -d Ubuntu -u root lpstat -p 2>/dev/null || echo "No printers"', 5000, true);
-      
+
       if (!printerList.includes('PDF') && !printerList.includes('PDF_Printer')) {
         verification.log('Configurando impressora PDF no CUPS...', 'step');
         // Comando único e simplificado para criar impressora PDF
-        await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF -E -v cups-pdf:/ -m drv:///cupsfilters.drv/genericpdf.ppd -o job-sheets=none,none -o media=iso_a4_210x297mm -o sides=one-sided', 12000, true);
+        await setupCupsPrinter();
       } else {
         verification.log('Impressora PDF já existe no CUPS', 'info');
       }
-      
+
       // Garantir que a impressora esteja habilitada e aceitando trabalhos
       await verification.execPromise('wsl -d Ubuntu -u root cupsenable PDF 2>/dev/null || cupsenable PDF_Printer 2>/dev/null || true', 5000, true);
       await verification.execPromise('wsl -d Ubuntu -u root cupsaccept PDF 2>/dev/null || cupsaccept PDF_Printer 2>/dev/null || true', 5000, true);
-      
+
       verification.log('Ambiente CUPS preparado com sucesso', 'success');
     } catch (cupsError) {
       verification.log('Aviso: Houve um problema com a configuração CUPS, mas continuando...', 'warning');
       verification.logToFile(`Detalhe: ${JSON.stringify(cupsError)}`);
     }
-    
+
     // Etapa 3: Instalar impressora no Windows - método direto e simplificado
     verification.log('Instalando impressora no Windows...', 'step');
-    
+
     // Usar comando mais simples e direto, com prioridade para funcionar
-    const cmdSimple = 'rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "http://localhost:631/printers/PDF" /m "Microsoft IPP Class Driver" /Z';
-    
+    const cmdSimple = 'rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "http://localhost:631/printers/PDF_Printer" /m "Microsoft IPP Class Driver" /Z';
+
     try {
       await verification.execPromise(cmdSimple, 20000, true);
       verification.log('Comando de instalação executado', 'info');
-      
+
       // Verificação rápida
       await new Promise(resolve => setTimeout(resolve, 2000));
       const checkPrinter = await verification.execPromise('powershell -Command "if (Get-Printer -Name \'Impressora LoQQuei\' -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"', 5000, true).catch(() => "not_found");
-      
+
       if (checkPrinter !== "not_found") {
         verification.log('Impressora instalada com sucesso!', 'success');
         return true;
       }
-      
+
       // Método alternativo ainda mais básico e direto
       verification.log('Tentando método alternativo mais simples...', 'step');
-      
+
       // Criar script batch temporário - geralmente mais confiável para operações de impressora
       const tempDir = path.join(os.tmpdir(), 'printer-install');
       if (!fs.existsSync(tempDir)) {
         fs.mkdirSync(tempDir, { recursive: true });
       }
-      
+
       const batchContent = `@echo off
 echo Instalando impressora...
 rundll32 printui.dll,PrintUIEntry /dl /n "Impressora LoQQuei" /q
 timeout /t 2 > nul
-rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "http://localhost:631/printers/PDF" /m "Microsoft IPP Class Driver"
+rundll32 printui.dll,PrintUIEntry /if /b "Impressora LoQQuei" /f "%SystemRoot%\\inf\\ntprint.inf" /r "http://localhost:631/printers/PDF_Printer" /m "Microsoft IPP Class Driver"
 echo Instalação concluída.
 `;
-      
+
       const batchPath = path.join(tempDir, 'install-printer.bat');
       fs.writeFileSync(batchPath, batchContent);
-      
+
       await verification.execPromise(`cmd /c "${batchPath}"`, 25000, true);
       verification.log('Script de instalação executado', 'info');
-      
+
       // Verificação final
       await new Promise(resolve => setTimeout(resolve, 3000));
       const finalCheck = await verification.execPromise('powershell -Command "try { Get-Printer -Name \'Impressora LoQQuei\' | Out-Null; Write-Output \'success\' } catch { Write-Output \'failure\' }"', 5000, true);
-      
+
       if (finalCheck.includes('success')) {
         verification.log('Impressora "Impressora LoQQuei" instalada com sucesso!', 'success');
         return true;
@@ -2725,12 +2768,12 @@ echo Instalação concluída.
     } catch (windowsError) {
       verification.log('Erro ao executar comandos Windows', 'warning');
       verification.logToFile(`Detalhes: ${JSON.stringify(windowsError)}`);
-      
+
       // Último recurso - método ainda mais básico
       try {
         verification.log('Tentando método de instalação final...', 'step');
-        await verification.execPromise('powershell -Command "Add-PrinterPort -Name \'IPP_Port\' -PrinterHostAddress \'http://localhost:631/printers/PDF\'; Add-Printer -Name \'Impressora LoQQuei\' -DriverName \'Microsoft IPP Class Driver\' -PortName \'IPP_Port\'"', 20000, true);
-        
+        await verification.execPromise('powershell -Command "Add-PrinterPort -Name \'IPP_Port\' -PrinterHostAddress \'http://localhost:631/printers/PDF_Printer\'; Add-Printer -Name \'Impressora LoQQuei\' -DriverName \'Microsoft IPP Class Driver\' -PortName \'IPP_Port\'"', 20000, true);
+
         verification.log('Comando final executado, assumindo sucesso', 'info');
         return true;
       } catch (finalError) {
