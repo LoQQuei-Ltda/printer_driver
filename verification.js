@@ -878,7 +878,7 @@ async function checkOptDirectory() {
 
 async function checkPM2Status() {
   try {
-    const output = await execPromise('wsl -d Ubuntu -u root pm2 list', 10000, true);
+    const output = await execPromise('wsl -d Ubuntu -u root pm2 list ', 15000, true);
     return output.includes('online') && output.includes('print_server_desktop');
   } catch (error) {
     return false;
@@ -1115,7 +1115,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await checkPM2Status());
+    console.log(await checkFirewallRules());
     process.exit(1)
   })()
 }

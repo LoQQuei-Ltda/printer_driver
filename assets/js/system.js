@@ -560,125 +560,6 @@ async function checkSystemStatusDetailed() {
   }
 }
 
-// Verificar status do sistema detalhado
-async function checkSystemStatusDetailed() {
-  // Evitar verificações múltiplas simultâneas
-  if (isCheckingSystem) {
-    console.log('Verificação já em andamento, ignorando nova solicitação');
-    addSystemLogEntry('Verificação já em andamento, aguarde a conclusão...', 'warning');
-    return;
-  }
-  
-  isCheckingSystem = true;
-  
-  // Limpar área de status e mostrar spinner
-  const statusSection = document.getElementById('statusSection');
-  if (statusSection) {
-    statusSection.innerHTML = `
-      <div class="loading">
-        <div class="spinner"></div>
-        <p>Verificando componentes do sistema...</p>
-      </div>
-    `;
-  }
-  
-  // Desabilitar botões durante a verificação
-  const checkButton = document.getElementById('checkSystemButton');
-  const installButton = document.getElementById('installButton');
-  const reinstallButton = document.getElementById('reinstallButton');
-  
-  if (checkButton) checkButton.disabled = true;
-  if (installButton) installButton.disabled = true;
-  if (reinstallButton) reinstallButton.disabled = true;
-  
-  // Ocultar detalhes antigos
-  const detailsContainer = document.getElementById('statusDetailsContainer');
-  if (detailsContainer) {
-    detailsContainer.style.display = 'none';
-  }
-  
-  addSystemLogEntry('Iniciando verificação detalhada do sistema...', 'header');
-  
-  // Usar IPC para solicitar verificação ao processo principal
-  try {
-    const { ipcRenderer } = require('electron');
-    ipcRenderer.send('verificar-sistema-detalhado');
-    
-    // Configurar receptor de resposta
-    ipcRenderer.once('sistema-status-detalhado', (event, status) => {
-      isCheckingSystem = false;
-      
-      // Reabilitar botões
-      if (checkButton) checkButton.disabled = false;
-      if (reinstallButton) reinstallButton.disabled = false;
-      
-      // Log dos resultados
-      addSystemLogEntry('Verificação do sistema concluída', 'success');
-      
-      if (status.error) {
-        addSystemLogEntry(`Erro na verificação: ${status.error}`, 'error');
-        
-        if (statusSection) {
-          statusSection.innerHTML = `
-            <div class="status-item">
-              <div class="status-indicator red"></div>
-              <div class="status-label">Erro ao verificar status do sistema</div>
-            </div>
-          `;
-        }
-        
-        return;
-      }
-      
-      // Determinar o estado real da configuração com base em todos os componentes
-      const needsConfiguration = 
-        (status.softwareStatus && !status.softwareStatus.fullyConfigured) ||
-        (status.softwareStatus && status.softwareStatus.firewallStatus && !status.softwareStatus.firewallStatus.configured) ||
-        (status.printerStatus && (!status.printerStatus.installed || !status.printerStatus.correctConfig));
-      
-      // Forçar o status de configuração baseado na análise completa
-      status.needsConfiguration = needsConfiguration;
-      
-      // Salvar o status do sistema para acesso global
-      lastSystemStatus = status;
-      
-      console.log('Status do sistema:', status);
-      console.log('Status da configuração:', needsConfiguration ? 'Requer configuração' : 'Configurado');
-      
-      // Renderizar status detalhado
-      renderSystemStatusDetails(status);
-      
-      // Atualizar status geral
-      updateOverallStatus(status);
-      
-      // Adicionar logs detalhados sobre cada componente
-      addDetailedStatusLogs(status);
-      
-      // Mostrar detalhes
-      if (detailsContainer) {
-        detailsContainer.style.display = 'block';
-      }
-    });
-  } catch (error) {
-    isCheckingSystem = false;
-    addSystemLogEntry(`Erro ao solicitar verificação: ${error.message}`, 'error');
-    
-    if (statusSection) {
-      statusSection.innerHTML = `
-        <div class="status-item">
-          <div class="status-indicator red"></div>
-          <div class="status-label">Erro ao verificar status: ${error.message}</div>
-        </div>
-      `;
-    }
-    
-    // Reabilitar botões
-    if (checkButton) checkButton.disabled = false;
-    if (installButton) installButton.disabled = false;
-    if (reinstallButton) reinstallButton.disabled = false;
-  }
-}
-
 // Adicionar logs detalhados sobre cada componente
 function addDetailedStatusLogs(status) {
   // WSL e Ubuntu
@@ -993,8 +874,7 @@ document.addEventListener('DOMContentLoaded', function() {
       const tabName = this.getAttribute('data-tab');
       if (tabName === 'system') {
         // Esperar um pouco para garantir que a mudança de aba já ocorreu
-        // Usar apenas uma verificação, não duas
-        setTimeout(checkSystemStatusDetailed, 100);
+        setTimeout(checkSystemStatusDetailed(), 100);
       }
     });
   });

@@ -1,6 +1,6 @@
 #define MyAppName "Gerenciamento de Impressão - LoQQuei"
 #define MyAppVersion "1.0.0"
-#define MyAppPublisher "LoQQuei Ltda"
+#define MyAppPublisher "LoQQuei"
 #define MyAppURL "https://loqquei.com.br"
 #define MyAppExeName "Gerenciamento de Impressão - LoQQuei.exe"
 
@@ -45,6 +45,24 @@ SetupIconFile=assets\icon\light.ico
 DisableReadyPage=yes
 DisableFinishedPage=no
 
+; Adicionar metadados detalhados para o instalador (ajuda a reduzir alertas)
+VersionInfoVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription=Sistema de Gerenciamento de Impressão LoQQuei
+VersionInfoTextVersion={#MyAppVersion}
+VersionInfoCopyright=Copyright © 2025 LoQQuei
+VersionInfoProductName={#MyAppName}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoProductTextVersion={#MyAppVersion}
+
+; Configurações para lidar com detecção de antivírus
+AppCopyright=Copyright © 2025 LoQQuei
+SetupMutex=LoQQueiInstallMutex_{#MyAppVersion}
+ShowLanguageDialog=auto
+ChangesEnvironment=yes
+ChangesAssociations=no
+AlwaysRestart=no
+
 [Languages]
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
@@ -69,7 +87,7 @@ brazilianportuguese.WSLUpdateFailed=Atualização do WSL falhou. Consulte os log
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
-Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce; OnlyBelowVersion: 6.1; Check: not IsAdminInstallMode
+Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce; Check: not IsAdminInstallMode
 Name: "startmenuicon"; Description: "Criar ícone no Menu Iniciar"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 
 [Files]
@@ -100,7 +118,7 @@ Name: "{app}\resources\print_server_desktop\updates"; Permissions: users-modify
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{group}\{cm:UninstallProgram,{#MyAppName}}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; WorkingDir: "{app}"
-Name: "{userappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: quicklaunchicon; WorkingDir: "{app}"
+Name: "{commonappdata}\Microsoft\Internet Explorer\Quick Launch\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: quicklaunchicon; WorkingDir: "{app}"
 Name: "{commonstartmenu}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startmenuicon; WorkingDir: "{app}"
 
 [Run]
@@ -121,13 +139,19 @@ Filename: "{app}\{#MyAppExeName}"; Flags: nowait postinstall runasoriginaluser
 
 [UninstallRun]
 ; Parar a aplicação antes da desinstalação
-Filename: "taskkill.exe"; Parameters: "/f /im ""{#MyAppExeName}"""; Flags: runhidden
+Filename: "taskkill.exe"; Parameters: "/f /im ""{#MyAppExeName}"""; Flags: runhidden; RunOnceId: "StopApp"
+
+; Remover a impressora virtual "Impressora LoQQuei"
+Filename: "rundll32.exe"; Parameters: "printui.dll,PrintUIEntry /dl /n ""Impressora LoQQuei"" /q"; Flags: runhidden; RunOnceId: "RemovePrinter"
+
+; Remover a porta de impressora associada usando PowerShell
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -Command ""Try {{ Remove-PrinterPort -Name 'IPP_Port' -ErrorAction SilentlyContinue }} Catch {{ }}"""; Flags: runhidden; RunOnceId: "RemovePrinterPort"
 
 ; Desinstalar corretamente - limpar serviços e registros
-Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -Command ""& {{ try {{ wsl -d Ubuntu -u root bash -c 'cd /opt/print_server && if [ -f uninstall.sh ]; then bash uninstall.sh; fi' }} catch {{ Write-Host 'WSL não disponível ou erro na desinstalação' }} }}"""; Flags: runhidden
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -Command ""& {{ try {{ wsl -d Ubuntu -u root bash -c 'cd /opt/print_server && if [ -f uninstall.sh ]; then bash uninstall.sh; fi' }} catch {{ Write-Host 'WSL não disponível ou erro na desinstalação' }} }}"""; Flags: runhidden; RunOnceId: "CleanupWSL"
 
 ; Remover a distribuição Ubuntu do WSL
-Filename: "wsl.exe"; Parameters: "--unregister Ubuntu"; Flags: runhidden
+Filename: "wsl.exe"; Parameters: "--unregister Ubuntu"; Flags: runhidden; RunOnceId: "UnregisterUbuntu"
 
 [Registry]
 ; Registrar versão e informações da instalação para facilitar atualizações futuras
@@ -146,6 +170,28 @@ var
   VirtualizationEnabled: Boolean;
   IsInstalledVersion: String;
   IsUpdateMode: Boolean;
+
+procedure CheckAntivirusInterference();
+var
+  ResultCode: Integer;
+begin
+  // Tentar verificar o status do Windows Defender
+  Log('Verificando status do Windows Defender...');
+  try
+    if Exec('powershell.exe', 
+       '-Command "Get-MpPreference | Select DisableRealtimeMonitoring"', 
+       '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      if ResultCode = 0 then
+        Log('Windows Defender verificado com sucesso');
+    end;
+  except
+    Log('Erro ao verificar Windows Defender, continuando instalação');
+  end;
+  
+  // Aguardar um momento caso o antivírus esteja analisando
+  Sleep(1000);
+end;
 
 // Função para registro extenso
 procedure LogInstaller(Message: String);
@@ -360,6 +406,9 @@ end;
 function InitializeSetup(): Boolean;
 begin
   Result := True;
+  
+  // Verificar possível interferência de antivírus
+  CheckAntivirusInterference();
   
   // Se é uma atualização silenciosa, não mostrar mensagens
   IsUpdateMode := IsSilent() or IsUpgrade();

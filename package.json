@@ -16,7 +16,7 @@
     "postinstall": "electron-builder install-app-deps",
     "depcheck": "npx depcheck"
   },
-  "author": "LoQQuei-Ltda",
+  "author": "LoQQuei",
   "license": "MIT",
   "devDependencies": {
     "depcheck": "^1.4.7",

@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Iniciador de Instalação</title>
+  <script>
+    // Configurar comunicação IPC
+    const { ipcRenderer } = require('electron');
+    
+    // Quando receber o evento, acionar o processo de instalação
+    ipcRenderer.on('iniciar-processo-instalacao', () => {
+      console.log('Iniciando processo de instalação via janela temporária');
+      // Acionar o evento iniciar-instalacao no processo principal
+      ipcRenderer.send('iniciar-instalacao', { forceReinstall: false });
+    });
+  </script>
+</head>
+<body>
+  <!-- Página temporária invisível -->
+</body>
+</html>

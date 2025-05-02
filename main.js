@@ -238,6 +238,40 @@ async function setupEnvironment() {
       return false;
     }
 
+    isInstallingComponents = false; 
+
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      console.log('Enviando solicitação para interface iniciar instalação');
+      mainWindow.webContents.send('solicitar-iniciar-instalacao', {
+        forceReinstall: false
+      });
+      return true; // Retornamos true porque a instalação será gerenciada pelo fluxo normal
+    } else {
+      // Se não temos janela principal, precisamos criar uma temporária para acionar o processo
+      console.log('Criando janela temporária para acionar instalação');
+      
+      // Criar uma janela invisível se necessário
+      const tempWindow = new BrowserWindow({
+        width: 1,
+        height: 1,
+        show: false,
+        webPreferences: {
+          nodeIntegration: true,
+          contextIsolation: false
+        }
+      });
+      
+      // Carregar uma página simples que vai acionar o evento
+      tempWindow.loadFile('view/temp-installer.html');
+      
+      // Quando a página estiver carregada, enviamos o evento
+      tempWindow.webContents.once('did-finish-load', () => {
+        tempWindow.webContents.send('iniciar-processo-instalacao');
+      });
+      
+      return true;
+    }
+    
     // Mostrar janela de instalação
     createInstallationWindow();
     
@@ -1417,6 +1451,16 @@ ipcMain.on('set-critical-operation', (event, isCritical) => {
 ipcMain.on('check-for-updates', (event) => {
   if (updater) {
     updater.checkForUpdates();
+  }
+});
+
+ipcMain.on('solicitar-iniciar-instalacao', (event, options) => {
+  console.log('Recebida solicitação para iniciar instalação via interface');
+  // Se a janela principal existe mas não está visível, mostrar
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
   }
 });
 
