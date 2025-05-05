@@ -1171,45 +1171,45 @@ async function installRequiredPackages() {
     ];
 
     // Instalar cada grupo separadamente
-    // for (let i = 0; i < packageGroups.length; i++) {
-    //   const group = packageGroups[i];
-    //   verification.log(`Instalando grupo ${i + 1}/${packageGroups.length}: ${group.join(', ')}`, 'step');
+    for (let i = 0; i < packageGroups.length; i++) {
+      const group = packageGroups[i];
+      verification.log(`Instalando grupo ${i + 1}/${packageGroups.length}: ${group.join(', ')}`, 'step');
 
-    //   try {
-    //     // Usar timeout de 10 minutos para cada grupo
-    //     await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${group.join(' ')}`, 600000, true);
-    //     verification.log(`Grupo ${i + 1} instalado com sucesso`, 'success');
-    //   } catch (groupError) {
-    //     try {
-    //       await verification.execPromise('wsl -d Ubuntu -u root dpkg --configure -a -y', 6000, true);
-    //       await verification.execPromise('wsl -d Ubuntu -u root apt --fix-broken install -y', 6000, true);
-    //       await verification.execPromise('wsl -d Ubuntu -u root apt clean', 6000, true);
-    //       await verification.execPromise('wsl -d Ubuntu -u root apt update', 6000, true);
-    //       await verification.execPromise('wsl -d Ubuntu -u root apt upgrade -y', 60000, true);
-    //     } catch (error) {
-    //       await verification.log('Error: ' + error);
-    //       await verification.logToFile('Error: ' + error);
-    //     }
+      try {
+        // Usar timeout de 10 minutos para cada grupo
+        await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${group.join(' ')}`, 600000, true);
+        verification.log(`Grupo ${i + 1} instalado com sucesso`, 'success');
+      } catch (groupError) {
+        try {
+          await verification.execPromise('wsl -d Ubuntu -u root dpkg --configure -a -y', 6000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root apt --fix-broken install -y', 6000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root apt clean', 6000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root apt update', 6000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root apt upgrade -y', 60000, true);
+        } catch (error) {
+          await verification.log('Error: ' + error);
+          await verification.logToFile('Error: ' + error);
+        }
 
-    //     verification.log(`Erro ao instalar grupo ${i + 1}: ${groupError.message || 'Erro desconhecido'}`, 'warning');
-    //     verification.logToFile(`Detalhes do erro: ${JSON.stringify(groupError)}`);
+        verification.log(`Erro ao instalar grupo ${i + 1}: ${groupError.message || 'Erro desconhecido'}`, 'warning');
+        verification.logToFile(`Detalhes do erro: ${JSON.stringify(groupError)}`);
 
-    //     // Tentar instalar um por um se o grupo falhar
-    //     for (const pkg of group) {
-    //       try {
-    //         verification.log(`Tentando instalar ${pkg} individualmente...`, 'step');
-    //         await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${pkg}`, 300000, true);
-    //         verification.log(`Pacote ${pkg} instalado com sucesso`, 'success');
-    //       } catch (pkgError) {
-    //         console.error(`Erro ao instalar ${pkg}: ${pkgError || 'Erro desconhecido'}`);
-    //         verification.log(`Erro ao instalar ${pkg}: ${pkgError.message || 'Erro desconhecido'}`, 'warning');
-    //       }
-    //     }
-    //   }
+        // Tentar instalar um por um se o grupo falhar
+        for (const pkg of group) {
+          try {
+            verification.log(`Tentando instalar ${pkg} individualmente...`, 'step');
+            await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${pkg}`, 300000, true);
+            verification.log(`Pacote ${pkg} instalado com sucesso`, 'success');
+          } catch (pkgError) {
+            console.error(`Erro ao instalar ${pkg}: ${pkgError || 'Erro desconhecido'}`);
+            verification.log(`Erro ao instalar ${pkg}: ${pkgError.message || 'Erro desconhecido'}`, 'warning');
+          }
+        }
+      }
 
-    //   // Pausa breve entre grupos para dar folga ao sistema
-    //   await new Promise(resolve => setTimeout(resolve, 2000));
-    // }
+      // Pausa breve entre grupos para dar folga ao sistema
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
 
     verification.log('Instalação de pacotes concluída com sucesso!', 'success');
 
