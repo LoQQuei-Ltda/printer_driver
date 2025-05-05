@@ -451,7 +451,6 @@ async function installComponent(component, status) {
           // Reiniciar outros serviços fundamentais
           log('Reiniciando serviços adicionais...', 'step');
           await verification.execPromise('wsl -d Ubuntu -u root service postgresql restart', 30000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root service avahi-daemon restart', 30000, true);
           
           // Consideramos sucesso mesmo se alguns serviços falharem
           log('Serviços configurados', cupsResult && sambaResult && dbResult ? 'success' : 'warning');
@@ -2517,7 +2516,7 @@ async function setupCupsPrinter() {
     await verification.execPromise('wsl -d Ubuntu -u root sudo chmod -R 0777 /srv/print_server', 10000, true);
     
     // 3. Se já existe uma impressora PDF, apenas garantir que esteja ativa
-    if (printerList.includes('PDF') || printerList.includes('PDF_Printer')) {
+    if (printerList.includes('PDF_Printer')) {
       verification.log('Impressora PDF já existe, garantindo que esteja habilitada...', 'info');
       try {
         // Habilitar e aceitar trabalhos (ignorando erros)
