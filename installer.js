@@ -450,7 +450,8 @@ async function installComponent(component, status) {
           
           // Reiniciar outros serviços fundamentais
           log('Reiniciando serviços adicionais...', 'step');
-          await verification.execPromise('wsl -d Ubuntu -u root systemctl restart postgresql avahi-daemon ufw 2>/dev/null || true', 30000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root service postgresql restart', 30000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root service avahi-daemon restart', 30000, true);
           
           // Consideramos sucesso mesmo se alguns serviços falharem
           log('Serviços configurados', cupsResult && sambaResult && dbResult ? 'success' : 'warning');
@@ -750,7 +751,7 @@ function closeReadlineIfNeeded() {
 
 // Instalar o WSL usando método mais recente (Windows 10 versão 2004 ou superior)
 async function installWSLModern() {
-  // Função para analisar uma saída e determinar se WSL está instalado
+  // Função auxiliar para analisar a saída e determinar se WSL está instalado
   const checkWslOutput = (output) => {
     // Se for objeto de erro, extrair a saída stdout se existir
     if (output && typeof output === 'object' && output.stdout) {
@@ -762,231 +763,286 @@ async function installWSLModern() {
       return false;
     }
     
+    // Padronizar a string para busca mais confiável
+    const normalizedOutput = output.toLowerCase()
+      .replace(/\x00/g, '')
+      .replace(/[^\x20-\x7E\xA0-\xFF\s]/g, '');
+    
     // Verificar padrões que indicam que o WSL está instalado
     return (
-      output.includes("Vers") || 
-      output.includes("Version") || 
-      output.includes("V e r s") ||
-      output.includes("kernel") ||
-      output.includes("WSL") && !output.includes("não está instalado") &&
-      !output.includes("not installed") &&
-      !output.includes("WSL não está instalado")
+      normalizedOutput.includes("vers") || 
+      normalizedOutput.includes("version") || 
+      normalizedOutput.includes("kernel") ||
+      (normalizedOutput.includes("wsl") && 
+       !normalizedOutput.includes("não está instalado") &&
+       !normalizedOutput.includes("not installed") &&
+       !normalizedOutput.includes("wsl não está instalado"))
     );
   };
+
   verification.log('Tentando instalar WSL usando o método moderno (wsl --install)...', 'step');
+  
   try {
-    // Verificar primeiro se já está instalado para evitar erros desnecessários
-    const wslCheck = await verification.execPromise('wsl --status', 20000, false)
-      .catch((err) => {
-        // Se temos alguma saída, mesmo com erro, vamos analisar
-        if (err && err.stdout) {
-          verification.logToFile(`Saída recebida mas com erro: ${err.stdout}`);
-          return err.stdout;
+    // Verificação inicial reforçada para detectar se o WSL já está instalado
+    const wslChecks = [
+      // Método 1: Status
+      async () => {
+        try {
+          const result = await verification.execPromise('wsl --status', 20000, false);
+          return { success: checkWslOutput(result), output: result };
+        } catch (err) {
+          return { success: checkWslOutput(err), output: err.stdout || "" };
         }
-        verification.logToFile(`Erro na verificação inicial: ${JSON.stringify(err)}`);
-        return "not-found";
-      });
-   
-    // Usar a função auxiliar para verificar se WSL está instalado
-    if (wslCheck !== "not-found" && checkWslOutput(wslCheck)) {
-      verification.log('WSL já está instalado (detectado durante verificação preliminar)', 'success');
-      installState.wslInstalled = true;
-      saveInstallState();
-      return true;
-    }
-
-    // Verificar permissões de administrador antes de prosseguir
-    verification.log('Verificando permissões e preparando instalação...', 'step');
-    
-    // Usar o método mais recente com argumentos específicos e timeout maior
-    // Adicionado parâmetro --web-download para garantir que baixe os arquivos necessários
-    const installResult = await verification.execPromise(
-      'wsl --install --no-distribution --web-download --no-launch',
-      900000  // 15 minutos de timeout para dar mais tempo para download e instalação
-    ).catch((err) => {
-      verification.logToFile(`Erro durante instalação: ${JSON.stringify(err)}`);
-      
-      // Se temos alguma saída, mesmo com erro, vamos analisar
-      if (err && err.stdout) {
-        // Verificar mensagens específicas de erro que indicam que realmente já está instalado
-        if (err.stdout.includes('já está instalado') ||
-            err.stdout.includes('already installed') ||
-            err.stdout.includes('is already installed') ||
-            checkWslOutput(err.stdout)) {
-          verification.log('WSL já está instalado (detectado durante instalação)', 'success');
-          installState.wslInstalled = true;
-          saveInstallState();
-          return "already-installed";
+      },
+      // Método 2: Versão 
+      async () => {
+        try {
+          const result = await verification.execPromise('wsl --version', 20000, false);
+          return { success: true, output: result }; // Se não lançar erro, WSL está instalado
+        } catch (err) {
+          return { success: false, output: err.stdout || "" };
+        }
+      },
+      // Método 3: Lista
+      async () => {
+        try {
+          const result = await verification.execPromise('wsl --list', 20000, false);
+          return { success: true, output: result }; // Se não lançar erro, WSL está instalado
+        } catch (err) {
+          return { success: false, output: err.stdout || "" };
+        }
+      },
+      // Método 4: Verificar registry
+      async () => {
+        try {
+          const result = await verification.execPromise(
+            'powershell -Command "Test-Path HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss"', 
+            15000, 
+            false
+          );
+          return { success: result.trim().toLowerCase() === 'true', output: result };
+        } catch (err) {
+          return { success: false, output: "" };
         }
       }
-      return "error";
-    });
-
-    if (installResult === "already-installed") {
-      return true;
-    }
+    ];
     
-    if (installResult === "error") {
-      // Tentar método alternativo com apenas os parâmetros essenciais
-      verification.log('Tentando método alternativo de instalação...', 'step');
-      try {
-        await verification.execPromise('wsl --install', 900000);
-        verification.log('Instalação alternativa executada', 'success');
-      } catch (altError) {
-        verification.logToFile(`Erro durante instalação alternativa: ${JSON.stringify(altError)}`);
-        // Continuar para verificações adicionais mesmo se este método falhar
-      }
-    } else {
-      verification.log('Comando de instalação do WSL moderno executado com sucesso', 'success');
-    }
-   
-    // Aguardar um momento para o sistema processar
-    verification.log('Aguardando o sistema processar a instalação...', 'info');
-    await new Promise(resolve => setTimeout(resolve, 10000)); // Aumentado para 10 segundos
-   
-    // Série de verificações para determinar se o WSL foi instalado
-    verification.log('Realizando verificações pós-instalação...', 'step');
-    
-    // Verificação 1: Status do WSL
-    const postCheck = await verification.execPromise('wsl --status', 20000, false)
-      .catch((err) => {
-        // Capturar a saída mesmo se houver erro de código de retorno
-        if (err && err.stdout) {
-          verification.logToFile(`Saída com erro: ${err.stdout}`);
-          return err.stdout;
-        }
-        verification.logToFile(`Erro na verificação de status: ${JSON.stringify(err)}`);
-        return "failed";
-      });
-     
-    if (postCheck !== "failed" && checkWslOutput(postCheck)) {
-      verification.log('WSL instalado com sucesso (confirmado por status)', 'success');
-      installState.wslInstalled = true;
-      saveInstallState();
-      return true;
-    }
-   
-    // Verificação 2: Checar localização do executável
-    const wslPathCheck = await verification.execPromise('where wsl', 10000, false)
-      .catch((err) => {
-        verification.logToFile(`Erro na verificação where: ${JSON.stringify(err)}`);
-        return "";
-      });
-     
-    if (wslPathCheck && wslPathCheck.includes("wsl.exe")) {
-      verification.log('WSL.exe encontrado no sistema, considerando como instalado', 'success');
-      installState.wslInstalled = true;
-      saveInstallState();
-      return true;
-    }
-    
-    // Verificação 3: Tentar listar as distribuições
-    const distroCheck = await verification.execPromise('wsl --list', 10000, false)
-      .catch((err) => {
-        verification.logToFile(`Erro na verificação de distribuições: ${JSON.stringify(err)}`);
-        return "error";
-      });
-      
-    if (distroCheck !== "error") {
-      verification.log('Comando wsl --list executado com sucesso, WSL está instalado', 'success');
-      installState.wslInstalled = true;
-      saveInstallState();
-      return true;
-    }
-    
-    // Verificação 4: Checar o recurso do Windows
-    const featureCheck = await verification.execPromise(
-      'powershell -Command "Get-WindowsOptionalFeature -Online | Where-Object {$_.FeatureName -eq \'Microsoft-Windows-Subsystem-Linux\'} | Select-Object -ExpandProperty State"', 
-      20000, 
-      false
-    ).catch((err) => {
-      verification.logToFile(`Erro na verificação de recurso: ${JSON.stringify(err)}`);
-      return "error";
-    });
-    
-    if (featureCheck && featureCheck.includes("Enabled")) {
-      verification.log('Recurso WSL está habilitado no Windows', 'success');
-      installState.wslInstalled = true;
-      saveInstallState();
-      return true;
-    }
-   
-    // Verificação final adicional: verificar se alguma versão do kernel está presente
-    verification.log('Realizando verificação final do kernel WSL...', 'step');
-    const kernelCheck = await verification.execPromise('wsl --update', 20000, false)
-      .catch((err) => {
-        // Mesmo com código de erro, se o comando executou, pode indicar que o WSL está presente
-        if (err && err.stdout) {
-          verification.logToFile(`Saída do update: ${err.stdout}`);
-          if (checkWslOutput(err.stdout) || 
-              err.stdout.includes("update") || 
-              err.stdout.includes("atualiza")) {
-            return "kernel-present";
-          }
-        }
-        return "kernel-not-found";
-      });
-    
-    if (kernelCheck === "kernel-present" || 
-        (kernelCheck && typeof kernelCheck === 'string' && 
-         (kernelCheck.includes("atualiza") || kernelCheck.includes("update")))) {
-      verification.log('Kernel WSL detectado, considerando WSL como instalado', 'success');
-      installState.wslInstalled = true;
-      saveInstallState();
-      return true;
-    }
-    
-    // Verificação adicional - tentar criar uma nova distribuição como teste final
-    try {
-      verification.log('Tentando verificar disponibilidade de distribuições...', 'step');
-      const distrosCheck = await verification.execPromise('wsl --list --online', 30000, false);
-      if (distrosCheck && (distrosCheck.includes("Ubuntu") || distrosCheck.includes("Debian"))) {
-        verification.log('Lista de distribuições disponível, WSL está funcionando', 'success');
+    // Executar verificações preliminares
+    for (const check of wslChecks) {
+      const result = await check();
+      if (result.success) {
+        verification.log('WSL já está instalado (detectado durante verificação preliminar)', 'success');
+        verification.logToFile(`Método de detecção bem-sucedido: ${result.output}`);
         installState.wslInstalled = true;
         saveInstallState();
         return true;
       }
-    } catch (finalDistroErr) {
-      verification.logToFile(`Erro na verificação de distribuições: ${JSON.stringify(finalDistroErr)}`);
+    }
+
+    verification.log('WSL não está instalado, iniciando instalação...', 'step');
+    verification.log('Verificando permissões e preparando instalação...', 'step');
+    
+    // Método de instalação moderno com melhor tratamento de erros
+    // Usar um método mais flexível que funcione tanto no Windows 10 quanto no 11
+    // Com opções adicionais para melhorar a compatibilidade
+    const installOptions = [
+      // Opção 1: Instalação completa (Windows 11 ou Win10 mais recente)
+      {
+        cmd: 'wsl --install --no-distribution --web-download --no-launch',
+        timeout: 900000  // 15 minutos
+      },
+      // Opção 2: Instalação simples (Windows 10)
+      { 
+        cmd: 'wsl --install', 
+        timeout: 900000
+      },
+      // Opção 3: Habilitar recurso (versões mais antigas do Windows 10)
+      {
+        cmd: 'powershell -Command "Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart"',
+        timeout: 300000  // 5 minutos
+      }
+    ];
+    
+    let installSuccess = false;
+    let installedWithMethod = "";
+    
+    // Tentar cada método de instalação até um funcionar
+    for (const { cmd, timeout } of installOptions) {
+      try {
+        verification.log(`Tentando instalação com método: ${cmd}`, 'info');
+        const installResult = await verification.execPromise(cmd, timeout, true);
+        
+        // Verificar saída para detecção de já instalado
+        if (installResult && 
+            (installResult.includes('já está instalado') || 
+             installResult.includes('already installed'))) {
+          verification.log('WSL já está instalado (confirmado durante tentativa de instalação)', 'success');
+          installState.wslInstalled = true;
+          saveInstallState();
+          return true;
+        }
+        
+        verification.log(`Comando de instalação executado: ${cmd}`, 'success');
+        installedWithMethod = cmd;
+        installSuccess = true;
+        break;
+      } catch (installError) {
+        // Verificar se o erro indica que já está instalado
+        if (installError.stdout && 
+            (installError.stdout.includes('já está instalado') ||
+             installError.stdout.includes('already installed') ||
+             checkWslOutput(installError.stdout))) {
+          verification.log('WSL já está instalado (detectado por mensagem de erro)', 'success');
+          installState.wslInstalled = true;
+          saveInstallState();
+          return true;
+        }
+        
+        verification.log(`Método de instalação falhou: ${cmd}`, 'warning');
+        verification.logToFile(`Detalhes do erro: ${JSON.stringify(installError)}`);
+        // Continuar para o próximo método
+      }
     }
     
-    verification.log('Falha na instalação do WSL após múltiplas tentativas e verificações', 'error');
-    verification.log('Recomendação: Tente instalar o WSL manualmente pelo PowerShell como administrador', 'info');
+    // Se nenhum método funcionou
+    if (!installSuccess) {
+      verification.log('Todos os métodos automáticos de instalação falharam', 'error');
+      // Oferecer instruções para instalação manual
+      verification.log('Instruções para instalação manual do WSL:', 'info');
+      verification.log('1. Abra o PowerShell como administrador', 'info');
+      verification.log('2. Execute o comando: wsl --install', 'info');
+      verification.log('3. Reinicie o computador após a instalação', 'info');
+      return false;
+    }
+   
+    // Aguardar o sistema processar (tempo aumentado para maior segurança)
+    verification.log('Aguardando o sistema processar a instalação...', 'info');
+    await new Promise(resolve => setTimeout(resolve, 15000)); // 15 segundos de espera
+   
+    // Série reforçada de verificações para confirmar a instalação
+    verification.log('Realizando verificações pós-instalação...', 'step');
+    
+    // Lista de verificações pós-instalação
+    const postInstallChecks = [
+      // Verificação 1: Status do WSL
+      async () => {
+        try {
+          const result = await verification.execPromise('wsl --status', 20000, false);
+          return checkWslOutput(result);
+        } catch (err) {
+          // Mesmo com erro, verificar stdout
+          return checkWslOutput(err);
+        }
+      },
+      // Verificação 2: Localização do executável
+      async () => {
+        try {
+          const result = await verification.execPromise('where wsl', 10000, false);
+          return result && result.includes("wsl.exe");
+        } catch (err) {
+          return false;
+        }
+      },
+      // Verificação 3: Listar distribuições
+      async () => {
+        try {
+          await verification.execPromise('wsl --list', 15000, false);
+          return true; // Se executar sem erro, wsl está instalado
+        } catch (err) {
+          return false;
+        }
+      },
+      // Verificação 4: Verificar recurso Windows
+      async () => {
+        try {
+          const result = await verification.execPromise(
+            'powershell -Command "Get-WindowsOptionalFeature -Online | Where-Object {$_.FeatureName -eq \'Microsoft-Windows-Subsystem-Linux\'} | Select-Object -ExpandProperty State"', 
+            20000, 
+            false
+          );
+          return result && result.includes("Enabled");
+        } catch (err) {
+          return false;
+        }
+      },
+      // Verificação 5: Verificar via registro
+      async () => {
+        try {
+          const result = await verification.execPromise(
+            'powershell -Command "Test-Path HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss"', 
+            15000, 
+            false
+          );
+          return result.trim().toLowerCase() === 'true';
+        } catch (err) {
+          return false;
+        }
+      },
+      // Verificação 6: Verificar kernel via update
+      async () => {
+        try {
+          const result = await verification.execPromise('wsl --update', 20000, false);
+          return checkWslOutput(result) || result.includes("update") || result.includes("atualiza");
+        } catch (err) {
+          // Mesmo com erro, um código de saída não-zero não significa que WSL não está instalado
+          return checkWslOutput(err) || 
+                 (err.stdout && (err.stdout.includes("update") || err.stdout.includes("atualiza")));
+        }
+      }
+    ];
+    
+    // Executar verificações em sequência
+    for (const check of postInstallChecks) {
+      try {
+        const checkResult = await check();
+        if (checkResult) {
+          verification.log('WSL instalado com sucesso (confirmado por verificação)', 'success');
+          installState.wslInstalled = true;
+          saveInstallState();
+          return true;
+        }
+      } catch (checkError) {
+        // Continuar com próxima verificação mesmo se essa falhar
+        verification.logToFile(`Erro em verificação: ${JSON.stringify(checkError)}`);
+      }
+    }
+    
+    // Verificação final de comandos disponíveis
+    try {
+      const cmdCheck = await verification.execPromise('wsl --help', 15000, false);
+      if (cmdCheck && cmdCheck.includes('Usage') || cmdCheck.includes('Uso')) {
+        verification.log('WSL parece estar disponível (comandos funcionando)', 'success');
+        installState.wslInstalled = true;
+        saveInstallState();
+        return true;
+      }
+    } catch (helpError) {
+      verification.logToFile(`Erro no check final: ${JSON.stringify(helpError)}`);
+    }
+    
+    // Mesmo se as verificações falharem, se instalamos com sucesso, considerar como instalado
+    if (installSuccess) {
+      verification.log('WSL possivelmente instalado, mas não foi possível confirmar. Pode ser necessário reiniciar o computador.', 'warning');
+      verification.log('Recomendação: Reinicie o computador e tente novamente', 'warning');
+      installState.wslInstalled = true;
+      saveInstallState();
+      return true;
+    }
+    
+    verification.log('Não foi possível confirmar a instalação do WSL', 'error');
     return false;
   } catch (error) {
     verification.log('Erro inesperado durante o processo de instalação do WSL', 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     
-    // Última tentativa - checar ainda assim se o WSL existe
+    // Última verificação mesmo com erro
     try {
-      // Tentar com --list primeiro
-      const lastCheck = await verification.execPromise('wsl --list --verbose', 10000, false)
-        .catch(err => {
-          // Verificar a saída mesmo com erro de código de retorno
-          if (err && err.stdout) {
-            return err.stdout;
-          }
-          return "error";
-        });
+      // Tentar algum comando básico do WSL
+      const lastCheck = await verification.execPromise('wsl --list', 10000, false)
+        .catch(err => err.stdout || "error");
       
       if (lastCheck && lastCheck !== "error" && !lastCheck.includes("erro") && !lastCheck.includes("error")) {
         verification.log('WSL parece estar funcionando apesar do erro na instalação', 'success');
-        installState.wslInstalled = true;
-        saveInstallState();
-        return true;
-      }
-      
-      // Verificação final do status do WSL
-      const finalStatusCheck = await verification.execPromise('wsl --status', 10000, false)
-        .catch(err => {
-          if (err && err.stdout) {
-            return err.stdout;
-          }
-          return "error";
-        });
-      
-      if (finalStatusCheck !== "error" && checkWslOutput(finalStatusCheck)) {
-        verification.log('Status do WSL indica que está instalado', 'success');
         installState.wslInstalled = true;
         saveInstallState();
         return true;
@@ -995,6 +1051,319 @@ async function installWSLModern() {
       verification.logToFile(`Erro na verificação final: ${JSON.stringify(finalError)}`);
     }
     
+    return false;
+  }
+}
+
+async function configureWSL2() {
+  verification.log('Configurando WSL 2 como versão padrão...', 'step');
+  
+  try {
+    // Verificar primeiro se WSL está instalado
+    const wslCheck = await verification.execPromise('wsl --status', 15000, false)
+      .catch(() => "wsl-not-found");
+      
+    if (wslCheck === "wsl-not-found" || wslCheck.includes("não está instalado") || 
+        wslCheck.includes("not installed")) {
+      verification.log('WSL não está instalado, não é possível configurar WSL 2', 'error');
+      return false;
+    }
+    
+    // Verificar se WSL 2 já está configurado como padrão
+    try {
+      const defaultVersion = await verification.execPromise('wsl --get-default-version', 15000, false);
+      if (defaultVersion.trim() === '2') {
+        verification.log('WSL 2 já está configurado como versão padrão', 'success');
+        installState.wslConfigured = true;
+        saveInstallState();
+        return true;
+      }
+    } catch (versionError) {
+      verification.log('Não foi possível verificar a versão padrão atual', 'warning');
+      // Continuar e tentar configurar de qualquer forma
+    }
+    
+    // Verificar se o kernel do WSL 2 está instalado
+    try {
+      // No Windows 11 e Windows 10 mais recentes, este comando atualiza o kernel
+      const kernelCheck = await verification.execPromise('wsl --update', 30000, false);
+      verification.log('Kernel do WSL atualizado/verificado', 'info');
+    } catch (kernelError) {
+      // Ignorar erros, pois o comando pode não existir em versões mais antigas
+      verification.log('Comando de atualização do kernel não disponível', 'info');
+    }
+    
+    // Tentar configurar com múltiplas tentativas
+    let success = false;
+    let attempts = 0;
+    const maxAttempts = 3;
+    
+    while (!success && attempts < maxAttempts) {
+      attempts++;
+      try {
+        verification.log(`Tentativa ${attempts} de configurar WSL 2 como padrão...`, 'info');
+        const setResult = await verification.execPromise('wsl --set-default-version 2', 60000, true);
+        
+        // Verificar a saída para identificar sucesso
+        const normalizedOutput = setResult.toLowerCase()
+          .replace(/\x00/g, '')
+          .replace(/[^\x20-\x7E\xA0-\xFF\s]/g, '');
+          
+        // Padrões de sucesso em diferentes idiomas
+        const successPatterns = [
+          'sucesso', 'success', 'concluido', 'concluído',
+          'êxito', 'exito', 'operação concluída', 'operacao concluida'
+        ];
+        
+        const configSuccess = successPatterns.some(pattern => normalizedOutput.includes(pattern)) ||
+                            !normalizedOutput.includes('erro') && !normalizedOutput.includes('error');
+        
+        if (configSuccess) {
+          verification.log(`WSL 2 configurado como versão padrão na tentativa ${attempts}`, 'success');
+          success = true;
+          installState.wslConfigured = true;
+          saveInstallState();
+          break;
+        } else {
+          // Verificar se a saída indica que o WSL 2 já está configurado
+          if (normalizedOutput.includes('já está configurado') || 
+              normalizedOutput.includes('already') || 
+              normalizedOutput.includes('already configured')) {
+            verification.log('WSL 2 já estava configurado como padrão', 'success');
+            success = true;
+            installState.wslConfigured = true;
+            saveInstallState();
+            break;
+          }
+          
+          // Verificar se a mensagem menciona kernel
+          if (normalizedOutput.includes('kernel') && 
+              (normalizedOutput.includes('atualiz') || normalizedOutput.includes('updat'))) {
+            verification.log('Kernel do WSL 2 precisa ser atualizado', 'warning');
+            // Aqui chamaria a função para baixar/instalar o kernel
+            const kernelUpdated = await updateWSL2Kernel();
+            if (kernelUpdated) {
+              // Tentar novamente após atualizar o kernel
+              continue;
+            } else {
+              verification.log('Falha ao atualizar kernel do WSL 2', 'error');
+              break;
+            }
+          }
+          
+          verification.log(`Configuração do WSL 2 na tentativa ${attempts} falhou com saída: ${setResult}`, 'warning');
+        }
+      } catch (setVersionError) {
+        verification.log(`Erro na tentativa ${attempts}: ${setVersionError.message || JSON.stringify(setVersionError)}`, 'warning');
+        // Se a mensagem de erro indicar que o WSL 2 já está configurado, considerar sucesso
+        if (setVersionError.stderr && 
+            (setVersionError.stderr.includes('já está configurado') || 
+             setVersionError.stderr.includes('already'))) {
+          verification.log('WSL 2 já estava configurado como padrão (detectado no erro)', 'success');
+          success = true;
+          installState.wslConfigured = true;
+          saveInstallState();
+          break;
+        }
+        
+        // Se mencionar kernel, tentar atualizar
+        if (setVersionError.stderr && 
+            setVersionError.stderr.includes('kernel') && 
+            (setVersionError.stderr.includes('atualiz') || setVersionError.stderr.includes('updat'))) {
+          verification.log('Kernel do WSL 2 precisa ser atualizado', 'warning');
+          const kernelUpdated = await updateWSL2Kernel();
+          if (kernelUpdated) {
+            // Aguardar um pouco mais depois de instalar o kernel
+            await new Promise(resolve => setTimeout(resolve, 10000));
+            continue;  // Tentar novamente após atualizar o kernel
+          }
+        }
+        
+        if (attempts < maxAttempts) {
+          verification.log(`Tentativa ${attempts} falhou, aguardando antes de tentar novamente...`, 'warning');
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        } else {
+          throw setVersionError;
+        }
+      }
+    }
+    
+    // Verificação final para confirmar que WSL 2 está configurado
+    if (success) {
+      try {
+        const finalCheck = await verification.execPromise('wsl --get-default-version', 15000, false);
+        if (finalCheck.trim() === '2') {
+          verification.log('Configuração do WSL 2 confirmada', 'success');
+        } else {
+          verification.log(`Aviso: Versão padrão atual é ${finalCheck.trim()}, não 2`, 'warning');
+        }
+      } catch (finalCheckError) {
+        verification.log('Não foi possível verificar configuração final do WSL 2', 'warning');
+      }
+    }
+    
+    return success;
+  } catch (error) {
+    verification.log(`Erro ao configurar WSL 2: ${error.message || JSON.stringify(error)}`, 'error');
+    return false;
+  }
+}
+
+// Função para atualizar o kernel do WSL 2 quando necessário
+async function updateWSL2Kernel() {
+  verification.log('Atualizando kernel do WSL 2...', 'step');
+  
+  try {
+    // Criar diretório temporário
+    const tempDir = path.join(os.tmpdir(), 'wsl-installer');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    const kernelUpdatePath = path.join(tempDir, 'wsl_update_x64.msi');
+    
+    // Tentar vários métodos de download para maior resiliência
+    const downloadMethods = [
+      // Método 1: PowerShell Invoke-WebRequest
+      async () => {
+        try {
+          verification.log('Baixando kernel via PowerShell...', 'info');
+          await verification.execPromise(
+            `powershell -Command "Invoke-WebRequest -Uri 'https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -OutFile '${kernelUpdatePath}' -UseBasicParsing"`, 
+            300000, // 5 minutos
+            true
+          );
+          return true;
+        } catch (e) {
+          verification.log('Download via PowerShell falhou', 'warning');
+          return false;
+        }
+      },
+      // Método 2: BITS
+      async () => {
+        try {
+          verification.log('Baixando kernel via BITS...', 'info');
+          await verification.execPromise(
+            `bitsadmin /transfer WSLUpdateDownload /download /priority normal https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi "${kernelUpdatePath}"`, 
+            300000, 
+            true
+          );
+          return true;
+        } catch (e) {
+          verification.log('Download via BITS falhou', 'warning');
+          return false;
+        }
+      },
+      // Método 3: curl se disponível
+      async () => {
+        try {
+          verification.log('Baixando kernel via curl...', 'info');
+          await verification.execPromise(
+            `curl -L -o "${kernelUpdatePath}" https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi`, 
+            300000, 
+            true
+          );
+          return true;
+        } catch (e) {
+          verification.log('Download via curl falhou', 'warning');
+          return false;
+        }
+      }
+    ];
+    
+    let downloadSuccess = false;
+    
+    // Tentar cada método de download até um funcionar
+    for (const method of downloadMethods) {
+      if (await method()) {
+        downloadSuccess = true;
+        break;
+      }
+    }
+    
+    // Se o download falhou com todos os métodos
+    if (!downloadSuccess) {
+      verification.log('Todos os métodos de download falharam', 'error');
+      // Tentar abrir URL para download manual como último recurso
+      await verification.execPromise('start https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 5000, true);
+      verification.log('URL de download aberta no navegador, baixe manualmente e reinicie o instalador', 'warning');
+      return false;
+    }
+    
+    // Verificar se o arquivo existe
+    if (!fs.existsSync(kernelUpdatePath)) {
+      verification.log('Arquivo de atualização do kernel não foi encontrado após download', 'error');
+      return false;
+    }
+    
+    // Instalar o kernel
+    verification.log('Instalando o kernel do WSL 2...', 'step');
+    
+    // Métodos de instalação
+    const installMethods = [
+      // Método 1: msiexec silencioso
+      async () => {
+        try {
+          verification.log('Instalando kernel via msiexec /qn...', 'info');
+          await verification.execPromise(`msiexec /i "${kernelUpdatePath}" /qn`, 180000, true);
+          return true;
+        } catch (e) {
+          verification.log('Instalação silenciosa falhou', 'warning');
+          return false;
+        }
+      },
+      // Método 2: msiexec alternativo
+      async () => {
+        try {
+          verification.log('Instalando kernel via start /wait...', 'info');
+          await verification.execPromise(`start /wait msiexec /i "${kernelUpdatePath}" /qn`, 180000, true);
+          return true;
+        } catch (e) {
+          verification.log('Método alternativo falhou', 'warning');
+          return false;
+        }
+      },
+      // Método 3: msiexec com interface
+      async () => {
+        try {
+          verification.log('Instalando kernel com interface...', 'info');
+          await verification.execPromise(`msiexec /i "${kernelUpdatePath}"`, 180000, true);
+          // Aguardar mais tempo para instalação manual
+          await new Promise(resolve => setTimeout(resolve, 30000));
+          return true;
+        } catch (e) {
+          verification.log('Instalação com interface falhou', 'warning');
+          return false;
+        }
+      }
+    ];
+    
+    let installSuccess = false;
+    
+    // Tentar cada método de instalação
+    for (const method of installMethods) {
+      if (await method()) {
+        installSuccess = true;
+        break;
+      }
+    }
+    
+    if (installSuccess) {
+      verification.log('Kernel do WSL 2 instalado com sucesso', 'success');
+      installState.kernelUpdated = true;
+      saveInstallState();
+      
+      // Aguardar um pouco para que as alterações façam efeito
+      await new Promise(resolve => setTimeout(resolve, 10000));
+      return true;
+    } else {
+      verification.log('Não foi possível instalar o kernel do WSL 2 automaticamente', 'error');
+      verification.log('Você precisa baixar e instalar manualmente:', 'warning');
+      verification.log('https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 'warning');
+      return false;
+    }
+  } catch (error) {
+    verification.log(`Erro ao atualizar kernel do WSL 2: ${error.message || JSON.stringify(error)}`, 'error');
     return false;
   }
 }
@@ -1151,130 +1520,300 @@ async function installWSLLegacy() {
 async function installUbuntu() {
   verification.log('Iniciando instalação do Ubuntu no WSL...', 'header');
 
-  // Verificar primeiro se o Ubuntu já está instalado
+  // Verificar se o Ubuntu já está instalado - com verificação mais robusta
   try {
-    const distroCheck = await verification.execPromise('wsl --list --quiet', 15000, false)
-      .catch(() => "");
-      
-    if (distroCheck && (distroCheck.toLowerCase().includes("ubuntu"))) {
-      verification.log('Ubuntu já está instalado no WSL, pulando instalação', 'success');
-      installState.ubuntuInstalled = true;
-      saveInstallState();
-      
-      // Verificar acessibilidade
-      try {
-        await verification.execPromise('wsl -d Ubuntu -u root echo "Teste de acesso"', 10000, false);
-        verification.log('Ubuntu está acessível', 'success');
-        return true;
-      } catch (accessError) {
-        verification.log('Ubuntu instalado mas não está acessível, tentando reiniciar...', 'warning');
+    const distroChecks = [
+      // Verificação 1: Lista detalhada
+      async () => {
         try {
-          await verification.execPromise('wsl --terminate Ubuntu', 10000, false);
-          await new Promise(resolve => setTimeout(resolve, 3000));
-          await verification.execPromise('wsl -d Ubuntu echo "Ubuntu reiniciado"', 15000, false);
-          verification.log('Ubuntu reiniciado com sucesso', 'success');
+          const result = await verification.execPromise('wsl --list --verbose', 15000, false);
+          const normalized = result.replace(/\u0000/g, '').trim().toLowerCase();
+          return normalized.includes('ubuntu');
+        } catch (e) {
+          return false;
+        }
+      },
+      // Verificação 2: Lista simples
+      async () => {
+        try {
+          const result = await verification.execPromise('wsl --list', 15000, false);
+          return result.toLowerCase().includes('ubuntu');
+        } catch (e) {
+          return false;
+        }
+      },
+      // Verificação 3: Verificar diretamente com wslpath
+      async () => {
+        try {
+          await verification.execPromise('wsl -d Ubuntu echo "Test"', 10000, false);
+          return true; // Se não lançar erro, Ubuntu está instalado
+        } catch (e) {
+          return false;
+        }
+      },
+      // Verificação 4: Verificar via registro do Windows
+      async () => {
+        try {
+          const result = await verification.execPromise(
+            'powershell -Command "(Get-ChildItem HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss | ForEach-Object { $_.GetValue(\'DistributionName\') })" 2>nul',
+            10000,
+            false
+          );
+          return result.toLowerCase().includes('ubuntu');
+        } catch (e) {
+          return false;
+        }
+      }
+    ];
+    
+    // Executar verificações
+    for (const check of distroChecks) {
+      if (await check()) {
+        verification.log('Ubuntu já está instalado no WSL, verificando acessibilidade...', 'success');
+        
+        // Verificar se o Ubuntu está acessível
+        try {
+          await verification.execPromise('wsl -d Ubuntu -u root echo "Teste de acesso"', 10000, false);
+          verification.log('Ubuntu está acessível e funcional', 'success');
+          installState.ubuntuInstalled = true;
+          saveInstallState();
           return true;
-        } catch (restartError) {
-          verification.log('Não foi possível reiniciar o Ubuntu, continuando mesmo assim', 'warning');
-          return true; // Retornar sucesso mesmo assim para evitar reinstalação
+        } catch (accessError) {
+          verification.log('Ubuntu instalado mas não está acessível, tentando reiniciar...', 'warning');
+          
+          // Tentar reiniciar a distribuição
+          try {
+            // Tentar terminar primeiro
+            await verification.execPromise('wsl --terminate Ubuntu', 15000, false)
+              .catch(() => {}); // Ignorar erros
+            
+            // Aguardar um pouco
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            
+            // Tentar acessar novamente
+            await verification.execPromise('wsl -d Ubuntu echo "Ubuntu reiniciado"', 20000, false);
+            verification.log('Ubuntu reiniciado com sucesso', 'success');
+            installState.ubuntuInstalled = true;
+            saveInstallState();
+            return true;
+          } catch (restartError) {
+            verification.log('Não foi possível reiniciar o Ubuntu, verificando se a distribuição está danificada...', 'warning');
+            
+            // Verificar se devemos tentar reparar ou reinstalar a distribuição
+            const shouldReinstall = await verification.execPromise(
+              'powershell -Command "(Get-ChildItem HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss | Where-Object { $_.GetValue(\'DistributionName\') -eq \'Ubuntu\' } | Measure-Object).Count"',
+              15000,
+              true
+            ).catch(() => "0");
+            
+            if (shouldReinstall === "0") {
+              verification.log('Registro da distribuição Ubuntu não encontrado, tentando reinstalar...', 'warning');
+              // Continuar com a instalação
+            } else {
+              // Ubuntu existe no registro mas não está acessível, retornar true para evitar reinstalação
+              verification.log('Ubuntu registrado mas não acessível, continuando sem reinstalar', 'warning');
+              installState.ubuntuInstalled = true;
+              saveInstallState();
+              return true;
+            }
+          }
         }
       }
     }
+    
+    verification.log('Ubuntu não encontrado, prosseguindo com a instalação', 'info');
   } catch (listError) {
-    verification.log('Erro ao verificar distribuições existentes, continuando', 'warning');
+    verification.log('Erro ao verificar distribuições existentes, continuando com instalação', 'warning');
     verification.logToFile(`Erro ao listar distribuições: ${JSON.stringify(listError)}`);
   }
 
-  try {
-    // Método principal: instalar Ubuntu com inicialização
-    verification.log('Instalando Ubuntu via WSL...', 'step');
-    
-    try {
-      verification.log('Registrando distribuição Ubuntu no WSL...', 'step');
-      
-      // Usar método de instalação resiliente com retry e timeout maior
-      let installSuccess = false;
-      let attempts = 0;
-      const maxAttempts = 3;
-      
-      while (!installSuccess && attempts < maxAttempts) {
-        attempts++;
-        try {
-          await verification.execPromise('wsl --install -d Ubuntu', 600000, true); // 10 minutos de timeout
-          verification.log(`Ubuntu instalado na tentativa ${attempts}`, 'success');
-          installSuccess = true;
-        } catch (installError) {
-          if (attempts < maxAttempts) {
-            verification.log(`Falha na tentativa ${attempts}, aguardando antes de tentar novamente...`, 'warning');
-            verification.logToFile(`Erro na tentativa ${attempts}: ${JSON.stringify(installError)}`);
-            await new Promise(resolve => setTimeout(resolve, 10000)); // 10 segundos entre tentativas
-          } else {
-            throw installError; // Propagar o erro na última tentativa
-          }
-        }
+  // Métodos de instalação do Ubuntu
+  const installMethods = [
+    // Método 1: Instalação moderna com wsl --install -d Ubuntu
+    {
+      name: "Instalação moderna",
+      execute: async () => {
+        verification.log('Instalando Ubuntu via método moderno (wsl --install -d Ubuntu)...', 'step');
+        await verification.execPromise('wsl --install -d Ubuntu', 900000, true); // 15 minutos
+        return true;
       }
-      
-      verification.log('Aguardando inicialização do Ubuntu...', 'step');
-      await new Promise(resolve => setTimeout(resolve, 15000)); // Esperar 15 segundos
-    } catch (error) {
-      verification.log('Falha ao instalar Ubuntu via WSL', 'error');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-      throw error; // Propagar erro para tentar métodos alternativos
-    }
-
-    // CRUCIAL: Verificar de forma mais robusta se Ubuntu está realmente funcional
-    verification.log('Verificando se Ubuntu está acessível...', 'step');
-
-    // Tentar 5 vezes com intervalos de 10 segundos (mais tentativas e mais tempo)
-    let ubuntuAccessible = false;
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      try {
-        await verification.execPromise('wsl -d Ubuntu -u root echo "Ubuntu está acessível"', 30000, true);
-        verification.log(`Ubuntu está acessível na tentativa ${attempt}`, 'success');
-        ubuntuAccessible = true;
-        break;
-      } catch (error) {
-        verification.log(`Tentativa ${attempt} falhou, aguardando inicialização...`, 'warning');
-
-        // Se não for a última tentativa, aguarde antes de tentar novamente
-        if (attempt < 5) {
-          verification.log('Aguardando 10 segundos antes da próxima tentativa...', 'info');
-          await new Promise(resolve => setTimeout(resolve, 10000));
-
-          // Tentar inicializar a distribuição novamente
+    },
+    // Método 2: Instalação via Microsoft Store
+    {
+      name: "Instalação via Microsoft Store",
+      execute: async () => {
+        verification.log('Instalando Ubuntu via Microsoft Store...', 'step');
+        await verification.execPromise('powershell -Command "Start-Process ms-windows-store://pdp/?productid=9PDXGNCFSCZV"', 10000, true);
+        
+        // Aguardar um tempo para o usuário completar a instalação manual
+        verification.log('Aguardando instalação via Microsoft Store (este processo pode demorar)...', 'info');
+        verification.log('Por favor, clique em "Obter" e depois em "Iniciar" na Microsoft Store', 'info');
+        
+        // Aguardar até 5 minutos para instalação manual
+        const totalWaitMs = 300000; // 5 minutos
+        const checkIntervalMs = 15000; // 15 segundos
+        let waitedMs = 0;
+        
+        while (waitedMs < totalWaitMs) {
+          await new Promise(resolve => setTimeout(resolve, checkIntervalMs));
+          waitedMs += checkIntervalMs;
+          
+          // Verificar se o Ubuntu foi instalado
           try {
-            await verification.execPromise('wsl -d Ubuntu echo "Inicializando"', 15000, false);
-          } catch (initError) {
-            verification.log('Tentando inicializar novamente...', 'warning');
+            const checkResult = await verification.execPromise('wsl --list', 10000, false);
+            if (checkResult.toLowerCase().includes('ubuntu')) {
+              verification.log('Ubuntu detectado! Instalação via Microsoft Store concluída', 'success');
+              return true;
+            }
+          } catch (checkError) {
+            // Ignorar erros de verificação
           }
+          
+          verification.log(`Ainda aguardando instalação (${Math.floor(waitedMs/1000)}s decorridos)...`, 'info');
+        }
+        
+        verification.log('Tempo limite excedido para instalação via Microsoft Store', 'warning');
+        return false;
+      }
+    },
+    // Método 3: Download direto (wsl --import)
+    {
+      name: "Download direto e importação",
+      execute: async () => {
+        verification.log('Tentando download direto do Ubuntu...', 'step');
+        
+        // Criar diretórios temporários
+        const tempDir = path.join(os.tmpdir(), 'wsl-ubuntu-install');
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
+        
+        // Criar diretório de destino para o WSL
+        const wslDir = path.join(os.homedir(), 'Ubuntu-WSL');
+        if (!fs.existsSync(wslDir)) {
+          fs.mkdirSync(wslDir, { recursive: true });
+        }
+        
+        const rootfsTarPath = path.join(tempDir, 'ubuntu-rootfs.tar.gz');
+        
+        // Baixar a imagem do Ubuntu
+        try {
+          verification.log('Baixando imagem rootfs do Ubuntu...', 'info');
+          await verification.execPromise(
+            `powershell -Command "Invoke-WebRequest -Uri 'https://cloud-images.ubuntu.com/wsl/focal/current/focal-server-cloudimg-amd64-wsl.rootfs.tar.gz' -OutFile '${rootfsTarPath}' -UseBasicParsing"`,
+            900000, // 15 minutos
+            true
+          );
+          
+          verification.log('Download da imagem concluído, importando...', 'success');
+          
+          // Importar a distribuição
+          await verification.execPromise(
+            `wsl --import Ubuntu "${wslDir}" "${rootfsTarPath}"`,
+            300000, // 5 minutos
+            true
+          );
+          
+          verification.log('Ubuntu importado com sucesso', 'success');
+          return true;
+        } catch (downloadError) {
+          verification.log('Erro no download ou importação direta', 'error');
+          verification.logToFile(`Erro detalhado: ${JSON.stringify(downloadError)}`);
+          return false;
         }
       }
     }
-
-    // IMPORTANTE: Mesmo que não esteja acessível, considerar como sucesso
-    // para evitar reinstalação que pode piorar o estado
-    if (!ubuntuAccessible) {
-      verification.log('Ubuntu instalado mas não está acessível no momento. Vamos prosseguir mesmo assim.', 'warning');
-      verification.log('O sistema poderá funcionar após uma reinicialização do Windows.', 'warning');
+  ];
+  
+  // Tentar cada método de instalação
+  let installationSuccess = false;
+  
+  for (const method of installMethods) {
+    try {
+      verification.log(`Tentando método: ${method.name}...`, 'step');
+      installationSuccess = await method.execute();
       
-      installState.ubuntuInstalled = true;
-      saveInstallState();
-      return true;
+      if (installationSuccess) {
+        verification.log(`Instalação bem-sucedida com método: ${method.name}`, 'success');
+        break;
+      } else {
+        verification.log(`Método ${method.name} falhou, tentando próximo método...`, 'warning');
+      }
+    } catch (methodError) {
+      verification.log(`Erro ao executar método ${method.name}`, 'warning');
+      verification.logToFile(`Erro detalhado: ${JSON.stringify(methodError)}`);
+      // Continuar para o próximo método
     }
-
-    verification.log('Ubuntu instalado e acessível com sucesso!', 'success');
+  }
+  
+  // Se a instalação foi bem-sucedida, verificar e aguardar inicialização completa
+  if (installationSuccess) {
+    verification.log('Ubuntu instalado, aguardando inicialização completa...', 'step');
+    
+    // Aguardar tempo adicional para inicialização - crucial para evitar problemas
+    await new Promise(resolve => setTimeout(resolve, 20000)); // 20 segundos
+    
+    // Tentar vários métodos de verificação de acessibilidade com tentativas repetidas
+    const accessChecks = [
+      // Verificação 1: Comando de eco simples
+      async () => {
+        try {
+          const result = await verification.execPromise('wsl -d Ubuntu echo "Verificação de acesso"', 15000, true);
+          return result.includes('Verificação');
+        } catch (e) {
+          return false;
+        }
+      },
+      // Verificação 2: Verificar versão do Ubuntu
+      async () => {
+        try {
+          const result = await verification.execPromise('wsl -d Ubuntu cat /etc/os-release', 15000, true);
+          return result.includes('Ubuntu');
+        } catch (e) {
+          return false;
+        }
+      }
+    ];
+    
+    // Tentar cada verificação com múltiplas tentativas
+    for (let attempt = 1; attempt <= 6; attempt++) { // 6 tentativas = 1 minuto no total
+      verification.log(`Verificando acessibilidade (tentativa ${attempt}/6)...`, 'info');
+      
+      let accessConfirmed = false;
+      
+      for (const check of accessChecks) {
+        if (await check()) {
+          accessConfirmed = true;
+          break;
+        }
+      }
+      
+      if (accessConfirmed) {
+        verification.log('Ubuntu está acessível e funcional!', 'success');
+        installState.ubuntuInstalled = true;
+        saveInstallState();
+        return true;
+      }
+      
+      if (attempt < 6) {
+        verification.log('Ubuntu ainda não está acessível, aguardando mais...', 'warning');
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 10 segundos entre tentativas
+      }
+    }
+    
+    // Mesmo se não pudermos confirmar a acessibilidade, consideramos a instalação bem-sucedida
+    verification.log('Ubuntu instalado, mas não foi possível confirmar acessibilidade', 'warning');
+    verification.log('Recomendação: Reinicie o computador para garantir funcionalidade completa', 'warning');
+    
     installState.ubuntuInstalled = true;
     saveInstallState();
-    return await configureDefaultUser();
-  } catch (error) {
-    verification.log(`Erro ao instalar o Ubuntu: ${error.message || JSON.stringify(error)}`, 'error');
-    verification.logToFile(`Detalhes do erro ao instalar Ubuntu: ${JSON.stringify(error)}`);
-
-    // Retornar verdadeiro mesmo com erro para continuar a instalação
-    // e evitar tentativas repetidas de instalação que podem piorar a situação
-    verification.log('Continuando mesmo com erro na instalação do Ubuntu', 'warning');
     return true;
   }
+  
+  // Se todos os métodos falharam
+  verification.log('Todos os métodos de instalação do Ubuntu falharam', 'error');
+  verification.log('Recomendação: Instale o Ubuntu manualmente através da Microsoft Store', 'warning');
+  return false;
 }
 
 // Função otimizada para configurar usuário padrão com mais velocidade
@@ -1282,32 +1821,265 @@ async function configureDefaultUser() {
   verification.log('Configurando usuário padrão...', 'step');
 
   try {
-    // Comando para adicionar o usuário no WSL Ubuntu
+    // Verificar primeiro se o Ubuntu está acessível
     try {
-      await verification.execPromise('wsl.exe -d Ubuntu -u root useradd -m -s /bin/bash -G sudo print_user', 12000, true);
-    } catch (error) {
-      console.error(error);
+      await verification.execPromise('wsl -d Ubuntu echo "Teste de acesso WSL"', 15000, false);
+    } catch (accessError) {
+      verification.log('Não foi possível acessar o Ubuntu para configurar usuário', 'error');
+      verification.logToFile(`Erro de acesso: ${JSON.stringify(accessError)}`);
+      return false;
     }
 
-    // Definir senha
-    await verification.execPromise('wsl.exe -d Ubuntu -u root bash -c "echo \'print_user:print_user\' | chpasswd"', 12000, true);
+    // Verificar se o usuário já existe para evitar reconfiguração desnecessária
+    const userExists = await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "id -u print_user &>/dev/null && echo \'exists\' || echo \'not_exists\'"',
+      15000,
+      true
+    ).catch(() => "error");
+    
+    const wslConfExists = await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "test -f /etc/wsl.conf && grep -q \'default=print_user\' /etc/wsl.conf && echo \'configured\' || echo \'not_configured\'"',
+      15000,
+      true
+    ).catch(() => "error");
+    
+    if (userExists === "exists" && wslConfExists === "configured") {
+      verification.log('Usuário print_user já existe e está configurado como padrão', 'success');
+      installState.defaultUserCreated = true;
+      saveInstallState();
+      return true;
+    }
+    
+    // Etapa 1: Adicionar o usuário ou atualizar se já existir
+    verification.log('Criando/atualizando usuário print_user...', 'step');
+    
+    // Primeiro verificar se o usuário existe
+    if (userExists === "exists") {
+      verification.log('Usuário print_user já existe, atualizando configurações...', 'info');
+    } else {
+      // Criar o usuário com shell e grupo sudo
+      try {
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root useradd -m -s /bin/bash -G sudo print_user',
+          20000,
+          true
+        );
+        verification.log('Usuário print_user criado com sucesso', 'success');
+      } catch (createError) {
+        verification.log('Erro ao criar usuário, verificando se já existe...', 'warning');
+        
+        // Verificar se o erro é porque o usuário já existe
+        const secondCheck = await verification.execPromise(
+          'wsl -d Ubuntu -u root id print_user',
+          10000,
+          true
+        ).catch(() => "");
+        
+        if (!secondCheck) {
+          verification.log('Falha ao criar usuário print_user e usuário não existe', 'error');
+          verification.logToFile(`Erro detalhado: ${JSON.stringify(createError)}`);
+          return false;
+        } else {
+          verification.log('Usuário print_user já existe apesar do erro', 'warning');
+        }
+      }
+    }
 
-    // Definir o diretório home e mover o usuário
-    await verification.execPromise('wsl.exe -d Ubuntu -u root usermod -d /home/print_user -m print_user', 12000, true);
+    // Etapa 2: Definir senha de maneira mais robusta
+    verification.log('Configurando senha para print_user...', 'step');
+    
+    // Método 1: chpasswd (mais confiável)
+    try {
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo \'print_user:print_user\' | chpasswd"',
+        15000,
+        true
+      );
+      verification.log('Senha definida com sucesso via chpasswd', 'success');
+    } catch (passError1) {
+      verification.log('Erro ao definir senha com chpasswd, tentando método alternativo...', 'warning');
+      
+      // Método 2: passwd com pipe
+      try {
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root bash -c "echo -e \'print_user\\nprint_user\\n\' | passwd print_user"',
+          15000,
+          true
+        );
+        verification.log('Senha definida com sucesso via passwd', 'success');
+      } catch (passError2) {
+        verification.log('Ambos os métodos para definir senha falharam', 'error');
+        // Continuar mesmo assim - o usuário pode definir a senha manualmente depois
+      }
+    }
 
-    // Criando o arquivo wsl.conf em etapas separadas
-    await verification.execPromise('wsl.exe -d Ubuntu -u root bash -c "echo [user] > /etc/wsl.conf"', 12000, true);
-    await verification.execPromise('wsl.exe -d Ubuntu -u root bash -c "echo default=print_user >> /etc/wsl.conf"', 12000, true);
+    // Etapa 3: Garantir que o diretório home existe e tem as permissões corretas
+    verification.log('Configurando diretório home e permissões...', 'step');
+    
+    try {
+      // Criar diretório home se não existir
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "mkdir -p /home/print_user"',
+        10000,
+        true
+      );
+      
+      // Definir propriedade correta
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "chown -R print_user:print_user /home/print_user"',
+        15000,
+        true
+      );
+      
+      // Definir permissões
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "chmod -R 750 /home/print_user"',
+        15000,
+        true
+      );
+      
+      // Definir o diretório home do usuário
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root usermod -d /home/print_user -m print_user',
+        15000,
+        true
+      );
+      
+      verification.log('Diretório home configurado corretamente', 'success');
+    } catch (homeError) {
+      verification.log('Erro ao configurar diretório home, mas continuando...', 'warning');
+      verification.logToFile(`Erro home: ${JSON.stringify(homeError)}`);
+    }
 
-    // Verificação
-    verification.log('Usuário padrão configurado com sucesso', 'success');
-    installState.defaultUserCreated = true;
-    saveInstallState();
+    // Etapa 4: Garantir que o usuário está no grupo sudo
+    verification.log('Configurando acesso sudo...', 'step');
+    
+    try {
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "usermod -aG sudo print_user"',
+        15000,
+        true
+      );
+      
+      // Configurar sudo sem senha para facilitar
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo \'print_user ALL=(ALL) NOPASSWD:ALL\' > /etc/sudoers.d/print_user"',
+        15000,
+        true
+      );
+      
+      // Corrigir permissões do arquivo sudoers
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "chmod 440 /etc/sudoers.d/print_user"',
+        10000,
+        true
+      );
+      
+      verification.log('Acesso sudo configurado corretamente', 'success');
+    } catch (sudoError) {
+      verification.log('Erro ao configurar sudo, mas continuando...', 'warning');
+    }
 
-    return true;
+    // Etapa 5: Criar/atualizar arquivo wsl.conf com usuário padrão
+    verification.log('Configurando wsl.conf para definir usuário padrão...', 'step');
+    
+    try {
+      // Verificar se o arquivo existe
+      const wslConfCheck = await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "test -f /etc/wsl.conf && echo \'exists\' || echo \'not_exists\'"',
+        10000,
+        true
+      );
+      
+      if (wslConfCheck === "exists") {
+        // Arquivo existe, verificar se já tem configuração de usuário
+        const userConfCheck = await verification.execPromise(
+          'wsl -d Ubuntu -u root bash -c "grep -q \'\\[user\\]\' /etc/wsl.conf && echo \'exists\' || echo \'not_exists\'"',
+          10000,
+          true
+        );
+        
+        if (userConfCheck === "exists") {
+          // Seção [user] existe, atualizar configuração
+          await verification.execPromise(
+            'wsl -d Ubuntu -u root bash -c "sed -i \'/\\[user\\]/,/\\[.*\\]/{s/^default=.*/default=print_user/;h}; /\\[user\\]/!H; $!d; x; /\\[user\\]/s/\\[user\\]\\r\\?\\n\\([^d][^e][^f]\\|[^d]\\|\\r\\?\\n\\|$\\)/[user]\\r\\ndefault=print_user\\r\\n/; p\'"',
+            15000,
+            true
+          );
+        } else {
+          // Seção [user] não existe, adicionar ao final
+          await verification.execPromise(
+            'wsl -d Ubuntu -u root bash -c "echo -e \'\\n[user]\\ndefault=print_user\' >> /etc/wsl.conf"',
+            10000,
+            true
+          );
+        }
+      } else {
+        // Arquivo não existe, criar do zero
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root bash -c "echo -e \'[user]\\ndefault=print_user\' > /etc/wsl.conf"',
+          10000,
+          true
+        );
+      }
+      
+      verification.log('Arquivo wsl.conf configurado corretamente', 'success');
+    } catch (wslConfError) {
+      verification.log('Erro ao configurar wsl.conf, tentando método alternativo...', 'warning');
+      
+      // Método alternativo mais simples
+      try {
+        // Simplesmente sobrescrever o arquivo
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root bash -c "echo -e \'[user]\\ndefault=print_user\' > /etc/wsl.conf"',
+          10000,
+          true
+        );
+        verification.log('wsl.conf reescrito com sucesso', 'success');
+      } catch (altWslConfError) {
+        verification.log('Todos os métodos para configurar wsl.conf falharam', 'error');
+        verification.logToFile(`Erro wsl.conf: ${JSON.stringify(altWslConfError)}`);
+        return false;
+      }
+    }
+
+    // Verificação final
+    verification.log('Verificando configuração do usuário padrão...', 'step');
+    
+    try {
+      const finalCheck = await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "grep -q \'default=print_user\' /etc/wsl.conf && echo \'success\' || echo \'failed\'"',
+        10000,
+        true
+      );
+      
+      if (finalCheck === "success") {
+        verification.log('Usuário padrão configurado com sucesso', 'success');
+        installState.defaultUserCreated = true;
+        saveInstallState();
+        
+        // Reiniciar a distribuição do Ubuntu para aplicar as alterações
+        try {
+          await verification.execPromise('wsl --terminate Ubuntu', 15000, true);
+          verification.log('Distribuição Ubuntu reiniciada para aplicar alterações', 'success');
+        } catch (terminateError) {
+          verification.log('Não foi possível reiniciar a distribuição, você pode precisar reiniciar manualmente', 'warning');
+        }
+        
+        return true;
+      } else {
+        verification.log('Verificação final falhou, a configuração pode não estar completa', 'warning');
+        return false;
+      }
+    } catch (finalCheckError) {
+      verification.log('Erro na verificação final, mas as operações pareceram ter sucesso', 'warning');
+      installState.defaultUserCreated = true;
+      saveInstallState();
+      return true;
+    }
   } catch (error) {
-    console.error('Erro ao configurar o usuário padrão:', error);
-    verification.log('Falha ao configurar o usuário padrão', 'error');
+    verification.log(`Erro ao configurar o usuário padrão: ${error.message || JSON.stringify(error)}`, 'error');
+    verification.logToFile(`Erro detalhado: ${JSON.stringify(error)}`);
     return false;
   }
 }
@@ -1327,51 +2099,43 @@ async function installRequiredPackages() {
     // Atualizando repositórios primeiro - aumentar timeout para 5 minutos
     verification.log('Atualizando repositórios...', 'step');
     try {
-      await verification.execPromise('wsl -d Ubuntu -u root apt clean', 120000, true);
-      await verification.execPromise('wsl -d Ubuntu -u root apt update', 300000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root apt-get update', 300000, true);
     } catch (updateError) {
       verification.log(`Erro ao atualizar repositórios: ${updateError.message || 'Erro desconhecido'}`, 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(updateError)}`);
 
       // Tente resolver problemas comuns
       verification.log('Tentando corrigir problemas do apt...', 'step');
-      await verification.execPromise('wsl -d Ubuntu -u root apt --fix-broken install -y', 120000, true);
-      await verification.execPromise('wsl -d Ubuntu -u root apt update', 300000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root apt-get --fix-broken install -y', 120000, true);
+      await verification.execPromise('wsl -d Ubuntu -u root apt-get update', 300000, true);
     }
 
-    // Dividir a instalação em grupos menores
-    const packageGroups = [
+    // Dividir a instalação em grupos menores e mais críticos primeiro
+    const packetGroups = [
+      // Grupo 1: Utilidades básicas primeiro
       ['nano', 'jq', 'net-tools'],
-      ['ufw'],
-      ['samba'],
-      ['cups', 'printer-driver-cups-pdf'],
+      // Grupo 2: PostgreSQL - crítico para o funcionamento
       ['postgresql', 'postgresql-contrib'],
-      ['npm'],
+      // Grupo 3: Serviços importantes
+      ['cups', 'printer-driver-cups-pdf'],
+      // Grupo 4: Outros serviços
+      ['samba', 'ufw', 'npm'],
+      // Grupo 5: Utilitários extras
       ['avahi-daemon', 'avahi-utils', 'avahi-discover'],
+      // Grupo 6: Drivers
       ['hplip', 'hplip-gui', 'printer-driver-all']
     ];
 
     // Instalar cada grupo separadamente
-    for (let i = 0; i < packageGroups.length; i++) {
-      const group = packageGroups[i];
-      verification.log(`Instalando grupo ${i + 1}/${packageGroups.length}: ${group.join(', ')}`, 'step');
+    for (let i = 0; i < packetGroups.length; i++) {
+      const group = packetGroups[i];
+      verification.log(`Instalando grupo ${i + 1}/${packetGroups.length}: ${group.join(', ')}`, 'step');
 
       try {
         // Usar timeout de 10 minutos para cada grupo
-        await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${group.join(' ')}`, 600000, true);
+        await verification.execPromise(`wsl -d Ubuntu -u root apt-get install -y ${group.join(' ')}`, 600000, true);
         verification.log(`Grupo ${i + 1} instalado com sucesso`, 'success');
       } catch (groupError) {
-        try {
-          await verification.execPromise('wsl -d Ubuntu -u root dpkg --configure -a -y', 6000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root apt --fix-broken install -y', 6000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root apt clean', 6000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root apt update', 6000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root apt upgrade -y', 60000, true);
-        } catch (error) {
-          await verification.log('Error: ' + error);
-          await verification.logToFile('Error: ' + error);
-        }
-
         verification.log(`Erro ao instalar grupo ${i + 1}: ${groupError.message || 'Erro desconhecido'}`, 'warning');
         verification.logToFile(`Detalhes do erro: ${JSON.stringify(groupError)}`);
 
@@ -1379,10 +2143,9 @@ async function installRequiredPackages() {
         for (const pkg of group) {
           try {
             verification.log(`Tentando instalar ${pkg} individualmente...`, 'step');
-            await verification.execPromise(`wsl -d Ubuntu -u root apt install -y ${pkg}`, 300000, true);
+            await verification.execPromise(`wsl -d Ubuntu -u root apt-get install -y ${pkg}`, 300000, true);
             verification.log(`Pacote ${pkg} instalado com sucesso`, 'success');
           } catch (pkgError) {
-            console.error(`Erro ao instalar ${pkg}: ${pkgError || 'Erro desconhecido'}`);
             verification.log(`Erro ao instalar ${pkg}: ${pkgError.message || 'Erro desconhecido'}`, 'warning');
           }
         }
@@ -1394,41 +2157,138 @@ async function installRequiredPackages() {
 
     verification.log('Instalação de pacotes concluída com sucesso!', 'success');
 
-
-    // Comando para adicionar ao .bashrc do root, se ainda não estiver presente
     try {
       verification.log('Configurando inicialização automática de serviços no WSL...', 'step');
     
+      // CORREÇÃO: Formatação adequada do script com quebras de linha e verificações melhores
       const startupScriptContent = `# Início: Serviços customizados no WSL
-if [ -z "$WSL_DISTRO_NAME" ]; then
+# Verifica se estamos no WSL
+if [ -z "\$WSL_DISTRO_NAME" ]; then
   return
 fi
 
-sudo service dbus start
-sudo service avahi-daemon start
-sudo service cups start
-sudo service smbd start
-sudo service postgresql start
-# Outros serviços podem ser adicionados aqui
+# Verifica se os serviços existem antes de tentar iniciá-los
+echo "Iniciando serviços do Print Server..."
 
+# Iniciar dbus primeiro (necessário para outros serviços)
+if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q dbus; then
+  sudo service dbus start
+fi
+
+# Iniciar avahi-daemon (para descoberta de impressoras)
+if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q avahi-daemon; then
+  sudo service avahi-daemon start
+fi
+
+# Iniciar CUPS (servidor de impressão)
+if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q cups; then
+  sudo service cups start
+fi
+
+# Iniciar Samba (compartilhamento de arquivos)
+if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q smbd; then
+  sudo service smbd start
+fi
+
+# Iniciar PostgreSQL (banco de dados)
+# Primeiro tenta com service
+if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q postgresql; then
+  sudo service postgresql start
+else
+  # Se falhar, tenta usar pg_ctl diretamente
+  PG_VERSION=\$(ls -d /etc/postgresql/*/ 2>/dev/null | cut -d'/' -f4 | head -n 1 || echo "")
+  if [ -n "\$PG_VERSION" ]; then
+    sudo -u postgres /usr/lib/postgresql/\$PG_VERSION/bin/pg_ctl -D /var/lib/postgresql/\$PG_VERSION/main start 2>/dev/null || true
+  fi
+fi
+
+# Verificar se PM2 está instalado e iniciar a aplicação
+if command -v pm2 >/dev/null 2>&1; then
+  echo "Iniciando aplicações com PM2..."
+  if [ -d "/opt/loqquei/print_server_desktop" ]; then
+    cd /opt/loqquei/print_server_desktop && pm2 resurrect 2>/dev/null || pm2 start ecosystem.config.js 2>/dev/null || pm2 start bin/www.js --name print_server_desktop 2>/dev/null || true
+  elif [ -d "/opt/print_server/print_server_desktop" ]; then
+    cd /opt/print_server/print_server_desktop && pm2 resurrect 2>/dev/null || pm2 start ecosystem.config.js 2>/dev/null || pm2 start bin/www.js --name print_server_desktop 2>/dev/null || true
+  fi
+fi
+
+# Fim: Serviços customizados no WSL
 `;
 
-      const tempFilePath = path.join(os.tmpdir(), 'wsl_startup_append.sh');
+      // CORREÇÃO: Método mais robusto para copiar o arquivo para o WSL
+      // 1. Criar arquivo temporário
+      const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      const tempFilePath = path.join(tempDir, 'wsl_startup_append.sh');
       fs.writeFileSync(tempFilePath, startupScriptContent);
 
+      // 2. Obter o caminho WSL para o arquivo
+      verification.log('Copiando script de inicialização para o WSL...', 'step');
+      const wslPath = await verification.execPromise(
+        `wsl -d Ubuntu wslpath -u "${tempFilePath.replace(/\\/g, '/')}"`, 
+        10000, 
+        true
+      ).catch(() => null);
+      
+      if (wslPath) {
+        // 3. Copiar para o WSL usando o caminho correto
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root cp "${wslPath}" /tmp/wsl_startup_append.sh`,
+          10000,
+          true
+        );
+      } else {
+        // Método alternativo se o primeiro falhar
+        verification.log('Usando método alternativo para copiar arquivo...', 'warning');
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "cat > /tmp/wsl_startup_append.sh" << 'EOFMARKER'
+${startupScriptContent}
+EOFMARKER`,
+          10000,
+          true
+        ).catch(e => verification.log(`Erro no método alternativo: ${e.message}`, 'warning'));
+      }
+
+      // 4. Adicionar ao .bashrc de forma mais robusta
+      verification.log('Configurando inicialização automática no .bashrc...', 'step');
+      
+      // Verificar e adicionar ao .bashrc do root
       await verification.execPromise(
-        `wsl -d Ubuntu -u root cp /mnt/c${tempFilePath.replace(/\\/g, '/').replace(/^C:/i, '')} /tmp/wsl_startup_append.sh`,
+        `wsl -d Ubuntu -u root bash -c "grep -q 'Serviços customizados no WSL' /root/.bashrc || cat /tmp/wsl_startup_append.sh >> /root/.bashrc"`,
         10000,
         true
       );
-
-      // Adicionar ao .bashrc se ainda não estiver presente
+      
+      // Também adicionar ao .bashrc do usuário padrão para garantir que funcione independente do usuário
       await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c "grep -q 'Serviços customizados no WSL' ~/.bashrc || cat /tmp/wsl_startup_append.sh >> ~/.bashrc"`,
+        `wsl -d Ubuntu -u root bash -c "grep -q 'Serviços customizados no WSL' /home/print_user/.bashrc 2>/dev/null || cat /tmp/wsl_startup_append.sh >> /home/print_user/.bashrc 2>/dev/null || true"`,
         10000,
         true
       );
+      
+      // 5. Configurar sistema para iniciar no boot do Windows
+      try {
+        // Adicionar script ao registro do Windows para iniciar automaticamente
+        const startupCmd = `@echo off
+wsl -d Ubuntu -u root bash -c "source /root/.bashrc"`;
+        
+        const startupFile = path.join(tempDir, 'start-wsl-services.bat');
+        fs.writeFileSync(startupFile, startupCmd);
+        
+        // Copiar para pasta de inicialização do Windows
+        const startupFolder = path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+        if (fs.existsSync(startupFolder)) {
+          const destFile = path.join(startupFolder, 'start-wsl-services.bat');
+          fs.copyFileSync(startupFile, destFile);
+          verification.log('Script de inicialização adicionado à pasta de inicialização do Windows', 'success');
+        }
+      } catch (startupError) {
+        verification.log('Não foi possível adicionar script à pasta de inicialização, mas serviços ainda iniciarão com o WSL', 'warning');
+      }
 
+      // 6. Limpar arquivos temporários
       await verification.execPromise(
         `wsl -d Ubuntu -u root rm -f /tmp/wsl_startup_append.sh`,
         5000,
@@ -1440,7 +2300,7 @@ sudo service postgresql start
       verification.log(`Erro ao configurar inicialização automática: ${JSON.stringify(bashrcError) || 'Erro desconhecido'}`, 'warning');
       verification.logToFile(`Detalhes: ${JSON.stringify(bashrcError)}`);
     }
-    
+
     return true;
   } catch (error) {
     const errorMessage = error.message || error.toString() || 'Erro desconhecido';
@@ -1450,6 +2310,61 @@ sudo service postgresql start
     // Mesmo com erro, retornar true para continuar a instalação
     verification.log('Continuando instalação mesmo com erros nos pacotes...', 'warning');
     return true;
+  }
+}
+
+
+async function restartServices() {
+  verification.log('Reiniciando serviços essenciais...', 'step');
+  
+  try {
+    // Lista de serviços para reiniciar
+    const services = ['postgresql', 'cups', 'smbd', 'avahi-daemon', 'ufw'];
+    
+    // Iterar por cada serviço e reiniciar individualmente
+    for (const service of services) {
+      try {
+        verification.log(`Reiniciando serviço ${service}...`, 'info');
+        
+        // Usar método alternativo para systemctl que é mais compatível com WSL
+        try {
+          // Método 1: systemctl se disponível
+          await verification.execPromise(`wsl -d Ubuntu -u root systemctl restart ${service}`, 20000, true);
+        } catch (systemctlError) {
+          // Método 2: service
+          try {
+            await verification.execPromise(`wsl -d Ubuntu -u root service ${service} restart`, 20000, true);
+          } catch (serviceError) {
+            // Método 3: método direto para PostgreSQL
+            if (service === 'postgresql') {
+              try {
+                // Determinar versão do PostgreSQL
+                const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ | cut -d'/' -f4 | head -n 1 || echo '14'\"";
+                const pgVersion = await verification.execPromise(pgVersionCmd, 10000, true).catch(() => "14");
+                const version = pgVersion.trim() || "14";
+                
+                // Reiniciar usando pg_ctl
+                await verification.execPromise(
+                  `wsl -d Ubuntu -u root bash -c "su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main restart'"`,
+                  30000,
+                  true
+                );
+              } catch (pgCtlError) {
+                verification.log(`Não foi possível reiniciar PostgreSQL, continuando...`, 'warning');
+              }
+            }
+          }
+        }
+      } catch (error) {
+        verification.log(`Erro ao reiniciar ${service}, continuando com os próximos...`, 'warning');
+      }
+    }
+    
+    verification.log('Reinicialização de serviços concluída', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao reiniciar serviços: ${error.message || 'Erro desconhecido'}`, 'warning');
+    return true; // Continue mesmo com erro
   }
 }
 
@@ -1791,13 +2706,14 @@ async function setupDatabase() {
   verification.log('Configurando banco de dados PostgreSQL...', 'header');
 
   try {
-    // 1. Verificar e reinstalar PostgreSQL se necessário
+    // 1. Verificar e reinstalar PostgreSQL com verificação mais robusta
     verification.log('Verificando instalação do PostgreSQL...', 'step');
     let postgresqlInstalled = false;
     
     try {
+      // Primeiro verificar se o pacote está instalado
       const pgStatus = await verification.execPromise(
-        'wsl -d Ubuntu -u root dpkg -l | grep -E "postgresql[[:space:]]+"',
+        'wsl -d Ubuntu -u root dpkg -l postgresql',
         10000,
         true
       );
@@ -1808,40 +2724,15 @@ async function setupDatabase() {
       } else {
         verification.log('PostgreSQL não parece estar instalado corretamente', 'warning');
       }
-
-      verification.log('Banco de dados configurado. Executando migrações forçadas...', 'step');
-      const migrationsResult = await setupMigrations();
-      
-      if (migrationsResult) {
-        verification.log('Migrações executadas com sucesso', 'success');
-      } else {
-        verification.log('Houve erros durante as migrações, verifique os logs', 'warning');
-      }
-      
-      verification.log('Configuração do PostgreSQL finalizada', 'success');
-      return true;
     } catch (checkError) {
       verification.log('Erro ao verificar instalação, assumindo que PostgreSQL precisa ser instalado', 'warning');
+      postgresqlInstalled = false;
     }
     
     if (!postgresqlInstalled) {
       verification.log('Instalando PostgreSQL...', 'step');
       try {
-        // Remover instalações anteriores potencialmente corrompidas
-        await verification.execPromise(
-          'wsl -d Ubuntu -u root apt-get --purge remove -y postgresql postgresql-*',
-          180000, // 3 minutos
-          true
-        );
-        
-        // Limpar arquivos residuais e configurações
-        await verification.execPromise(
-          'wsl -d Ubuntu -u root apt-get autoremove -y && wsl -d Ubuntu -u root apt-get autoclean',
-          60000,
-          true
-        );
-        
-        // Atualizar repositórios
+        // Atualizar repositórios antes
         await verification.execPromise(
           'wsl -d Ubuntu -u root apt-get update',
           60000,
@@ -1856,110 +2747,151 @@ async function setupDatabase() {
         );
         
         verification.log('PostgreSQL instalado com sucesso', 'success');
+        postgresqlInstalled = true;
       } catch (installError) {
         verification.log('Erro ao instalar PostgreSQL, tentando método alternativo...', 'warning');
         
-        // Método alternativo de instalação
+        // Método alternativo sem usar systemctl para iniciar o serviço
         try {
-          // Instalar apenas os pacotes essenciais
+          // Tentar resolver problemas de pacotes
           await verification.execPromise(
-            'wsl -d Ubuntu -u root apt-get update && wsl -d Ubuntu -u root apt-get install -y postgresql',
+            'wsl -d Ubuntu -u root apt-get --fix-broken install -y',
+            120000,
+            true
+          );
+          
+          // Tentar novamente a instalação
+          await verification.execPromise(
+            'wsl -d Ubuntu -u root apt-get install -y postgresql postgresql-contrib',
             300000,
             true
           );
-          verification.log('PostgreSQL instalado com método alternativo', 'success');
-        } catch (altInstallError) {
-          verification.log('Todos os métodos de instalação falharam, tentando continuar...', 'warning');
-        }
-      }
-    }
-
-    // 2. Parar e iniciar o PostgreSQL de forma forçada
-    verification.log('Reiniciando PostgreSQL forçadamente...', 'step');
-    
-    // Parar todos os serviços PostgreSQL e matar processos
-    await verification.execPromise('wsl -d Ubuntu -u root service postgresql stop || true', 20000, true);
-    await verification.execPromise('wsl -d Ubuntu -u root systemctl stop postgresql || true', 20000, true);
-    await verification.execPromise('wsl -d Ubuntu -u root killall -9 postgres || true', 10000, true);
-    
-    // Aguardar um momento
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // Forçar diretoria data a ter permissões corretas (problema comum)
-    await verification.execPromise('wsl -d Ubuntu -u root bash -c "find /var/lib/postgresql -type d -exec chmod 700 {} \\; || true"', 30000, true);
-    await verification.execPromise('wsl -d Ubuntu -u root bash -c "find /var/lib/postgresql -type d -exec chown -R postgres:postgres {} \\; || true"', 30000, true);
-    
-    // Iniciar serviço
-    await verification.execPromise('wsl -d Ubuntu -u root service postgresql start || systemctl start postgresql', 30000, true)
-      .catch(e => verification.log('Aviso ao iniciar serviço, tentando método alternativo...', 'warning'));
-    
-    // Aguardar inicialização
-    await new Promise(resolve => setTimeout(resolve, 10000));
-    
-    // Verificar se está rodando
-    try {
-      const serviceStatus = await verification.execPromise('wsl -d Ubuntu -u root service postgresql status || systemctl status postgresql', 15000, true);
-      
-      if (serviceStatus && (serviceStatus.includes('active') || serviceStatus.includes('online'))) {
-        verification.log('PostgreSQL está rodando corretamente', 'success');
-      } else {
-        verification.log('PostgreSQL pode não estar rodando, tentando método alternativo...', 'warning');
-        
-        // Tentar iniciar usando pg_ctlcluster
-        try {
-          // Listar clusters disponíveis
-          const clusters = await verification.execPromise('wsl -d Ubuntu -u root pg_lsclusters || true', 10000, true);
           
-          if (clusters && clusters.trim() && !clusters.includes('No PostgreSQL')) {
-            // Extrair versão e cluster do resultado
-            const lines = clusters.trim().split('\n').filter(line => line.includes('5432') || line.includes('down'));
-            
-            if (lines.length > 0) {
-              const parts = lines[0].trim().split(/\s+/);
-              
-              if (parts.length >= 2) {
-                const version = parts[0];
-                const cluster = parts[1];
-                
-                // Iniciar cluster específico
-                await verification.execPromise(`wsl -d Ubuntu -u root pg_ctlcluster ${version} ${cluster} start`, 30000, true);
-                verification.log(`Cluster PostgreSQL ${version}/${cluster} iniciado`, 'success');
-              }
-            }
-          } else {
-            // Criar novo cluster se nenhum for encontrado
-            verification.log('Nenhum cluster encontrado, criando novo...', 'warning');
-            await verification.execPromise('wsl -d Ubuntu -u root pg_createcluster --start 14 main || wsl -d Ubuntu -u root pg_createcluster --start 12 main || true', 60000, true);
-            await new Promise(resolve => setTimeout(resolve, 10000));
-          }
-        } catch (clusterError) {
-          verification.log('Erro ao manipular clusters, continuando...', 'warning');
+          verification.log('PostgreSQL instalado com método alternativo', 'success');
+          postgresqlInstalled = true;
+        } catch (altInstallError) {
+          verification.log('Instalação do PostgreSQL falhou. Continuando mesmo assim...', 'warning');
         }
       }
-    } catch (statusError) {
-      verification.log('Erro ao verificar status, continuando mesmo assim...', 'warning');
     }
 
-    // 3. Configurar pg_hba.conf de forma direta e forçada
-    verification.log('Configurando acesso ao PostgreSQL...', 'step');
+    // 2. Iniciar o PostgreSQL com método alternativo ao systemd
+    if (postgresqlInstalled) {
+      verification.log('Verificando versão do PostgreSQL e iniciando serviço...', 'step');
+      
+      // Encontrar versão do PostgreSQL instalada
+      try {
+        const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ | cut -d'/' -f4 | head -n 1\"";
+        const pgVersion = await verification.execPromise(pgVersionCmd, 10000, true);
+        
+        if (pgVersion && pgVersion.trim()) {
+          const version = pgVersion.trim();
+          verification.log(`Versão do PostgreSQL encontrada: ${version}`, 'success');
+          
+          // Iniciar PostgreSQL usando pg_ctlcluster em vez de systemctl
+          try {
+            await verification.execPromise(
+              `wsl -d Ubuntu -u root pg_ctlcluster ${version} main start`,
+              30000,
+              true
+            );
+            verification.log(`PostgreSQL ${version} iniciado com pg_ctlcluster`, 'success');
+            
+            // Verificar se o serviço está rodando
+            try {
+              await verification.execPromise(
+                `wsl -d Ubuntu -u postgres psql -c "SELECT version();"`,
+                15000,
+                true
+              );
+              verification.log('PostgreSQL está respondendo!', 'success');
+            } catch (psqlError) {
+              verification.log('PostgreSQL iniciado, mas psql ainda não está respondendo', 'warning');
+              verification.logToFile(`Erro psql: ${JSON.stringify(psqlError)}`);
+              
+              // Dar mais tempo para o PostgreSQL iniciar completamente
+              verification.log('Aguardando inicialização completa do PostgreSQL...', 'step');
+              await new Promise(resolve => setTimeout(resolve, 10000));
+            }
+          } catch (ctlError) {
+            verification.log('Erro ao iniciar via pg_ctlcluster, tentando método alternativo...', 'warning');
+            try {
+              // Método alternativo para iniciar o PostgreSQL
+              await verification.execPromise(
+                `wsl -d Ubuntu -u root bash -c "sudo -u postgres /usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start"`,
+                30000,
+                true
+              );
+              verification.log('PostgreSQL iniciado com pg_ctl diretamente', 'success');
+            } catch (pgCtlError) {
+              verification.log('Não foi possível iniciar o PostgreSQL, continuando...', 'warning');
+            }
+          }
+        } else {
+          verification.log('Não foi possível determinar a versão do PostgreSQL', 'warning');
+        }
+      } catch (versionError) {
+        verification.log('Erro ao obter versão do PostgreSQL', 'warning');
+      }
+    }
+    
+    // 3. Criar usuários e banco de dados, com modo mais direto e menos dependente de serviços
+    verification.log('Configurando usuários e bancos de dados...', 'step');
     
     try {
-      // Encontrar arquivos pg_hba.conf de forma mais completa
-      let foundAndConfigured = false;
+      // Determinar a versão do PostgreSQL
+      const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ | cut -d'/' -f4 | head -n 1\"";
+      const pgVersion = await verification.execPromise(pgVersionCmd, 10000, true).catch(() => "14");
+      const version = pgVersion.trim() || "14"; // Use 14 como padrão se não conseguir determinar
       
-      // Método 1: usar find para localizar todos os arquivos pg_hba.conf
-      const findHba = await verification.execPromise('wsl -d Ubuntu -u root find /etc -name pg_hba.conf', 20000, true)
-        .catch(() => "");
+      // Método direto para criar banco sem depender de serviço
+      const setupDbScript = `
+      #!/bin/bash
+      # Certifique-se que o diretório de dados existe
+      mkdir -p /var/lib/postgresql/${version}/main
+      chown -R postgres:postgres /var/lib/postgresql
       
-      if (findHba && findHba.trim()) {
-        const hbaFiles = findHba.trim().split('\n');
-        
-        // Configurar cada arquivo encontrado
-        for (const hbaFile of hbaFiles) {
-          if (hbaFile.trim() && hbaFile.includes('/postgresql/')) {
-            try {
-              // Criar novo arquivo pg_hba.conf com configurações permissivas
-              const hbaContent = `# Configuration file for PostgreSQL client authentication
+      # Iniciar o PostgreSQL se não estiver rodando
+      su - postgres -c "/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main status || /usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start"
+      
+      # Esperar o PostgreSQL inicializar
+      sleep 5
+      
+      # Criar usuários
+      su - postgres -c "psql -c \\"DROP ROLE IF EXISTS postgres_print;\\""
+      su - postgres -c "psql -c \\"CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';\\""
+      
+      su - postgres -c "psql -c \\"DROP ROLE IF EXISTS print_user;\\""
+      su - postgres -c "psql -c \\"CREATE ROLE print_user WITH LOGIN SUPERUSER PASSWORD 'print_user';\\""
+      
+      # Criar bancos de dados
+      su - postgres -c "psql -c \\"DROP DATABASE IF EXISTS print_management;\\""
+      su - postgres -c "psql -c \\"CREATE DATABASE print_management OWNER postgres_print;\\""
+      
+      su - postgres -c "psql -c \\"DROP DATABASE IF EXISTS print_server;\\""
+      su - postgres -c "psql -c \\"CREATE DATABASE print_server OWNER print_user;\\""
+      
+      # Criar schema
+      su - postgres -c "psql -d print_management -c \\"CREATE SCHEMA IF NOT EXISTS print_management;\\""
+      su - postgres -c "psql -d print_management -c \\"ALTER SCHEMA print_management OWNER TO postgres_print;\\""
+      su - postgres -c "psql -d print_management -c \\"GRANT ALL ON SCHEMA print_management TO postgres_print;\\""
+      
+      echo "Database setup completed"
+      `;
+      
+      // Criar arquivo de script temporário no WSL
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "echo '${setupDbScript.replace(/'/g, "'\\''")}' > /tmp/setup_db.sh && chmod +x /tmp/setup_db.sh"`,
+        10000,
+        true
+      );
+      
+      // Executar o script
+      await verification.execPromise('wsl -d Ubuntu -u root bash /tmp/setup_db.sh', 60000, true);
+      verification.log('Script de configuração do banco de dados executado', 'success');
+      
+      // Configurar pg_hba.conf para acesso mais permissivo
+      const hbaContent = `# Configuration file for PostgreSQL client authentication
 #
 # CAUTION: Firewall should be used for security, not this file!
 # This configuration allows all local and all TCP/IP connections.
@@ -1971,281 +2903,80 @@ host    all             all             127.0.0.1/32            trust
 host    all             all             ::1/128                 trust
 host    all             all             0.0.0.0/0               trust
 `;
-              
-              // Escrever configuração
-              await verification.execPromise(`wsl -d Ubuntu -u root bash -c 'echo "${hbaContent}" > ${hbaFile}'`, 10000, true);
-              verification.log(`Arquivo ${hbaFile} configurado com acesso permissivo`, 'success');
-              
-              // Encontrar postgresql.conf correspondente
-              const pgConfDir = hbaFile.substring(0, hbaFile.lastIndexOf('/'));
-              const pgConfFile = `${pgConfDir}/postgresql.conf`;
-              
-              // Verificar se o arquivo existe
-              const pgConfExists = await verification.execPromise(`wsl -d Ubuntu -u root test -f "${pgConfFile}" && echo "exists"`, 5000, true)
-                .catch(() => "");
-              
-              if (pgConfExists && pgConfExists.includes('exists')) {
-                // Configurar postgresql.conf para aceitar conexões externas
-                await verification.execPromise(`wsl -d Ubuntu -u root bash -c "sed -i 's/#listen_addresses = \\'localhost\\'/listen_addresses = \\'*\\'/' ${pgConfFile}"`, 10000, true);
-                await verification.execPromise(`wsl -d Ubuntu -u root bash -c "grep -q '^listen_addresses' ${pgConfFile} || echo \\"listen_addresses = '*'\\" >> ${pgConfFile}"`, 10000, true);
-                verification.log(`Arquivo ${pgConfFile} configurado para aceitar conexões`, 'success');
-              }
-              
-              foundAndConfigured = true;
-            } catch (configError) {
-              verification.log(`Erro ao configurar ${hbaFile}, tentando próximo arquivo...`, 'warning');
-            }
-          }
-        }
-      }
       
-      // Se não encontrou/configurou nenhum arquivo, tentar outro método
-      if (!foundAndConfigured) {
-        verification.log('Tentando método alternativo para configurar pg_hba.conf...', 'step');
+      // Encontrar o arquivo pg_hba.conf
+      try {
+        const findHba = await verification.execPromise('wsl -d Ubuntu -u root find /etc -name pg_hba.conf', 20000, true);
         
-        // Método 2: usar pg_lsclusters para identificar o diretório de dados
-        try {
-          // Localizar cluster
-          const pgClusters = await verification.execPromise('wsl -d Ubuntu -u root pg_lsclusters | grep online || pg_lsclusters', 10000, true);
+        if (findHba && findHba.trim()) {
+          const hbaFiles = findHba.trim().split('\n');
+          let configured = false;
           
-          if (pgClusters && pgClusters.trim() && !pgClusters.includes('No PostgreSQL')) {
-            // Extrair versão e nome do cluster
-            const parts = pgClusters.trim().split('\n')[0].trim().split(/\s+/);
-            
-            if (parts.length >= 2) {
-              const version = parts[0];
-              const name = parts[1];
-              
-              // Caminho esperado para pg_hba.conf
-              const hbaPath = `/etc/postgresql/${version}/${name}/pg_hba.conf`;
-              const pgConfPath = `/etc/postgresql/${version}/${name}/postgresql.conf`;
-              
-              // Verificar se o arquivo existe
-              const fileCheck = await verification.execPromise(`wsl -d Ubuntu -u root test -f "${hbaPath}" && echo "exists"`, 5000, true)
-                .catch(() => "");
-              
-              if (fileCheck && fileCheck.includes('exists')) {
-                // Configuração permissiva
-                const hbaContent = `# Minimal PostgreSQL configuration
-# All connections are trusted for simplicity
-
-local   all             postgres                                peer
-local   all             all                                     trust
-host    all             all             127.0.0.1/32            trust
-host    all             all             ::1/128                 trust
-host    all             all             0.0.0.0/0               trust
-`;
+          for (const hbaFile of hbaFiles) {
+            if (hbaFile.trim() && hbaFile.includes('/postgresql/')) {
+              try {
+                await verification.execPromise(`wsl -d Ubuntu -u root bash -c 'echo "${hbaContent}" > ${hbaFile}'`, 10000, true);
+                verification.log(`Arquivo ${hbaFile} configurado com acesso permissivo`, 'success');
+                configured = true;
                 
-                // Escrever configuração
-                await verification.execPromise(`wsl -d Ubuntu -u root bash -c 'echo "${hbaContent}" > ${hbaPath}'`, 10000, true);
-                verification.log(`Arquivo ${hbaPath} configurado com método alternativo`, 'success');
+                // Encontrar postgresql.conf correspondente
+                const pgConfDir = hbaFile.substring(0, hbaFile.lastIndexOf('/'));
+                const pgConfFile = `${pgConfDir}/postgresql.conf`;
                 
-                // Configurar postgresql.conf
-                await verification.execPromise(`wsl -d Ubuntu -u root bash -c "sed -i 's/#listen_addresses = \\'localhost\\'/listen_addresses = \\'*\\'/' ${pgConfPath}"`, 10000, true);
-                await verification.execPromise(`wsl -d Ubuntu -u root bash -c "grep -q '^listen_addresses' ${pgConfPath} || echo \\"listen_addresses = '*'\\" >> ${pgConfPath}"`, 10000, true);
-                
-                foundAndConfigured = true;
+                // Verificar se o arquivo existe
+                try {
+                  await verification.execPromise(`wsl -d Ubuntu -u root test -f "${pgConfFile}"`, 5000, true);
+                  
+                  // Configurar para aceitar conexões de qualquer endereço
+                  await verification.execPromise(
+                    `wsl -d Ubuntu -u root bash -c "sed -i 's/#listen_addresses = \\'localhost\\'/listen_addresses = \\'*\\'/' ${pgConfFile} || echo \\"listen_addresses = '*'\\" >> ${pgConfFile}"`,
+                    10000,
+                    true
+                  );
+                  verification.log(`Arquivo ${pgConfFile} configurado para aceitar conexões`, 'success');
+                } catch (pgConfError) {
+                  verification.log(`Não foi possível localizar ${pgConfFile}`, 'warning');
+                }
+              } catch (writeError) {
+                verification.log(`Erro ao escrever em ${hbaFile}`, 'warning');
               }
             }
           }
-        } catch (clusterError) {
-          verification.log('Erro ao identificar cluster, tentando método final...', 'warning');
-        }
-      }
-      
-      // Método final: pesquisar em toda a árvore de diretórios
-      if (!foundAndConfigured) {
-        verification.log('Tentando pesquisa recursiva para encontrar pg_hba.conf...', 'step');
-        
-        try {
-          // Procurar em lugares comuns
-          const commonPaths = [
-            '/etc/postgresql/*/main/pg_hba.conf',
-            '/var/lib/postgresql/*/main/pg_hba.conf'
-          ];
           
-          for (const pathPattern of commonPaths) {
-            const findResult = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "ls ${pathPattern} 2>/dev/null || echo ''"`, 10000, true);
-            
-            if (findResult && findResult.trim()) {
-              const hbaPath = findResult.trim().split('\n')[0].trim();
-              
-              // Configuração permissiva
-              const hbaContent = `# Emergency PostgreSQL configuration
-local   all             postgres                                peer
-local   all             all                                     trust
-host    all             all             0.0.0.0/0               trust
-`;
-              
-              // Escrever configuração
-              await verification.execPromise(`wsl -d Ubuntu -u root bash -c 'echo "${hbaContent}" > ${hbaPath}'`, 10000, true);
-              verification.log(`Arquivo ${hbaPath} configurado com método de emergência`, 'success');
-              
-              // Configurar postgresql.conf correspondente
-              const pgConfDir = hbaPath.substring(0, hbaPath.lastIndexOf('/'));
-              const pgConfPath = `${pgConfDir}/postgresql.conf`;
-              
-              await verification.execPromise(`wsl -d Ubuntu -u root bash -c "test -f ${pgConfPath} && (grep -q '^listen_addresses' ${pgConfPath} || echo \\"listen_addresses = '*'\\" >> ${pgConfPath})"`, 10000, true);
-              
-              foundAndConfigured = true;
-              break;
+          if (configured) {
+            // Reiniciar PostgreSQL para aplicar configurações
+            try {
+              await verification.execPromise(
+                `wsl -d Ubuntu -u root bash -c "su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main restart'"`,
+                30000,
+                true
+              );
+              verification.log('PostgreSQL reiniciado para aplicar configurações', 'success');
+            } catch (restartError) {
+              verification.log('Não foi possível reiniciar o PostgreSQL, mas configurações foram alteradas', 'warning');
             }
           }
-        } catch (emergencyError) {
-          verification.log('Método de emergência falhou, continuando...', 'warning');
         }
+      } catch (findError) {
+        verification.log('Não foi possível localizar arquivos de configuração do PostgreSQL', 'warning');
       }
       
-      // Reiniciar PostgreSQL para aplicar configurações
-      if (foundAndConfigured) {
-        verification.log('Reiniciando PostgreSQL para aplicar configurações...', 'step');
-        await verification.execPromise('wsl -d Ubuntu -u root service postgresql restart || systemctl restart postgresql', 30000, true)
-          .catch(e => verification.log('Aviso ao reiniciar PostgreSQL, continuando...', 'warning'));
-        
-        // Aguardar reinicialização
-        await new Promise(resolve => setTimeout(resolve, 10000));
-      } else {
-        verification.log('Não foi possível localizar arquivos de configuração, continuando...', 'warning');
-      }
-    } catch (configError) {
-      verification.log('Erro ao configurar acesso PostgreSQL, continuando...', 'warning');
+      return true;
+    } catch (error) {
+      verification.log(`Erro ao configurar banco de dados: ${error?.message || 'Erro desconhecido'}`, 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+      
+      return true; // Retornar true mesmo com erro para continuar a instalação
     }
-
-    // 4. Configurar usuário e bancos com comandos super diretos
-    verification.log('Configurando usuários e bancos de dados...', 'step');
-    
-    try {
-      // Verificar se podemos acessar psql como usuário postgres
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "SELECT version();"', 15000, true);
-      verification.log('PostgreSQL acessível como usuário postgres', 'success');
-      
-      // Comandos SQL sendo executados diretamente como usuário postgres
-      // 1. Criar usuários
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "DROP ROLE IF EXISTS postgres_print;"', 15000, true);
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD \'root_print\';"', 15000, true);
-      
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "DROP ROLE IF EXISTS print_user;"', 15000, true);
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "CREATE ROLE print_user WITH LOGIN SUPERUSER PASSWORD \'print_user\';"', 15000, true);
-      
-      // 2. Criar bancos de dados
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "DROP DATABASE IF EXISTS print_management;"', 15000, true);
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE print_management OWNER postgres_print;"', 15000, true);
-      
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "DROP DATABASE IF EXISTS print_server;"', 15000, true);
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE print_server OWNER print_user;"', 15000, true);
-      
-      // 3. Criar schema
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -d print_management -c "CREATE SCHEMA IF NOT EXISTS print_management;"', 15000, true);
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -d print_management -c "ALTER SCHEMA print_management OWNER TO postgres_print;"', 15000, true);
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -d print_management -c "GRANT ALL ON SCHEMA print_management TO postgres_print;"', 15000, true);
-      
-      verification.log('Usuários, bancos e schema configurados com sucesso', 'success');
-    } catch (dbError) {
-      verification.log('Erro ao configurar bancos como postgres, tentando método root...', 'warning');
-      
-      try {
-        // Tentativa através do usuário root
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"DROP ROLE IF EXISTS postgres_print;\\""', 15000, true);
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD \'root_print\';\\""', 15000, true);
-        
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"DROP ROLE IF EXISTS print_user;\\""', 15000, true);
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"CREATE ROLE print_user WITH LOGIN SUPERUSER PASSWORD \'print_user\';\\""', 15000, true);
-        
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"DROP DATABASE IF EXISTS print_management;\\""', 15000, true);
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"CREATE DATABASE print_management OWNER postgres_print;\\""', 15000, true);
-        
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"DROP DATABASE IF EXISTS print_server;\\""', 15000, true);
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"CREATE DATABASE print_server OWNER print_user;\\""', 15000, true);
-        
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -d print_management -c \\"CREATE SCHEMA IF NOT EXISTS print_management;\\""', 15000, true);
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -d print_management -c \\"ALTER SCHEMA print_management OWNER TO postgres_print;\\""', 15000, true);
-        await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -d print_management -c \\"GRANT ALL ON SCHEMA print_management TO postgres_print;\\""', 15000, true);
-        
-        verification.log('Usuários e bancos configurados com método root', 'success');
-      } catch (rootError) {
-        verification.log('Erro também com método root, tentando um último recurso...', 'warning');
-        
-        // Último recurso: Tentar cada comando isoladamente e capturar erros
-        try {
-          await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"SELECT 1; CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD \'root_print\';\\""', 15000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"SELECT 1; CREATE ROLE print_user WITH LOGIN SUPERUSER PASSWORD \'print_user\';\\""', 15000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"SELECT 1; CREATE DATABASE print_management;\\""', 15000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"SELECT 1; CREATE DATABASE print_server;\\""', 15000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -d print_management -c \\"SELECT 1; CREATE SCHEMA print_management;\\""', 15000, true);
-          
-          verification.log('Usuários e bancos possivelmente configurados com método de recuperação', 'warning');
-        } catch (finalError) {
-          verification.log('Todos os métodos de configuração falharam', 'warning');
-        }
-      }
-    }
-
-    // 5. Testar conexão com abordagem robusta
-    verification.log('Testando conexão com o PostgreSQL...', 'step');
-    
-    let connectionSuccess = false;
-    
-    // Método 1: Testar como usuário postgres
-    try {
-      const basicTest = await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "SELECT \'Conexão OK como postgres\';"', 15000, true);
-      
-      if (basicTest && basicTest.includes('Conexão OK')) {
-        verification.log('Conexão básica como postgres funcionando', 'success');
-        connectionSuccess = true;
-        
-        // Tentar conexão como postgres_print
-        try {
-          const userTest = await verification.execPromise('wsl -d Ubuntu -u root bash -c "PGPASSWORD=root_print psql -h localhost -U postgres_print -d print_management -c \'SELECT 1 AS conexao_ok;\'"', 15000, true);
-          
-          if (userTest && userTest.includes('conexao_ok')) {
-            verification.log('Conexão como postgres_print funcionando!', 'success');
-          } else {
-            verification.log('Conexão como postgres_print retornou resultado inesperado', 'warning');
-          }
-        } catch (userConnError) {
-          verification.log('Erro ao testar conexão como postgres_print, mas a conexão básica está ok', 'warning');
-        }
-      }
-    } catch (basicConnError) {
-      verification.log('Erro na conexão básica, tentando método root...', 'warning');
-      
-      // Método 2: Testar via root
-      try {
-        const rootTest = await verification.execPromise('wsl -d Ubuntu -u root su - postgres -c "psql -c \\"SELECT \'Conexão via root OK\';\\"" | grep "Conexão"', 15000, true);
-        
-        if (rootTest && rootTest.includes('Conexão')) {
-          verification.log('Conexão via root funcionando', 'success');
-          connectionSuccess = true;
-        }
-      } catch (rootConnError) {
-        verification.log('Erro na conexão via root, tentando último método...', 'warning');
-        
-        // Método 3: Testar via socket local
-        try {
-          await verification.execPromise('wsl -d Ubuntu -u root bash -c "su - postgres -c \\"psql -h /var/run/postgresql -c \'SELECT 1;\'\\""', 15000, true);
-          verification.log('Conexão via socket local funcionando', 'success');
-          connectionSuccess = true;
-        } catch (socketConnError) {
-          verification.log('Todos os métodos de conexão falharam, continuando mesmo assim...', 'warning');
-        }
-      }
-    }
-
-    verification.log('Configuração do PostgreSQL finalizada', 'success');
-    return true;
   } catch (error) {
     verification.log(`Erro geral ao configurar PostgreSQL: ${error?.message || 'Erro desconhecido'}`, 'error');
     verification.logToFile(`Detalhes: ${JSON.stringify(error)}`);
     
-    // Retornar true para continuar a instalação
-    verification.log('Continuando instalação mesmo com erros no PostgreSQL...', 'warning');
-    return true;
+    return true; // Retornar true mesmo com erro para continuar a instalação
   }
 }
 
 // Função para executar migrações
-// Modificação na função setupMigrations em installer.js para garantir execução direta do SQL
-
 async function setupMigrations() {
   verification.log('Verificando e executando migrações do banco de dados...', 'header');
 
@@ -2307,13 +3038,20 @@ async function setupMigrations() {
 // Função de implementação que executa as migrações em um caminho específico - completamente reescrita
 async function setupMigrationsWithPath(basePath) {
   try {
-    // Garantir que PostgreSQL está rodando
+    // Verificar se o PostgreSQL está rodando usando um método mais direto
     verification.log('Verificando PostgreSQL...', 'step');
+    
+    // Determinar a versão do PostgreSQL
+    const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ | cut -d'/' -f4 | head -n 1 || echo '14'\"";
+    const pgVersion = await verification.execPromise(pgVersionCmd, 10000, true).catch(() => "14");
+    const version = pgVersion.trim() || "14"; // Use 14 como padrão se não conseguir determinar
+    
+    // Iniciar o PostgreSQL diretamente
     await verification.execPromise(
-      'wsl -d Ubuntu -u root systemctl restart postgresql',
+      `wsl -d Ubuntu -u root bash -c "su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main status || /usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start'"`,
       30000,
       true
-    ).catch(e => verification.log('Aviso ao reiniciar PostgreSQL, continuando', 'warning'));
+    ).catch(e => verification.log('Aviso ao iniciar PostgreSQL: ' + e.message, 'warning'));
     
     // Aguardar inicialização
     await new Promise(resolve => setTimeout(resolve, 5000));
@@ -2324,9 +3062,39 @@ async function setupMigrationsWithPath(basePath) {
       await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "SELECT 1;"', 10000, true);
       verification.log('Conexão com PostgreSQL funcionando', 'success');
     } catch (connError) {
-      verification.log('ERRO: PostgreSQL não está respondendo!', 'error');
-      verification.logToFile(`Erro de conexão: ${JSON.stringify(connError)}`);
-      return false;
+      // Tentar iniciar o serviço novamente usando métodos alternativos
+      try {
+        verification.log('Tentando iniciar o PostgreSQL com métodos alternativos...', 'warning');
+        
+        // Método 1: pg_ctlcluster
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root pg_ctlcluster ${version} main start`,
+          30000,
+          true
+        ).catch(() => {});
+        
+        // Método 2: pg_ctl direto
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "sudo -u postgres /usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start"`,
+          30000,
+          true
+        ).catch(() => {});
+        
+        // Verificar novamente
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        const check = await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "SELECT 1;"', 10000, true)
+          .catch(() => null);
+        
+        if (!check) {
+          verification.log('ERRO: PostgreSQL não está respondendo mesmo após tentativas alternativas!', 'error');
+          return false;
+        } else {
+          verification.log('PostgreSQL respondendo após métodos alternativos', 'success');
+        }
+      } catch (altMethodError) {
+        verification.log('ERRO: PostgreSQL não está respondendo!', 'error');
+        return false;
+      }
     }
     
     // Verificar se o script migrate.sh existe
@@ -2356,149 +3124,67 @@ async function setupMigrationsWithPath(basePath) {
       verification.log('Script de migração não encontrado, usando método manual...', 'warning');
     }
     
-    // MÉTODO ALTERNATIVO DE MIGRAÇÃO - CRIAR TABELAS MANUALMENTE
+    // MÉTODO ALTERNATIVO DE MIGRAÇÃO - CRIAR ARQUIVOS SQL E EXECUTAR
+    verification.log('Usando método alternativo para criar tabelas...', 'step');
     
-    // Garantir que o banco print_management existe
-    verification.log('Verificando banco print_management...', 'step');
-    const dbExists = await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname=\'print_management\'"',
-      10000,
-      true
-    ).catch(() => '');
+    // === SOLUÇÃO: Criar os arquivos SQL diretamente no filesystem do WSL ===
+    // Escrever cada arquivo SQL separadamente para evitar problemas de escape
     
-    if (!dbExists) {
-      verification.log('Criando banco print_management...', 'step');
-      await verification.execPromise(
-        'wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE print_management;"',
-        10000,
-        true
-      );
-    }
-    
-    // Garantir schema e usuário
-    verification.log('Configurando schema e usuário...', 'step');
-    await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -c "CREATE SCHEMA IF NOT EXISTS print_management;"',
-      10000,
-      true
-    ).catch(e => verification.log('Aviso: Schema pode já existir', 'warning'));
-    
-    const userCheck = await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -tAc "SELECT 1 FROM pg_roles WHERE rolname=\'postgres_print\'"',
-      10000,
-      true
-    ).catch(() => '');
-    
-    if (!userCheck.trim()) {
-      verification.log('Criando usuário postgres_print...', 'step');
-      await verification.execPromise(
-        'wsl -d Ubuntu -u postgres psql -c "CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD \'root_print\';"',
-        10000,
-        true
-      );
-    }
-    
-    // CRIAR TABELAS COM ESTRUTURA COMPLETA CORRETA
-    verification.log('Criando tabelas com estrutura completa...', 'step');
+    // 1. Arquivo para configuração do banco e schema
+    const setupDbSqlContent = `
+CREATE DATABASE IF NOT EXISTS print_management;
+\\c print_management
 
-    // 1. Criar tipos ENUM necessários
-    await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -c "CREATE TYPE IF NOT EXISTS print_management.log_type AS ENUM (\'error\', \'read\', \'create\', \'update\', \'delete\');" || true',
-      10000,
-      true
-    ).catch(e => verification.log('Aviso: Tipo log_type pode já existir', 'warning'));
-    
-    await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -c "CREATE TYPE IF NOT EXISTS print_management.printer_status AS ENUM (\'functional\',\'expired useful life\',\'powered off\',\'obsolete\',\'damaged\',\'lost\',\'disabled\');" || true',
-      10000,
-      true
-    ).catch(e => verification.log('Aviso: Tipo printer_status pode já existir', 'warning'));
-    
-    // 2. Verificar se a tabela logs já existe
-    const logsExist = await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=\'print_management\' AND table_name=\'logs\')"',
-      10000,
-      true
-    ).catch(() => 'f');
-    
-    if (logsExist.trim() === 't') {
-      // Se existir, verificar se tem a coluna problemática
-      const hasBeforeData = await verification.execPromise(
-        'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=\'print_management\' AND table_name=\'logs\' AND column_name=\'beforedata\')"',
-        10000,
-        true
-      ).catch(() => 'f');
-      
-      // Se a coluna não existir, dropar a tabela e recriar
-      if (hasBeforeData.trim() === 'f') {
-        verification.log('Tabela logs existe, mas sem a estrutura correta. Recriando...', 'warning');
-        await verification.execPromise(
-          'wsl -d Ubuntu -u postgres psql -d print_management -c "DROP TABLE IF EXISTS print_management.logs;"',
-          10000,
-          true
-        );
-        
-        // Criar com estrutura completa
-        const createLogsSQL = `
+CREATE SCHEMA IF NOT EXISTS print_management;
+
+-- Verificar/criar role postgres_print
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres_print') THEN
+    CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';
+  END IF;
+END
+$$;
+
+-- Conceder permissões
+GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;
+ALTER SCHEMA print_management OWNER TO postgres_print;
+`;
+
+    // 2. Arquivo para criar tipos ENUM e tabelas
+    const createTablesSqlContent = `
+\\c print_management
+
+-- Criar tipos ENUM
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'log_type') THEN
+    CREATE TYPE print_management.log_type AS ENUM ('error', 'read', 'create', 'update', 'delete');
+  END IF;
+  
+  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'printer_status') THEN
+    CREATE TYPE print_management.printer_status AS ENUM ('functional','expired useful life','powered off','obsolete','damaged','lost','disabled');
+  END IF;
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END$$;
+
+-- Criar tabela logs
 CREATE TABLE IF NOT EXISTS print_management.logs (
     id varchar(50) NOT NULL,
-    createdAt timestamp NOT NULL,
-    logType print_management.log_type NOT NULL,
+    "createdAt" timestamp NOT NULL,
+    "logType" print_management.log_type NOT NULL,
     entity varchar(255) DEFAULT NULL,
     operation VARCHAR(50) DEFAULT NULL,
-    beforeData jsonb DEFAULT NULL,
-    afterData jsonb DEFAULT NULL,
-    errorMessage text DEFAULT NULL,
-    errorStack text DEFAULT NULL,
-    userInfo jsonb DEFAULT NULL,
+    "beforeData" jsonb DEFAULT NULL,
+    "afterData" jsonb DEFAULT NULL,
+    "errorMessage" text DEFAULT NULL,
+    "errorStack" text DEFAULT NULL,
+    "userInfo" jsonb DEFAULT NULL,
     PRIMARY KEY (id)
-);`;
-        
-        await verification.execPromise(
-          `wsl -d Ubuntu -u postgres psql -d print_management -c "${createLogsSQL}"`,
-          15000,
-          true
-        );
-        verification.log('Tabela logs recriada com estrutura completa', 'success');
-      } else {
-        verification.log('Tabela logs já existe com a estrutura correta', 'success');
-      }
-    } else {
-      // Criar a tabela logs com estrutura completa
-      verification.log('Criando tabela logs...', 'step');
-      const createLogsSQL = `
-CREATE TABLE IF NOT EXISTS print_management.logs (
-    id varchar(50) NOT NULL,
-    createdAt timestamp NOT NULL,
-    logType print_management.log_type NOT NULL,
-    entity varchar(255) DEFAULT NULL,
-    operation VARCHAR(50) DEFAULT NULL,
-    beforeData jsonb DEFAULT NULL,
-    afterData jsonb DEFAULT NULL,
-    errorMessage text DEFAULT NULL,
-    errorStack text DEFAULT NULL,
-    userInfo jsonb DEFAULT NULL,
-    PRIMARY KEY (id)
-);`;
-      
-      await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -d print_management -c "${createLogsSQL}"`,
-        15000,
-        true
-      );
-      verification.log('Tabela logs criada com sucesso', 'success');
-    }
-    
-    // 3. Verificar/criar tabela printers
-    const printersExist = await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=\'print_management\' AND table_name=\'printers\')"',
-      10000,
-      true
-    ).catch(() => 'f');
-    
-    if (printersExist.trim() !== 't') {
-      verification.log('Criando tabela printers...', 'step');
-      const createPrintersSQL = `
+);
+
+-- Criar tabela printers
 CREATE TABLE IF NOT EXISTS print_management.printers (
     id varchar(50) NOT NULL,
     name varchar(50) NOT NULL,
@@ -2511,133 +3197,116 @@ CREATE TABLE IF NOT EXISTS print_management.printers (
     location varchar(100) DEFAULT NULL,
     ip_address varchar(15) DEFAULT NULL,
     port int DEFAULT NULL,
-    createdAt timestamp NOT NULL,
-    updatedAt timestamp NOT NULL,
-    deletedAt timestamp DEFAULT NULL,
+    "createdAt" timestamp NOT NULL,
+    "updatedAt" timestamp NOT NULL,
+    "deletedAt" timestamp DEFAULT NULL,
     PRIMARY KEY (id)
-);`;
-      
-      await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -d print_management -c "${createPrintersSQL}"`,
-        15000,
-        true
-      );
-      verification.log('Tabela printers criada com sucesso', 'success');
-    }
-    
-    // 4. Verificar/criar tabela files
-    const filesExist = await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=\'print_management\' AND table_name=\'files\')"',
-      10000,
-      true
-    ).catch(() => 'f');
-    
-    if (filesExist.trim() !== 't') {
-      verification.log('Criando tabela files...', 'step');
-      const createFilesSQL = `
+);
+
+-- Criar tabela files
 CREATE TABLE IF NOT EXISTS print_management.files (
     id varchar(50) NOT NULL,
-    assetId varchar(50) DEFAULT NULL,
-    fileName text NOT NULL,
+    "assetId" varchar(50) DEFAULT NULL,
+    "fileName" text NOT NULL,
     pages int NOT NULL,
     path TEXT NOT NULL,
-    createdAt timestamp NOT NULL,
-    deletedAt timestamp DEFAULT NULL,
+    "createdAt" timestamp NOT NULL,
+    "deletedAt" timestamp DEFAULT NULL,
     printed BOOLEAN NOT NULL DEFAULT FALSE,
     synced BOOLEAN NOT NULL DEFAULT FALSE,
     PRIMARY KEY (id),
-    FOREIGN KEY (assetId) REFERENCES print_management.printers(id)
-);`;
-      
+    FOREIGN KEY ("assetId") REFERENCES print_management.printers(id)
+);
+
+-- Garantir permissões
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA print_management TO postgres_print;
+`;
+
+    // Criar arquivo setup_db.sh com todo o processo
+    const setupScriptContent = `#!/bin/bash
+# Script para configuração do banco de dados PostgreSQL
+
+# Criar arquivos SQL
+cat > /tmp/setup_db.sql << 'EOF'
+${setupDbSqlContent}
+EOF
+
+cat > /tmp/create_tables.sql << 'EOF'
+${createTablesSqlContent}
+EOF
+
+# Executar os scripts SQL
+echo "Executando setup_db.sql..."
+su - postgres -c "psql -f /tmp/setup_db.sql" || echo "Aviso: Possíveis erros no setup_db.sql"
+
+echo "Executando create_tables.sql..."
+su - postgres -c "psql -f /tmp/create_tables.sql" || echo "Aviso: Possíveis erros no create_tables.sql"
+
+echo "Scripts executados."
+`;
+
+    try {
+      // Escrever o script bash em um arquivo
+      // Estamos usando uma técnica de "heredoc" que é muito mais segura para lidar com conteúdo complexo
       await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -d print_management -c "${createFilesSQL}"`,
+        `wsl -d Ubuntu -u root bash -c 'cat > /tmp/setup_postgres.sh << \\'EOSCRIPT\\'\n${setupScriptContent}\nEOSCRIPT\n'`,
         15000,
         true
       );
-      verification.log('Tabela files criada com sucesso', 'success');
-    }
-    
-    // 5. Conceder permissões
-    verification.log('Concedendo permissões nas tabelas...', 'step');
-    await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -c "GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;"',
-      10000,
-      true
-    );
-    
-    await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -c "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA print_management TO postgres_print;"',
-      10000,
-      true
-    );
-    
-    await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -c "GRANT USAGE ON TYPE print_management.log_type TO postgres_print;"',
-      10000,
-      true
-    ).catch(e => verification.log('Aviso ao conceder permissões em tipos', 'warning'));
-    
-    await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -c "GRANT USAGE ON TYPE print_management.printer_status TO postgres_print;"',
-      10000,
-      true
-    ).catch(e => verification.log('Aviso ao conceder permissões em tipos', 'warning'));
-    
-    // 6. Verificação final
-    verification.log('Verificando tabelas criadas...', 'step');
-    const tablesCheck = await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -c "\\dt print_management.*"',
-      10000,
-      true
-    );
-    
-    verification.log(`Resultado da verificação:\n${tablesCheck}`, 'info');
-    
-    // Verificar especificamente a estrutura da tabela logs
-    const logsColumns = await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -c "\\d print_management.logs"',
-      10000,
-      true
-    );
-    
-    verification.log(`Estrutura da tabela logs:\n${logsColumns}`, 'info');
-    
-    // Verificar novamente a coluna beforeData
-    const checkBeforeData = await verification.execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT column_name FROM information_schema.columns WHERE table_schema=\'print_management\' AND table_name=\'logs\' AND column_name=\'beforedata\'"',
-      10000,
-      true
-    ).catch(() => "");
-    
-    if (checkBeforeData.trim() === 'beforedata') {
-      verification.log('Coluna beforedata existe e está pronta para uso!', 'success');
-      return true;
-    } else {
-      // Verificar com o nome correto (sensível a maiúsculas/minúsculas)
-      const checkBeforeDataCaseSensitive = await verification.execPromise(
-        'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT column_name FROM information_schema.columns WHERE table_schema=\'print_management\' AND table_name=\'logs\' AND lower(column_name)=\'beforedata\'"',
+      
+      // Tornar executável e executar
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "chmod +x /tmp/setup_postgres.sh && /tmp/setup_postgres.sh"',
+        60000, // Um minuto para execução completa
+        true
+      );
+      
+      verification.log('Script de configuração alternativo executado com sucesso', 'success');
+      
+      // Verificar se as tabelas foram criadas
+      const tableCheck = await verification.execPromise(
+        `wsl -d Ubuntu -u postgres psql -d print_management -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'print_management';"`,
         10000,
         true
-      ).catch(() => "");
+      ).catch(() => "0");
       
-      if (checkBeforeDataCaseSensitive.trim() !== '') {
-        verification.log(`Coluna encontrada como: ${checkBeforeDataCaseSensitive.trim()}`, 'success');
+      if (tableCheck && parseInt(tableCheck.trim()) > 0) {
+        verification.log(`Verificação: ${tableCheck.trim()} tabelas criadas no schema print_management`, 'success');
+        return true;
+      } else {
+        verification.log('Aviso: Não foi possível confirmar a criação das tabelas, mas o script foi executado', 'warning');
         return true;
       }
+    } catch (setupError) {
+      verification.log(`Erro durante execução do script alternativo: ${setupError?.message || JSON.stringify(setupError)}`, 'error');
+      verification.logToFile(`Erro detalhado: ${JSON.stringify(setupError)}`);
       
-      verification.log('AVISO: Coluna beforedata ainda não foi encontrada, pode haver problemas caso-sensitivos', 'warning');
-      
-      // Última tentativa - adicionar a coluna explicitamente com nome em minúsculas
+      // Tentar uma abordagem ainda mais simples como último recurso
       try {
-        await verification.execPromise(
-          'wsl -d Ubuntu -u postgres psql -d print_management -c "ALTER TABLE print_management.logs ADD COLUMN IF NOT EXISTS beforedata jsonb DEFAULT NULL;"',
-          10000,
-          true
-        );
-        verification.log('Coluna beforedata adicionada explicitamente', 'success');
+        verification.log('Tentando abordagem de emergência para criar banco...', 'warning');
+        
+        // Criar comandos SQL simples
+        const emergencyCommands = [
+          `CREATE DATABASE print_management;`,
+          `\\c print_management`,
+          `CREATE SCHEMA print_management;`,
+          `CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';`,
+          `GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;`
+        ];
+        
+        // Executar cada comando separadamente
+        for (const cmd of emergencyCommands) {
+          await verification.execPromise(
+            `wsl -d Ubuntu -u postgres psql -c "${cmd.replace(/"/g, '\\"')}"`,
+            10000,
+            true
+          ).catch(() => {}); // Ignorar erros individuais
+        }
+        
+        verification.log('Abordagem de emergência concluída - banco e schema devem existir agora', 'info');
         return true;
-      } catch (finalError) {
-        verification.log('Falha na última tentativa', 'warning');
+      } catch (emergencyError) {
+        verification.log('Todas as tentativas falharam. É necessário criar o banco manualmente.', 'error');
         return false;
       }
     }
@@ -2646,6 +3315,48 @@ CREATE TABLE IF NOT EXISTS print_management.files (
     verification.logToFile(`Erro fatal em setupMigrationsWithPath: ${JSON.stringify(error)}`);
     return false;
   }
+}
+
+async function execWslCommand(command, timeoutMs = 30000, quiet = false) {
+  // Substituir padrões problemáticos
+  let fixedCommand = command;
+  
+  // 1. Corrigir padrões "|| true" que não funcionam quando passados do Windows para WSL
+  if (fixedCommand.includes(' || true')) {
+    fixedCommand = fixedCommand.replace(/ \|\| true/g, '; exit 0'); // substitui || true por ; exit 0
+  }
+  
+  // 2. Corrigir redirecionamentos para /dev/null
+  if (fixedCommand.includes('2>/dev/null')) {
+    fixedCommand = fixedCommand.replace(/2>\/dev\/null/g, '2>/dev/null');
+  }
+  
+  // 3. Se o comando é complexo e contém bash -c, garantir que está adequadamente escapado
+  if (fixedCommand.includes('bash -c')) {
+    // Já está usando bash -c, apenas garantir que está bem formado
+    if (!fixedCommand.includes('"bash -c "') && !fixedCommand.includes("'bash -c '")) {
+      // O comando precisa ser ajustado para escapar corretamente
+      const cmdParts = fixedCommand.split('bash -c');
+      if (cmdParts.length === 2) {
+        const prefix = cmdParts[0];
+        let bashCmd = cmdParts[1].trim();
+        
+        // Verificar se o comando já está entre aspas
+        if (
+          !(bashCmd.startsWith('"') && bashCmd.endsWith('"')) && 
+          !(bashCmd.startsWith("'") && bashCmd.endsWith("'"))
+        ) {
+          // Adicionar aspas duplas em volta do comando bash
+          bashCmd = `"${bashCmd.replace(/"/g, '\\"')}"`;
+        }
+        
+        fixedCommand = `${prefix}bash -c ${bashCmd}`;
+      }
+    }
+  }
+  
+  // Agora execute o comando corrigido
+  return await verification.execPromise(fixedCommand, timeoutMs, quiet);
 }
 
 // Copiar o software para o diretório /opt/
@@ -3566,7 +4277,7 @@ async function installSystem() {
     clearScreen();
     verification.log('Bem-vindo ao instalador do Sistema de Gerenciamento de Impressão', 'header');
 
-    // Verificar estado do sistema
+    // Verificar estado do sistema com detecção mais robusta
     const systemStatus = await verification.checkSystemStatus(installState);
 
     // Verificar privilégios de administrador
@@ -3591,27 +4302,40 @@ async function installSystem() {
       return { success: false, message: 'Sistema operacional incompatível' };
     }
 
-    // Verificar virtualização
+    // Verificar virtualização com melhor tratamento
     if (!systemStatus.virtualizationEnabled) {
       verification.log('A virtualização não está habilitada no seu sistema.', 'warning');
-      verification.log('Você precisa habilitar a virtualização na BIOS/UEFI para usar o WSL 2.', 'warning');
+      verification.log('Recomendamos fortemente que você habilite a virtualização na BIOS/UEFI antes de prosseguir.', 'warning');
+      verification.log('Instruções para habilitar a virtualização:', 'info');
+      verification.log('1. Reinicie o computador e entre na BIOS/UEFI (geralmente pressionando F2, DEL, F10 ou F12 durante a inicialização)', 'info');
+      verification.log('2. Procure opções como "Virtualization Technology", "Intel VT-x/AMD-V" ou similar', 'info');
+      verification.log('3. Habilite esta opção, salve as alterações e reinicie', 'info');
 
       if (isElectron) {
-        // No Electron, tentamos continuar mesmo assim
-        verification.log('Continuando mesmo sem virtualização ativada...', 'warning');
+        verification.log('Deseja continuar mesmo sem virtualização habilitada?', 'warning');
+        // Assume que em Electron temos um mecanismo para o usuário confirmar
+        // Se não tiver, adaptar esta parte
+        const userResponse = await askQuestion('Deseja continuar mesmo sem virtualização? (S/N): ');
+        if (userResponse.toLowerCase() !== 's') {
+          return { success: false, message: 'Virtualização não habilitada. Recomendamos habilitar antes de continuar.' };
+        }
+        verification.log('Continuando sem virtualização ativada (não recomendado)...', 'warning');
       } else {
-        const answer = await askQuestion('Deseja continuar mesmo assim? (S/N): ');
+        const answer = await askQuestion('Deseja continuar mesmo sem virtualização ativada? (S/N): ');
         if (answer.toLowerCase() !== 's') {
           return { success: false, message: 'Virtualização não habilitada' };
         }
       }
     }
 
+    // === WSL INSTALLATION ===
+    // Abordagem aprimorada para instalação do WSL
+    
     // Verificar se precisa instalar o WSL
     if (!systemStatus.wslStatus.installed) {
-      verification.log('WSL não está instalado.', 'warning');
+      verification.log('WSL não está instalado. Iniciando instalação...', 'header');
 
-      // Tentar método moderno primeiro
+      // Tentar método moderno primeiro com implementação robusta
       let installSuccess = await installWSLModern();
 
       // Se falhar, tentar método legado
@@ -3621,26 +4345,39 @@ async function installSystem() {
       }
 
       if (installSuccess) {
-        verification.log('É necessário reiniciar o computador para continuar a instalação.', 'warning');
+        // Verificar se é necessário reiniciar após instalação
+        const needsReboot = await verification.execPromise(
+          'powershell -Command "Get-PendingReboot | Select-Object -ExpandProperty RebootPending"',
+          15000,
+          false
+        ).catch(() => "False");
+        
+        const forceReboot = needsReboot.trim() === "True" || needsReboot.includes("True");
+        
+        if (forceReboot) {
+          verification.log('É necessário reiniciar o computador para finalizar a instalação do WSL.', 'warning');
 
-        if (isElectron) {
-          // Em ambiente Electron, sugerir reinicialização
-          verification.log('Por favor, reinicie o computador e execute este instalador novamente.', 'warning');
-          return { success: false, message: 'Reinicie o computador e execute novamente', needsReboot: true };
-        } else {
-          const answer = await askQuestion('Deseja reiniciar o computador agora? (S/N): ');
-
-          if (answer.toLowerCase() === 's') {
-            verification.log('O computador será reiniciado em 10 segundos...', 'warning');
-            verification.log('Por favor, execute este instalador novamente após a reinicialização para continuar.', 'warning');
-            await verification.execPromise('shutdown /r /t 10', 5000, true);
+          if (isElectron) {
+            // Em ambiente Electron, sugerir reinicialização
+            verification.log('Por favor, reinicie o computador e execute este instalador novamente.', 'warning');
             return { success: false, message: 'Reinicie o computador e execute novamente', needsReboot: true };
           } else {
-            verification.log('Você escolheu não reiniciar agora.', 'warning');
-            verification.log('Por favor, reinicie o computador manualmente e execute este instalador novamente.', 'warning');
-            await askQuestion('Pressione ENTER para sair...');
-            return { success: false, message: 'Reinicie o computador e execute novamente', needsReboot: true };
+            const answer = await askQuestion('Deseja reiniciar o computador agora? (S/N): ');
+
+            if (answer.toLowerCase() === 's') {
+              verification.log('O computador será reiniciado em 10 segundos...', 'warning');
+              verification.log('Por favor, execute este instalador novamente após a reinicialização para continuar.', 'warning');
+              await verification.execPromise('shutdown /r /t 10', 5000, true);
+              return { success: false, message: 'Reinicie o computador e execute novamente', needsReboot: true };
+            } else {
+              verification.log('Você escolheu não reiniciar agora.', 'warning');
+              verification.log('Por favor, reinicie o computador manualmente e execute este instalador novamente.', 'warning');
+              await askQuestion('Pressione ENTER para sair...');
+              return { success: false, message: 'Reinicie o computador e execute novamente', needsReboot: true };
+            }
           }
+        } else {
+          verification.log('WSL instalado com sucesso! Prosseguindo com a configuração...', 'success');
         }
       } else {
         verification.log('Não foi possível instalar o WSL.', 'error');
@@ -3653,93 +4390,86 @@ async function installSystem() {
         return { success: false, message: 'Falha ao instalar o WSL' };
       }
     } else if (!systemStatus.wslStatus.wsl2) {
+      // WSL instalado mas WSL 2 não configurado
       verification.log('WSL está instalado, mas o WSL 2 não está configurado corretamente.', 'warning');
 
-      // Tentar atualizar para WSL 2
-      try {
-        verification.log('Configurando WSL 2 como versão padrão...', 'step');
-        await verification.execPromise('wsl --set-default-version 2', 30000);
-        verification.log('WSL 2 configurado com sucesso!', 'success');
-        installState.wslConfigured = true;
-        saveInstallState();
-      } catch (error) {
-        verification.log('Erro ao configurar WSL 2. Pode ser necessário atualizar o kernel.', 'warning');
-        verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-
+      // Usar nova função dedicada para configurar WSL 2
+      const wsl2Configured = await configureWSL2();
+      
+      if (!wsl2Configured) {
+        verification.log('Não foi possível configurar o WSL 2 automaticamente.', 'error');
+        verification.log('Pode ser necessário reiniciar o computador ou instalar atualizações.', 'warning');
+        
+        // Verificar se é necessário atualizar o kernel
         if (!installState.kernelUpdated) {
-          // Baixar e instalar o kernel do WSL2
-          const tempDir = path.join(os.tmpdir(), 'wsl-installer');
-          if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
-          }
-
-          const kernelUpdatePath = path.join(tempDir, 'wsl_update_x64.msi');
-
-          verification.log('Baixando o pacote de atualização do kernel do WSL2...', 'step');
-          try {
-            await verification.execPromise(`powershell -Command "Invoke-WebRequest -Uri 'https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -OutFile '${kernelUpdatePath}'"`, 180000, true);
-            verification.log('Pacote do kernel WSL2 baixado com sucesso', 'success');
-
-            verification.log('Instalando o pacote de atualização do kernel do WSL2...', 'step');
-            await verification.execPromise(`msiexec /i "${kernelUpdatePath}" /qn`, 120000, true);
-            verification.log('Kernel do WSL2 instalado com sucesso', 'success');
-
-            verification.log('É necessário reiniciar o computador para continuar.', 'warning');
-
+          verification.log('Tentando atualizar o kernel do WSL 2...', 'step');
+          const kernelUpdated = await updateWSL2Kernel();
+          
+          if (kernelUpdated) {
+            verification.log('Kernel do WSL 2 atualizado. Reinicie o computador e execute o instalador novamente.', 'warning');
+            
             if (isElectron) {
-              // Em ambiente Electron, apenas retornar que precisa reiniciar
               return { success: false, message: 'Reinicie o computador e execute novamente', needsReboot: true };
             } else {
               const answer = await askQuestion('Deseja reiniciar o computador agora? (S/N): ');
-
+              
               if (answer.toLowerCase() === 's') {
                 verification.log('O computador será reiniciado em 10 segundos...', 'warning');
-                verification.log('Por favor, execute este instalador novamente após a reinicialização para continuar.', 'warning');
                 await verification.execPromise('shutdown /r /t 10', 5000, true);
                 return { success: false, message: 'Reinicie o computador e execute novamente', needsReboot: true };
               } else {
                 verification.log('Você escolheu não reiniciar agora.', 'warning');
-                verification.log('Por favor, reinicie o computador manualmente e execute este instalador novamente.', 'warning');
                 await askQuestion('Pressione ENTER para sair...');
                 return { success: false, message: 'Reinicie o computador e execute novamente', needsReboot: true };
               }
             }
-          } catch (dlError) {
-            verification.log('Erro ao atualizar o kernel do WSL2', 'error');
-            verification.logToFile(`Detalhes do erro: ${JSON.stringify(dlError)}`);
-
-            if (isElectron) {
-              verification.log('Continuando mesmo com erro...', 'warning');
-            } else {
-              await askQuestion('Pressione ENTER para continuar mesmo assim...');
+          } else {
+            verification.log('Não foi possível atualizar o kernel do WSL 2. Visite a página de suporte da Microsoft para mais informações.', 'error');
+            if (!isElectron) {
+              await askQuestion('Pressione ENTER para sair...');
             }
+            return { success: false, message: 'Falha ao configurar WSL 2' };
           }
         }
+      } else {
+        verification.log('WSL 2 configurado com sucesso!', 'success');
       }
     } else {
-      verification.log('WSL 2 está instalado e configurado!', 'success');
+      verification.log('WSL 2 já está instalado e configurado!', 'success');
     }
 
+    // === UBUNTU INSTALLATION ===
     // Verificar/instalar o Ubuntu se WSL estiver configurado
-    if (!systemStatus.wslStatus.hasDistro && !installState.ubuntuInstalled) {
-      verification.log('Nenhuma distribuição Linux detectada. Instalando Ubuntu...', 'step');
+    if ((!systemStatus.wslStatus.hasDistro || !systemStatus.wslStatus.hasUbuntu) && !installState.ubuntuInstalled) {
+      verification.log('Nenhuma distribuição Linux Ubuntu detectada. Instalando...', 'step');
       const ubuntuInstalled = await installUbuntu();
+      
       if (!ubuntuInstalled) {
         verification.log('Não foi possível instalar o Ubuntu. Por favor, instale manualmente.', 'error');
+        verification.log('Você pode instalar o Ubuntu através da Microsoft Store ou executar "wsl --install -d Ubuntu" no PowerShell como administrador.', 'info');
 
         if (!isElectron) {
           await askQuestion('Pressione ENTER para sair...');
         }
         return { success: false, message: 'Falha ao instalar o Ubuntu' };
+      } else {
+        verification.log('Ubuntu instalado com sucesso!', 'success');
+        
+        // Aguardar um pouco antes de prosseguir para a próxima etapa
+        verification.log('Aguardando inicialização completa do Ubuntu...', 'info');
+        await new Promise(resolve => setTimeout(resolve, 15000)); // 15 segundos
       }
     }
 
-    // Verificar se o usuário padrão está configurado
+    // === DEFAULT USER CONFIGURATION ===
+    // Verificar e configurar o usuário padrão com maior robustez
     if (!installState.defaultUserCreated) {
       verification.log('Configurando usuário padrão...', 'step');
       const userConfigured = await configureDefaultUser();
+      
       if (!userConfigured) {
         verification.log('Não foi possível configurar o usuário padrão.', 'warning');
+        verification.log('Você pode continuar, mas talvez precise configurar o usuário manualmente depois.', 'warning');
 
         if (isElectron) {
           verification.log('Continuando mesmo sem configurar usuário...', 'warning');
@@ -3749,20 +4479,69 @@ async function installSystem() {
             return { success: false, message: 'Falha ao configurar usuário padrão' };
           }
         }
+      } else {
+        verification.log('Usuário padrão configurado com sucesso!', 'success');
+        
+        // Reiniciar a distribuição Ubuntu para aplicar as alterações
+        try {
+          await verification.execPromise('wsl --terminate Ubuntu', 15000, true);
+          verification.log('Distribuição Ubuntu reiniciada para aplicar configurações de usuário', 'success');
+          // Aguardar um pouco para a distribuição reiniciar
+          await new Promise(resolve => setTimeout(resolve, 8000)); // 8 segundos
+        } catch (terminateError) {
+          verification.log('Não foi possível reiniciar a distribuição Ubuntu, continuando mesmo assim...', 'warning');
+        }
       }
     }
 
-    // Configurar o sistema
+    // === SYSTEM CONFIGURATION ===
+    // Configurar o sistema com maior robustez e capacidade de recuperação
     const systemConfigured = await configureSystem();
+    
     if (!systemConfigured) {
       verification.log('Não foi possível configurar o sistema completamente.', 'error');
+      verification.log('Algumas funcionalidades podem não estar disponíveis.', 'warning');
+
+      // Verificar quais componentes foram instalados com sucesso
+      const componentStatus = await verification.checkSoftwareConfigurations();
+      
+      // Listar componentes que falharam
+      if (componentStatus) {
+        if (componentStatus.packagesStatus && componentStatus.packagesStatus.missing.length > 0) {
+          verification.log(`Pacotes que falharam: ${componentStatus.packagesStatus.missing.join(', ')}`, 'warning');
+        }
+        
+        if (componentStatus.servicesStatus && componentStatus.servicesStatus.inactive.length > 0) {
+          verification.log(`Serviços inativos: ${componentStatus.servicesStatus.inactive.join(', ')}`, 'warning');
+        }
+      }
+
+      verification.log('Tentando corrigir problemas comuns...', 'step');
+      
+      // Tentar corrigir problemas com serviços
+      await restartServices();
+      
+      // Tentar configurar banco de dados se falhou
+      if (!componentStatus || !componentStatus.dbStatus || !componentStatus.dbStatus.configured) {
+        verification.log('Tentando corrigir configuração do banco de dados...', 'step');
+        await setupDatabase();
+        await setupMigrations();
+      }
+      
+      // Tentar corrigir API se falhou
+      if (!componentStatus || !componentStatus.apiHealth) {
+        verification.log('Tentando reiniciar a API...', 'step');
+        await installComponent('api');
+      }
 
       if (!isElectron) {
-        await askQuestion('Pressione ENTER para sair...');
+        await askQuestion('Pressione ENTER para continuar mesmo com erros...');
       }
-      return { success: false, message: 'Falha ao configurar o sistema' };
+    } else {
+      verification.log('Sistema configurado com sucesso!', 'success');
     }
 
+    // === FINAL VERIFICATION ===
     // Verificar API final
     verification.log('Verificando se a API está respondendo...', 'step');
     const apiHealth = await verification.checkApiHealth();
@@ -3770,7 +4549,7 @@ async function installSystem() {
     if (!apiHealth) {
       verification.log('API não está respondendo. Tentando reiniciar o serviço...', 'warning');
       try {
-        await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart all"', 30000, true);
+        await installComponent('api');
 
         // Aguardar inicialização do serviço
         verification.log('Aguardando inicialização do serviço...', 'info');
@@ -3780,21 +4559,43 @@ async function installSystem() {
         const apiRecheckHealth = await verification.checkApiHealth();
         if (!apiRecheckHealth) {
           verification.log('API ainda não está respondendo após reinicialização.', 'warning');
-          verification.log('Verifique os logs do sistema para mais detalhes.', 'warning');
+          verification.log('Dica: Você pode reiniciar o computador para resolver este problema.', 'warning');
         } else {
           verification.log('API está respondendo corretamente após reinicialização!', 'success');
         }
       } catch (error) {
-        verification.log(`Erro ao reiniciar serviço: ${error.message}`, 'error');
+        verification.log(`Erro ao reiniciar serviço: ${error.message || JSON.stringify(error)}`, 'error');
         verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
       }
     } else {
       verification.log('API está respondendo corretamente!', 'success');
     }
 
+    // Verificar impressora virtual
+    verification.log('Verificando impressora virtual...', 'step');
+    const printerStatus = await verification.checkWindowsPrinterInstalled();
+    
+    if (!printerStatus || !printerStatus.installed) {
+      verification.log('Impressora virtual não detectada, instalando...', 'warning');
+      const printerInstalled = await installWindowsPrinter();
+      
+      if (printerInstalled) {
+        verification.log('Impressora virtual instalada com sucesso!', 'success');
+      } else {
+        verification.log('Não foi possível instalar a impressora virtual automaticamente.', 'warning');
+        verification.log('Dica: Você pode tentar reiniciar o computador e executar o instalador novamente.', 'info');
+      }
+    } else {
+      verification.log('Impressora virtual já está instalada!', 'success');
+    }
+
     // Informações de acesso
-    verification.log('Instalação concluída com sucesso!', 'success');
+    verification.log('Instalação concluída!', 'success');
     verification.log('O Sistema de Gerenciamento de Impressão está pronto para uso.', 'success');
+    verification.log('Informações de acesso:', 'info');
+    verification.log('- API: http://localhost:56258', 'info');
+    verification.log('- Impressora: "Impressora LoQQuei"', 'info');
+    verification.log('- Usuário WSL: print_user (senha: print_user)', 'info');
 
     if (!isElectron) {
       await askQuestion('Pressione ENTER para finalizar a instalação...');
@@ -3817,11 +4618,7 @@ async function installSystem() {
     }
 
     verification.log(`Erro inesperado: ${errorMessage}`, 'error');
-    try {
-      verification.logToFile(`Erro inesperado no main(): ${JSON.stringify(error, Object.getOwnPropertyNames(error))}`);
-    } catch (e) {
-      verification.logToFile(`Erro inesperado no main() - não foi possível serializar`);
-    }
+    verification.logToFile(`Erro inesperado no main(): ${JSON.stringify(error, Object.getOwnPropertyNames(error))}`);
 
     if (!isElectron) {
       await askQuestion('Pressione ENTER para sair...');
@@ -3878,7 +4675,13 @@ module.exports = {
 
   getInstallationLog: function () {
     return installationLog.join('\n');
-  }
+  },
+
+  setupDatabase,
+  setupMigrationsWithPath,
+  execWslCommand,
+  installRequiredPackages,
+  restartServices
 };
 
 

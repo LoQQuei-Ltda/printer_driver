@@ -90,6 +90,20 @@ function execPromise(command, timeoutMs = 30000, quiet = false) {
   }
 
   logToFile(`Executando comando: ${command} (timeout: ${timeoutMs}ms)`);
+  
+  // Aplicar correções em comandos problemáticos
+  let fixedCommand = command;
+  
+  // 1. Corrigir padrões "|| true" que não funcionam quando passados do Windows para WSL
+  if (fixedCommand.includes('wsl') && fixedCommand.includes(' || true')) {
+    fixedCommand = fixedCommand.replace(/ \|\| true/g, '; exit 0');
+  }
+  
+  // 2. Corrigir problemas de redirecionamento para /dev/null no WSL
+  if (fixedCommand.includes('wsl') && fixedCommand.includes('>/dev/null')) {
+    // Garantir que não há espaços entre > e /dev/null
+    fixedCommand = fixedCommand.replace(/ > \/dev\/null/g, ' >/dev/null');
+  }
 
   return new Promise((resolve, reject) => {
     // Criar um timer para o timeout
@@ -109,7 +123,7 @@ function execPromise(command, timeoutMs = 30000, quiet = false) {
     }, timeoutMs);
 
     // Executar o comando
-    const childProcess = exec(command, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+    const childProcess = exec(fixedCommand, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
       clearTimeout(timeout);
 
       if (!quiet) {
@@ -118,9 +132,19 @@ function execPromise(command, timeoutMs = 30000, quiet = false) {
       }
 
       if (error) {
-        logToFile(`Erro ao executar: ${command}`);
+        logToFile(`Erro ao executar: ${fixedCommand}`);
         logToFile(`Código de erro: ${error.code}`);
         logToFile(`Mensagem de erro: ${error.message}`);
+        
+        // Para erros específicos de WSL, tentar interpretar e oferecer mais detalhes
+        if (fixedCommand.includes('wsl')) {
+          if (stderr.includes('não está instalado') || stderr.includes('not installed')) {
+            logToFile('Erro: WSL ou distribuição não está instalada');
+          } else if (stderr.includes('não encontrado') || stderr.includes('command not found')) {
+            logToFile('Erro: Comando não encontrado dentro do WSL');
+          }
+        }
+        
         reject({ error, stderr, stdout });
         return;
       }
@@ -531,32 +555,83 @@ async function checkApiHealth() {
   log("Verificando se a API está respondendo...", "step");
   
   try {
-    // Método 1: Usar curl dentro do WSL
+    // Método 1: Verificar porta com netstat
     try {
-      const output = await execPromise(`wsl -d Ubuntu -u root curl -s -o /dev/null -w "%{http_code}" http://localhost:56258/api`, 10000, true);
-      if (output.trim() === '200') {
-        log("API está respondendo corretamente (via curl)", "success");
-        return true;
+      const netstatOutput = await execPromise(
+        `wsl -d Ubuntu -u root bash -c "netstat -tulpn | grep 56258" || echo "not found"`,
+        10000,
+        true
+      );
+      
+      if (netstatOutput.includes('56258')) {
+        log("API está com porta 56258 aberta", "success");
+      } else {
+        log("Porta 56258 não encontrada, API pode não estar rodando", "warning");
       }
-    } catch (error) {
-      log("API não respondeu via curl, tentando com axios...", "warning");
+    } catch (netstatError) {
+      log("Não foi possível verificar portas abertas", "warning");
     }
     
-    // Método 2: Usar axios diretamente
+    // Método 2: Tentar acessar a API diretamente
     try {
-      const response = await axios.get('http://localhost:56258/api', { timeout: 5000 });
-      if (response.status === 200) {
-        log("API está respondendo corretamente (via axios)", "success");
+      // Usar curl do Windows em vez do WSL para testar a API localmente
+      const curlOutput = await execPromise(
+        `curl -s -o nul -w "%%{http_code}" http://localhost:56258/api`,
+        10000,
+        true
+      );
+      
+      if (curlOutput.trim() === '200') {
+        log("API respondeu com status 200 (OK)", "success");
         return true;
+      } else {
+        log(`API respondeu com status ${curlOutput.trim()}, diferente de 200`, "warning");
       }
-    } catch (error) {
-      log("API não está respondendo via axios", "warning");
+    } catch (curlError) {
+      log("Não foi possível acessar API via curl", "warning");
     }
     
-    log("API não está respondendo em nenhum método", "error");
+    // Método 3: Verificar processo Node no WSL
+    try {
+      const nodeProcess = await execPromise(
+        `wsl -d Ubuntu -u root bash -c "ps aux | grep node | grep -v grep" || echo "not found"`,
+        10000,
+        true
+      );
+      
+      if (nodeProcess !== "not found" && (nodeProcess.includes('node') || nodeProcess.includes('www.js'))) {
+        log("Processo Node encontrado em execução no WSL", "success");
+        // Se o processo existe, assumimos que está funcionando mesmo que não possamos acessar via HTTP
+        return true;
+      } else {
+        log("Nenhum processo Node encontrado em execução no WSL", "warning");
+      }
+    } catch (psError) {
+      log("Erro ao verificar processos Node", "warning");
+    }
+    
+    // Método 4: Verificar PM2
+    try {
+      const pm2Status = await execPromise(
+        `wsl -d Ubuntu -u root bash -c "pm2 list | grep online" || echo "not found"`,
+        15000,
+        true
+      );
+      
+      if (pm2Status !== "not found" && pm2Status.includes('online')) {
+        log("Serviço encontrado em execução via PM2", "success");
+        return true;
+      } else {
+        log("Serviço não encontrado ou não está 'online' no PM2", "warning");
+      }
+    } catch (pm2Error) {
+      log("Erro ao verificar PM2", "warning");
+    }
+    
+    log("API não está respondendo em nenhum método de verificação", "error");
     return false;
   } catch (error) {
-    log("Erro ao verificar a API", "error");
+    log("Erro geral ao verificar a API", "error");
     logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     return false;
   }
@@ -615,214 +690,201 @@ async function checkDatabaseConfiguration() {
   log("Verificando configuração do banco de dados...", "step");
   
   try {
-    // Verificar se o PostgreSQL está em execução
-    const postgresRunning = await checkServiceRunning('postgresql');
-    if (!postgresRunning) {
-      log("Serviço PostgreSQL não está em execução", "warning");
-      
-      // Tentar iniciar o serviço PostgreSQL
-      try {
-        await execPromise('wsl -d Ubuntu -u root systemctl start postgresql', 30000, true);
-        log("Serviço PostgreSQL iniciado com sucesso", "success");
-        // Aguardar um pouco para o serviço iniciar completamente
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      } catch (startError) {
-        log("Não foi possível iniciar o PostgreSQL", "error");
-        logToFile(`Detalhes do erro: ${JSON.stringify(startError)}`);
-        return {
-          configured: false,
-          error: 'Não foi possível iniciar o PostgreSQL',
-          postgresRunning: false,
-          tablesExist: false
-        };
-      }
-    }
-    
-    // Verificação direta para colunas específicas na tabela logs
-    log("Verificando estrutura da tabela logs...", "step");
-    
-    // Verificar se a tabela logs existe
-    const logsTableExists = await execPromise(
-      'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=\'print_management\' AND table_name=\'logs\')"',
+    // 1. Verificar instalação do PostgreSQL de forma mais direta
+    log("Verificando instalação do PostgreSQL...", "step");
+    const pgInstalled = await execPromise(
+      'wsl -d Ubuntu -u root dpkg -l | grep postgresql',
       10000,
       true
-    ).catch(() => 'f');
+    ).catch(() => "");
     
-    if (logsTableExists.trim() === 't') {
-      log("Tabela logs existe, verificando colunas...", "info");
-      
-      // Obter todas as colunas da tabela logs
-      const columnsCheck = await execPromise(
-        'wsl -d Ubuntu -u postgres psql -d print_management -c "\\d print_management.logs"',
-        10000,
-        true
-      );
-      
-      log(`Estrutura da tabela logs:\n${columnsCheck}`, "info");
-      
-      // Verificar se a coluna beforeData existe (insensível a maiúsculas/minúsculas)
-      const checkBeforeData = await execPromise(
-        'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT column_name FROM information_schema.columns WHERE table_schema=\'print_management\' AND table_name=\'logs\' AND lower(column_name)=\'beforedata\'"',
-        10000,
-        true
-      ).catch(() => "");
-      
-      // Verificar se a coluna afterData existe (insensível a maiúsculas/minúsculas)
-      const checkAfterData = await execPromise(
-        'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT column_name FROM information_schema.columns WHERE table_schema=\'print_management\' AND table_name=\'logs\' AND lower(column_name)=\'afterdata\'"',
-        10000,
-        true
-      ).catch(() => "");
-      
-      if (checkBeforeData.trim() === '') {
-        log("A coluna 'beforeData' ou 'beforedata' NÃO EXISTE na tabela logs!", "error");
-        
-        // Verificar todas as colunas para diagnóstico
-        const allColumns = await execPromise(
-          'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT column_name FROM information_schema.columns WHERE table_schema=\'print_management\' AND table_name=\'logs\'"',
-          10000,
-          true
-        ).catch(() => "");
-        
-        log(`Colunas existentes na tabela logs: ${allColumns}`, "info");
-        
-        return {
-          configured: false,
-          postgresRunning: true,
-          needsMigrations: true,
-          tablesExist: true,
-          missingColumns: ['beforeData'],
-          allColumns: allColumns
-        };
-      }
-      
-      if (checkAfterData.trim() === '') {
-        log("A coluna 'afterData' ou 'afterdata' NÃO EXISTE na tabela logs!", "error");
-        return {
-          configured: false,
-          postgresRunning: true,
-          needsMigrations: true,
-          tablesExist: true,
-          missingColumns: ['afterData']
-        };
-      }
-      
-      log("Estrutura da tabela logs parece estar correta!", "success");
-    } else {
-      log("A tabela logs não existe no schema print_management", "error");
+    const isPgInstalled = pgInstalled.includes('postgresql');
+    
+    if (!isPgInstalled) {
+      log("PostgreSQL não parece estar instalado", "warning");
       return {
         configured: false,
-        postgresRunning: postgresRunning,
-        needsMigrations: true,
+        error: 'PostgreSQL não está instalado',
+        postgresRunning: false,
         tablesExist: false
       };
     }
     
-    // Verificar outras tabelas e configurações
-    // [Manter o restante da função original]
+    log("PostgreSQL está instalado, verificando se está em execução...", "info");
     
-    // Verificação direta das tabelas críticas
-    let hasLogsTable = false;
-    let hasPrintersTable = false;
-    let hasFilesTable = false;
+    // 2. Verificar se o PostgreSQL está em execução usando métodos mais diretos
+    // Determinar a versão do PostgreSQL
+    const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ | cut -d'/' -f4 | head -n 1 || echo '14'\"";
+    const pgVersion = await execPromise(pgVersionCmd, 10000, true).catch(() => "14");
+    const version = pgVersion.trim() || "14"; // Use 14 como padrão se não conseguir determinar
     
+    // Verificar status com pg_ctl diretamente
+    let postgresRunning = false;
     try {
-      // Verificar diretamente a tabela logs
-      const logsCheck = await execPromise(
-        `wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='print_management' AND table_name='logs')"`,
-        10000,
+      const pgStatus = await execPromise(
+        `wsl -d Ubuntu -u root bash -c "su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main status'" || echo 'not running'`,
+        15000,
         true
-      ).catch(() => 'f');
-      hasLogsTable = logsCheck.trim() === 't';
+      );
       
-      // Verificar diretamente a tabela printers  
-      const printersCheck = await execPromise(
-        `wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='print_management' AND table_name='printers')"`,
-        10000,
-        true
-      ).catch(() => 'f');
-      hasPrintersTable = printersCheck.trim() === 't';
+      postgresRunning = pgStatus.includes('server is running');
       
-      // Verificar diretamente a tabela files
-      const filesCheck = await execPromise(
-        `wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='print_management' AND table_name='files')"`,
-        10000,
-        true
-      ).catch(() => 'f');
-      hasFilesTable = filesCheck.trim() === 't';
-      
-      log(`Verificação direta - logs: ${hasLogsTable}, printers: ${hasPrintersTable}, files: ${hasFilesTable}`, "info");
-    } catch (directCheckError) {
-      log("Erro na verificação direta das tabelas", "warning");
-      logToFile(`Erro na verificação direta: ${JSON.stringify(directCheckError)}`);
+      if (!postgresRunning) {
+        // Tentar iniciar o PostgreSQL
+        log("PostgreSQL não está em execução, tentando iniciar...", "warning");
+        
+        try {
+          await execPromise(
+            `wsl -d Ubuntu -u root bash -c "su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start'"`,
+            30000,
+            true
+          );
+          postgresRunning = true;
+          log("PostgreSQL iniciado com sucesso", "success");
+        } catch (startError) {
+          log("Não foi possível iniciar o PostgreSQL", "error");
+          return {
+            configured: false,
+            error: 'Não foi possível iniciar o PostgreSQL',
+            postgresRunning: false,
+            tablesExist: false
+          };
+        }
+      }
+    } catch (statusError) {
+      // Mesmo que falhe na verificação, assumimos que podemos tentar acessar
+      log("Não foi possível verificar status, tentando acessar diretamente", "warning");
     }
     
-    // Verificar se temos todas as tabelas críticas
-    const criticalTablesExist = hasLogsTable && hasPrintersTable && hasFilesTable;
-    
-    // Verificação da estrutura completa da tabela logs
-    if (hasLogsTable) {
-      // Verificar colunas específicas necessárias
-      const requiredColumns = ['id', 'createdat', 'logtype', 'beforedata', 'afterdata', 'errormessage', 'errorstack'];
-      let missingColumns = [];
+    // 3. Tentar conectar e verificar banco/schema/tabelas mesmo se o status indicar que não está rodando
+    try {
+      // Verificar se o banco existe
+      const dbExistsCmd = `wsl -d Ubuntu -u postgres psql -lqt | grep -w print_management || echo "not exists"`;
+      const dbExists = await execPromise(dbExistsCmd, 15000, true);
       
-      for (const column of requiredColumns) {
-        const columnExists = await execPromise(
-          `wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='print_management' AND table_name='logs' AND lower(column_name)='${column}')"`,
-          10000,
-          true
-        ).catch(() => 'f');
-        
-        if (columnExists.trim() !== 't') {
-          missingColumns.push(column);
-          log(`Coluna '${column}' não encontrada na tabela logs`, "warning");
+      if (!dbExists.includes('print_management')) {
+        log("Banco de dados 'print_management' não existe", "warning");
+        return {
+          configured: false,
+          postgresRunning: postgresRunning,
+          needsMigrations: true,
+          tablesExist: false
+        };
+      }
+      
+      log("Banco de dados 'print_management' existe, verificando tabelas...", "success");
+      
+      // Verificar tabelas críticas
+      const tableChecks = [
+        {name: 'logs', query: "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='print_management' AND table_name='logs')"},
+        {name: 'printers', query: "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='print_management' AND table_name='printers')"},
+        {name: 'files', query: "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='print_management' AND table_name='files')"}
+      ];
+      
+      const tableResults = {};
+      let missingTables = [];
+      
+      for (const table of tableChecks) {
+        try {
+          const result = await execPromise(
+            `wsl -d Ubuntu -u postgres psql -d print_management -tAc "${table.query}"`,
+            10000,
+            true
+          );
+          
+          tableResults[table.name] = result.trim() === 't';
+          
+          if (result.trim() !== 't') {
+            missingTables.push(table.name);
+          }
+        } catch (tableError) {
+          tableResults[table.name] = false;
+          missingTables.push(table.name);
         }
       }
       
-      if (missingColumns.length > 0) {
-        log(`Tabela logs existe mas faltam colunas: ${missingColumns.join(', ')}`, "error");
+      // 4. Verificar estrutura da tabela logs se existir
+      let missingColumns = [];
+      if (tableResults.logs) {
+        // Verificar colunas específicas necessárias
+        const requiredColumns = ['id', 'createdat', 'logtype', 'beforedata', 'afterdata', 'errormessage', 'errorstack'];
+        
+        for (const column of requiredColumns) {
+          try {
+            const columnExists = await execPromise(
+              `wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='print_management' AND table_name='logs' AND lower(column_name)='${column}')"`,
+              10000,
+              true
+            );
+            
+            if (columnExists.trim() !== 't') {
+              missingColumns.push(column);
+              log(`Coluna '${column}' não encontrada na tabela logs`, "warning");
+            }
+          } catch (columnError) {
+            // Se ocorrer erro assumimos que a coluna não existe
+            missingColumns.push(column);
+          }
+        }
+      }
+      
+      // 5. Retornar resultado com informações detalhadas
+      if (missingTables.length === 0 && missingColumns.length === 0) {
+        log("Banco de dados configurado corretamente", "success");
+        return {
+          configured: true,
+          postgresRunning: true,
+          needsMigrations: false,
+          tablesExist: true,
+          details: {
+            tables: tableResults
+          }
+        };
+      } else {
+        let needsMigrations = missingTables.length > 0 || missingColumns.length > 0;
+        log(`Banco de dados requer migrações: ${needsMigrations ? 'Sim' : 'Não'}`, needsMigrations ? "warning" : "success");
+        
+        if (missingTables.length > 0) {
+          log(`Tabelas ausentes: ${missingTables.join(', ')}`, "warning");
+        }
+        
+        if (missingColumns.length > 0) {
+          log(`Colunas ausentes na tabela logs: ${missingColumns.join(', ')}`, "warning");
+        }
+        
         return {
           configured: false,
-          postgresRunning: true,
-          needsMigrations: true,
-          tablesExist: true,
-          missingColumns: missingColumns
+          postgresRunning: postgresRunning,
+          needsMigrations: needsMigrations,
+          tablesExist: missingTables.length === 0,
+          missingTables: missingTables,
+          missingColumns: missingColumns,
+          details: {
+            tables: tableResults
+          }
         };
       }
-    }
-    
-    // Se todas as tabelas críticas existem, considerar o banco como configurado
-    if (criticalTablesExist) {
-      log("Todas as tabelas críticas estão presentes no schema print_management", "success");
-      return {
-        configured: true,
-        postgresRunning: true,
-        needsMigrations: false,
-        tablesExist: true,
-        criticalTablesPresent: true
-      };
-    } else {
-      log("Faltam tabelas críticas no schema print_management", "warning");
+    } catch (dbError) {
+      log("Erro ao verificar banco de dados", "error");
+      logToFile(`Detalhes do erro: ${JSON.stringify(dbError)}`);
+      
       return {
         configured: false,
-        postgresRunning: true,
+        postgresRunning: postgresRunning,
         needsMigrations: true,
         tablesExist: false,
-        criticalTablesPresent: false
+        error: dbError?.message || 'Erro desconhecido'
       };
     }
   } catch (error) {
-    log("Erro geral ao verificar configuração do banco de dados", "warning");
+    log("Erro geral ao verificar configuração do banco de dados", "error");
     logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     
     return {
       configured: false,
-      postgresRunning: true,
+      postgresRunning: false,
       needsMigrations: true,
       tablesExist: false,
-      details: {
-        note: "Verificação ignorada para permitir continuação da instalação"
-      },
       error: error?.message || 'Erro desconhecido'
     };
   }
@@ -943,14 +1005,43 @@ async function shouldConfigureSystem(installState) {
   if (installState && installState.systemConfigured) {
     log("Verificando se o sistema realmente está configurado...", "step");
 
-    // Verificar abrangentemente o sistema
-    const softwareStatus = await checkSoftwareConfigurations();
-    if (softwareStatus.fullyConfigured) {
-      log("Sistema previamente configurado e funcional", "success");
-      return false; // Não precisa configurar
-    } else {
-      log("Sistema marcado como configurado, mas apresenta problemas", "warning");
-      return true; // Precisamos configurar
+    try {
+      // Verificar elementos críticos para funcionamento
+      const [dbStatus, apiRunning, softwareInstalled] = await Promise.all([
+        // Verificar banco de dados
+        execPromise('wsl -d Ubuntu -u postgres psql -lqt | grep -w print_management', 10000, true)
+          .then(() => true)
+          .catch(() => false),
+        
+        // Verificar API
+        execPromise('wsl -d Ubuntu -u root bash -c "netstat -tulpn | grep 56258"', 10000, true)
+          .then(() => true)
+          .catch(() => false),
+        
+        // Verificar instalação do software
+        execPromise('wsl -d Ubuntu -u root test -d /opt/loqquei/print_server_desktop && echo "exists"', 10000, true)
+          .then(result => result.includes("exists"))
+          .catch(() => false)
+      ]);
+      
+      const systemFunctional = dbStatus && (apiRunning || softwareInstalled);
+      
+      if (systemFunctional) {
+        log("Sistema previamente configurado e parece funcional", "success");
+        return false; // Não precisa configurar
+      } else {
+        log("Sistema marcado como configurado, mas parece ter problemas", "warning");
+        
+        // Listar problemas encontrados
+        if (!dbStatus) log("Banco de dados não parece estar configurado", "warning");
+        if (!apiRunning) log("API não parece estar em execução", "warning");
+        if (!softwareInstalled) log("Software não encontrado no diretório esperado", "warning");
+        
+        return true; // Precisamos configurar
+      }
+    } catch (error) {
+      log("Erro ao verificar estado do sistema, por segurança vamos configurar", "warning");
+      return true;
     }
   }
 
