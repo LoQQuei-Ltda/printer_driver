@@ -632,187 +632,194 @@ async function checkDatabaseConfiguration() {
         return {
           configured: false,
           error: 'Não foi possível iniciar o PostgreSQL',
-          postgresRunning: false
+          postgresRunning: false,
+          tablesExist: false
         };
       }
     }
     
-    // Definir configurações padrão para os bancos de dados
-    const configs = [{
-      name: 'print_server',
-      user: 'print_user',
-      schema: null
-    }, {
-      name: 'print_management',
-      user: 'postgres_print',
-      schema: 'print_management'
-    }];
+    // Verificação direta para colunas específicas na tabela logs
+    log("Verificando estrutura da tabela logs...", "step");
     
-    const results = {};
+    // Verificar se a tabela logs existe
+    const logsTableExists = await execPromise(
+      'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=\'print_management\' AND table_name=\'logs\')"',
+      10000,
+      true
+    ).catch(() => 'f');
     
-    // Verificar cada configuração de banco de dados - usar comando simplificado
-    for (const config of configs) {
-      try {
-        // Verificar se o banco existe
-        const checkDbCmd = `psql -tAc "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname='${config.name}')"`;
-        const checkDb = await execPromise(`wsl -d Ubuntu -u postgres ${checkDbCmd}`, 10000, true);
-        const dbExists = checkDb.trim() === 't';
-        
-        // Verificar se o usuário existe
-        const checkUserCmd = `psql -tAc "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='${config.user}')"`;
-        const checkUser = await execPromise(`wsl -d Ubuntu -u postgres ${checkUserCmd}`, 10000, true);
-        const userExists = checkUser.trim() === 't';
-        
-        // Verificar schema se existir
-        let schemaExists = null;
-        if (config.schema) {
-          try {
-            // Comando simplificado para verificar schema
-            const checkSchemaCmd = `psql -d ${config.name} -tAc "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname='${config.schema}')"`;
-            const checkSchema = await execPromise(`wsl -d Ubuntu -u postgres ${checkSchemaCmd}`, 10000, true);
-            schemaExists = checkSchema.trim() === 't';
-          } catch (schemaError) {
-            log(`Erro ao verificar schema ${config.schema}`, "warning");
-            schemaExists = false;
-          }
-        }
-        
-        results[config.name] = {
-          dbExists,
-          userExists,
-          schemaExists
-        };
-        
-        if (dbExists && userExists && (schemaExists !== false)) {
-          log(`Banco de dados '${config.name}' configurado corretamente`, "success");
-        } else {
-          log(`Banco de dados '${config.name}' não está completamente configurado`, "warning");
-          log(`- Banco existe: ${dbExists ? 'Sim' : 'Não'}`, "info");
-          log(`- Usuário existe: ${userExists ? 'Sim' : 'Não'}`, "info");
-          if (config.schema) {
-            log(`- Schema existe: ${schemaExists ? 'Sim' : 'Não'}`, "info");
-          }
-        }
-      } catch (configError) {
-        log(`Erro ao verificar configuração do banco '${config.name}'`, "warning");
-        logToFile(`Detalhes do erro: ${JSON.stringify(configError)}`);
-        results[config.name] = { 
-          error: configError?.message || 'Erro desconhecido',
-          // Assume valores padrão para evitar erros
-          dbExists: false,
-          userExists: false,
-          schemaExists: false
-        };
-      }
-    }
-    
-    // Verificar acesso ao PostgreSQL - método simplificado
-    try {
-      // Comando simplificado para testar conexão
-      const accessCheck = await execPromise(
-        `wsl -d Ubuntu -u root bash -c "PGPASSWORD=root_print psql -h localhost -U postgres_print -d print_management -c 'SELECT 1' -t"`,
-        15000,
+    if (logsTableExists.trim() === 't') {
+      log("Tabela logs existe, verificando colunas...", "info");
+      
+      // Obter todas as colunas da tabela logs
+      const columnsCheck = await execPromise(
+        'wsl -d Ubuntu -u postgres psql -d print_management -c "\\d print_management.logs"',
+        10000,
         true
       );
       
-      if (accessCheck && accessCheck.includes('1')) {
-        log("Conexão ao banco de dados está funcional", "success");
-        results.accessOk = true;
-      } else {
-        log("Resultado inesperado ao testar conexão", "warning");
-        results.accessOk = false;
-      }
-    } catch (accessError) {
-      log("Não foi possível estabelecer conexão com o banco de dados", "warning");
-      logToFile(`Detalhes do erro de acesso: ${JSON.stringify(accessError)}`);
-      results.accessOk = false;
+      log(`Estrutura da tabela logs:\n${columnsCheck}`, "info");
       
-      // Tentar corrigir pg_hba.conf
-      try {
-        // Identificar a versão do PostgreSQL
-        const pgVersion = await execPromise(
-          `wsl -d Ubuntu -u root bash -c "find /etc/postgresql -mindepth 1 -maxdepth 1 -type d | sort -r | head -n 1 | xargs basename"`,
+      // Verificar se a coluna beforeData existe (insensível a maiúsculas/minúsculas)
+      const checkBeforeData = await execPromise(
+        'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT column_name FROM information_schema.columns WHERE table_schema=\'print_management\' AND table_name=\'logs\' AND lower(column_name)=\'beforedata\'"',
+        10000,
+        true
+      ).catch(() => "");
+      
+      // Verificar se a coluna afterData existe (insensível a maiúsculas/minúsculas)
+      const checkAfterData = await execPromise(
+        'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT column_name FROM information_schema.columns WHERE table_schema=\'print_management\' AND table_name=\'logs\' AND lower(column_name)=\'afterdata\'"',
+        10000,
+        true
+      ).catch(() => "");
+      
+      if (checkBeforeData.trim() === '') {
+        log("A coluna 'beforeData' ou 'beforedata' NÃO EXISTE na tabela logs!", "error");
+        
+        // Verificar todas as colunas para diagnóstico
+        const allColumns = await execPromise(
+          'wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT column_name FROM information_schema.columns WHERE table_schema=\'print_management\' AND table_name=\'logs\'"',
           10000,
           true
-        );
+        ).catch(() => "");
         
-        if (pgVersion && pgVersion.trim()) {
-          // Caminho para o pg_hba.conf
-          const pgHbaPath = `/etc/postgresql/${pgVersion.trim()}/main/pg_hba.conf`;
-          
-          // Criar configuração mais permissiva
-          const hbaConfig = `
-local   all             postgres                                peer
-local   all             all                                     trust
-host    all             all             127.0.0.1/32            trust
-host    all             all             ::1/128                 trust
-host    all             all             0.0.0.0/0               trust
-`;
-          
-          // Escrever nova configuração
-          await execPromise(
-            `wsl -d Ubuntu -u root bash -c "echo '${hbaConfig}' > ${pgHbaPath}"`,
-            10000,
-            true
-          );
-          
-          // Reiniciar PostgreSQL para aplicar configuração
-          await execPromise('wsl -d Ubuntu -u root systemctl restart postgresql', 30000, true);
-          log("Configuração de acesso corrigida", "success");
-          
-          // Esperar reinicialização
-          await new Promise(resolve => setTimeout(resolve, 5000));
-          
-          // Testar novamente
-          const retryCheck = await execPromise(
-            `wsl -d Ubuntu -u root bash -c "PGPASSWORD=root_print psql -h localhost -U postgres_print -d print_management -c 'SELECT 1' -t"`,
-            15000,
-            true
-          );
-          
-          if (retryCheck && retryCheck.includes('1')) {
-            log("Conexão funcional após correção!", "success");
-            results.accessOk = true;
-          }
-        }
-      } catch (fixError) {
-        log("Não foi possível corrigir a configuração de acesso", "warning");
+        log(`Colunas existentes na tabela logs: ${allColumns}`, "info");
+        
+        return {
+          configured: false,
+          postgresRunning: true,
+          needsMigrations: true,
+          tablesExist: true,
+          missingColumns: ['beforeData'],
+          allColumns: allColumns
+        };
       }
-    }
-    
-    // IMPORTANTE: Forçar a configuração como bem-sucedida para permitir que a instalação continue
-    // Mesmo se o banco não estiver totalmente configurado, o processo prosseguirá
-    const dbBasicsOk = results.print_server && results.print_management && 
-                        (results.accessOk || postgresRunning);
-    
-    if (dbBasicsOk) {
-      log("Banco de dados considerado funcional para continuar instalação", "success");
+      
+      if (checkAfterData.trim() === '') {
+        log("A coluna 'afterData' ou 'afterdata' NÃO EXISTE na tabela logs!", "error");
+        return {
+          configured: false,
+          postgresRunning: true,
+          needsMigrations: true,
+          tablesExist: true,
+          missingColumns: ['afterData']
+        };
+      }
+      
+      log("Estrutura da tabela logs parece estar correta!", "success");
+    } else {
+      log("A tabela logs não existe no schema print_management", "error");
       return {
-        configured: true,
-        postgresRunning: true,
-        details: results
+        configured: false,
+        postgresRunning: postgresRunning,
+        needsMigrations: true,
+        tablesExist: false
       };
     }
     
-    // Determinar se o banco está completamente configurado
-    const allConfigured = results.print_management && 
-                          results.print_management.dbExists && 
-                          results.print_management.userExists &&
-                          (results.print_management.schemaExists !== false) &&
-                          results.accessOk;
+    // Verificar outras tabelas e configurações
+    // [Manter o restante da função original]
     
-    return {
-      configured: allConfigured,
-      postgresRunning: postgresRunning,
-      details: results
-    };
+    // Verificação direta das tabelas críticas
+    let hasLogsTable = false;
+    let hasPrintersTable = false;
+    let hasFilesTable = false;
+    
+    try {
+      // Verificar diretamente a tabela logs
+      const logsCheck = await execPromise(
+        `wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='print_management' AND table_name='logs')"`,
+        10000,
+        true
+      ).catch(() => 'f');
+      hasLogsTable = logsCheck.trim() === 't';
+      
+      // Verificar diretamente a tabela printers  
+      const printersCheck = await execPromise(
+        `wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='print_management' AND table_name='printers')"`,
+        10000,
+        true
+      ).catch(() => 'f');
+      hasPrintersTable = printersCheck.trim() === 't';
+      
+      // Verificar diretamente a tabela files
+      const filesCheck = await execPromise(
+        `wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema='print_management' AND table_name='files')"`,
+        10000,
+        true
+      ).catch(() => 'f');
+      hasFilesTable = filesCheck.trim() === 't';
+      
+      log(`Verificação direta - logs: ${hasLogsTable}, printers: ${hasPrintersTable}, files: ${hasFilesTable}`, "info");
+    } catch (directCheckError) {
+      log("Erro na verificação direta das tabelas", "warning");
+      logToFile(`Erro na verificação direta: ${JSON.stringify(directCheckError)}`);
+    }
+    
+    // Verificar se temos todas as tabelas críticas
+    const criticalTablesExist = hasLogsTable && hasPrintersTable && hasFilesTable;
+    
+    // Verificação da estrutura completa da tabela logs
+    if (hasLogsTable) {
+      // Verificar colunas específicas necessárias
+      const requiredColumns = ['id', 'createdat', 'logtype', 'beforedata', 'afterdata', 'errormessage', 'errorstack'];
+      let missingColumns = [];
+      
+      for (const column of requiredColumns) {
+        const columnExists = await execPromise(
+          `wsl -d Ubuntu -u postgres psql -d print_management -tAc "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='print_management' AND table_name='logs' AND lower(column_name)='${column}')"`,
+          10000,
+          true
+        ).catch(() => 'f');
+        
+        if (columnExists.trim() !== 't') {
+          missingColumns.push(column);
+          log(`Coluna '${column}' não encontrada na tabela logs`, "warning");
+        }
+      }
+      
+      if (missingColumns.length > 0) {
+        log(`Tabela logs existe mas faltam colunas: ${missingColumns.join(', ')}`, "error");
+        return {
+          configured: false,
+          postgresRunning: true,
+          needsMigrations: true,
+          tablesExist: true,
+          missingColumns: missingColumns
+        };
+      }
+    }
+    
+    // Se todas as tabelas críticas existem, considerar o banco como configurado
+    if (criticalTablesExist) {
+      log("Todas as tabelas críticas estão presentes no schema print_management", "success");
+      return {
+        configured: true,
+        postgresRunning: true,
+        needsMigrations: false,
+        tablesExist: true,
+        criticalTablesPresent: true
+      };
+    } else {
+      log("Faltam tabelas críticas no schema print_management", "warning");
+      return {
+        configured: false,
+        postgresRunning: true,
+        needsMigrations: true,
+        tablesExist: false,
+        criticalTablesPresent: false
+      };
+    }
   } catch (error) {
     log("Erro geral ao verificar configuração do banco de dados", "warning");
     logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     
     return {
-      configured: true,
+      configured: false,
       postgresRunning: true,
+      needsMigrations: true,
+      tablesExist: false,
       details: {
         note: "Verificação ignorada para permitir continuação da instalação"
       },
@@ -1160,7 +1167,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await checkDatabaseConfiguration());
+    console.log(await checkIfDefaultUserConfigured());
     process.exit(1)
   })()
 }

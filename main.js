@@ -2812,7 +2812,11 @@ ipcMain.on('listar-arquivos', async (event) => {
     let files = null
     let response
     try {
-      response = await axios.get(`${appConfig.apiLocalUrl}/files`);
+      response = await axios.get(`${appConfig.apiLocalUrl}/files`, {
+        headers: {
+          'accept': 'application/json'
+        }
+      });
     } catch (error) {
       console.error(error.data);
     }

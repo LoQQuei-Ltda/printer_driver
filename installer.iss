@@ -135,7 +135,7 @@ Filename: "cmd.exe"; Parameters: "/c powershell -ExecutionPolicy Bypass -File ""
 Filename: "cmd.exe"; Parameters: "/c powershell -ExecutionPolicy Bypass -File ""{app}\scripts\update_wsl.ps1"" -NonInteractive"; Flags: runhidden nowait; StatusMsg: "{cm:UpdatingWSL}"; Check: IsUpgrade or IsSilent
 
 ; Execução da aplicação após instalação - automática, sem perguntar
-Filename: "{app}\{#MyAppExeName}"; Flags: nowait postinstall runasoriginaluser
+Filename: "{app}\{#MyAppExeName}"; Flags: nowait postinstall shellexec runascurrentuser; Verb: runas
 
 [UninstallRun]
 ; Parar a aplicação antes da desinstalação
