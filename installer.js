@@ -2936,11 +2936,21 @@ module.exports = {
         
         // Salvar configuração para reinicialização automática
         await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 save"', 15000, false);
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "grep -q 'Auto start PM2' ~/.bashrc || echo '\n# Início: Auto start PM2\nif command -v pm2 &> /dev/null; then\n  pm2 resurrect || pm2 start /opt/loqquei/print_server_desktop/ecosystem.config.js\nfi\n# Fim: Auto start PM2' >> ~/.bashrc"`,
+          15000,
+          true
+        );
         verification.log('Configuração PM2 salva', 'success');
         
         // Configurar inicialização automática
         try {
           await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 startup || true"', 20000, false);
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "grep -q 'Auto start PM2' ~/.bashrc || echo '\n# Início: Auto start PM2\nif command -v pm2 &> /dev/null; then\n  pm2 resurrect || pm2 start /opt/loqquei/print_server_desktop/ecosystem.config.js\nfi\n# Fim: Auto start PM2' >> ~/.bashrc"`,
+            15000,
+            true
+          );
           verification.log('Inicialização automática configurada', 'success');
         } catch (startupError) {
           verification.log('Erro ao configurar inicialização automática, continuando...', 'warning');
