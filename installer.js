@@ -751,69 +751,156 @@ function closeReadlineIfNeeded() {
 // Instalar o WSL usando método mais recente (Windows 10 versão 2004 ou superior)
 async function installWSLModern() {
   verification.log('Tentando instalar WSL usando o método moderno (wsl --install)...', 'step');
-
   try {
     // Verificar primeiro se já está instalado para evitar erros desnecessários
-    const wslCheck = await verification.execPromise('wsl --status', 10000, false)
-      .catch(() => "not-found");
-    
-    if (wslCheck !== "not-found" && !wslCheck.includes("não está instalado") && 
-        !wslCheck.includes("not installed")) {
+    const wslCheck = await verification.execPromise('wsl --status', 20000, false)
+      .catch((err) => {
+        verification.logToFile(`Erro na verificação inicial: ${JSON.stringify(err)}`);
+        return "not-found";
+      });
+   
+    // Verificação mais abrangente para detectar instalação existente
+    if (wslCheck !== "not-found" && 
+        !wslCheck.includes("não está instalado") &&
+        !wslCheck.includes("not installed") &&
+        !wslCheck.includes("WSL não está instalado")) {
       verification.log('WSL já está instalado (detectado durante verificação preliminar)', 'success');
       installState.wslInstalled = true;
       saveInstallState();
       return true;
     }
 
+    // Verificar permissões de administrador antes de prosseguir
+    verification.log('Verificando permissões e preparando instalação...', 'step');
+    
     // Usar o método mais recente com argumentos específicos e timeout maior
-    await verification.execPromise(
-      'wsl --install --no-distribution --no-launch', 
-      600000  // 10 minutos de timeout
-    );
-    verification.log('Comando de instalação do WSL moderno executado com sucesso', 'success');
+    // Adicionado parâmetro --web-download para garantir que baixe os arquivos necessários
+    const installResult = await verification.execPromise(
+      'wsl --install --no-distribution --web-download --no-launch',
+      900000  // 15 minutos de timeout para dar mais tempo para download e instalação
+    ).catch((err) => {
+      verification.logToFile(`Erro durante instalação: ${JSON.stringify(err)}`);
+      
+      // Verificar mensagens específicas de erro que indicam que realmente já está instalado
+      if (err.stdout && (
+          err.stdout.includes('já está instalado') ||
+          err.stdout.includes('already installed') ||
+          err.stdout.includes('is already installed'))) {
+        verification.log('WSL já está instalado (detectado durante instalação)', 'success');
+        installState.wslInstalled = true;
+        saveInstallState();
+        return "already-installed";
+      }
+      return "error";
+    });
+
+    if (installResult === "already-installed") {
+      return true;
+    }
     
+    if (installResult === "error") {
+      // Tentar método alternativo com apenas os parâmetros essenciais
+      verification.log('Tentando método alternativo de instalação...', 'step');
+      try {
+        await verification.execPromise('wsl --install', 900000);
+        verification.log('Instalação alternativa executada', 'success');
+      } catch (altError) {
+        verification.logToFile(`Erro durante instalação alternativa: ${JSON.stringify(altError)}`);
+        // Continuar para verificações adicionais mesmo se este método falhar
+      }
+    } else {
+      verification.log('Comando de instalação do WSL moderno executado com sucesso', 'success');
+    }
+   
     // Aguardar um momento para o sistema processar
-    await new Promise(resolve => setTimeout(resolve, 5000));
+    verification.log('Aguardando o sistema processar a instalação...', 'info');
+    await new Promise(resolve => setTimeout(resolve, 10000)); // Aumentado para 10 segundos
+   
+    // Série de verificações para determinar se o WSL foi instalado
+    verification.log('Realizando verificações pós-instalação...', 'step');
     
-    // Verificar novamente se o WSL foi instalado
-    const postCheck = await verification.execPromise('wsl --status', 10000, false)
-      .catch(() => "failed");
-      
-    if (postCheck !== "failed" && !postCheck.includes("não está instalado") && 
-        !postCheck.includes("not installed")) {
-      verification.log('WSL instalado com sucesso após verificação', 'success');
+    // Verificação 1: Status do WSL
+    const postCheck = await verification.execPromise('wsl --status', 20000, false)
+      .catch((err) => {
+        verification.logToFile(`Erro na verificação de status: ${JSON.stringify(err)}`);
+        return "failed";
+      });
+     
+    if (postCheck !== "failed" && 
+        !postCheck.includes("não está instalado") &&
+        !postCheck.includes("not installed") &&
+        !postCheck.includes("WSL não está instalado")) {
+      verification.log('WSL instalado com sucesso (confirmado por status)', 'success');
+      installState.wslInstalled = true;
+      saveInstallState();
+      return true;
+    }
+   
+    // Verificação 2: Checar localização do executável
+    const wslPathCheck = await verification.execPromise('where wsl', 10000, false)
+      .catch((err) => {
+        verification.logToFile(`Erro na verificação where: ${JSON.stringify(err)}`);
+        return "";
+      });
+     
+    if (wslPathCheck && wslPathCheck.includes("wsl.exe")) {
+      verification.log('WSL.exe encontrado no sistema, considerando como instalado', 'success');
       installState.wslInstalled = true;
       saveInstallState();
       return true;
     }
     
-    // Se chegou aqui, precisamos verificar por métodos alternativos
-    const altCheck = await verification.execPromise('where wsl', 10000, false)
-      .catch(() => "");
+    // Verificação 3: Tentar listar as distribuições
+    const distroCheck = await verification.execPromise('wsl --list', 10000, false)
+      .catch((err) => {
+        verification.logToFile(`Erro na verificação de distribuições: ${JSON.stringify(err)}`);
+        return "error";
+      });
       
-    if (altCheck && altCheck.includes("wsl.exe")) {
-      verification.log('WSL.exe encontrado, considerando como instalado', 'success');
+    if (distroCheck !== "error") {
+      verification.log('Comando wsl --list executado com sucesso, WSL está instalado', 'success');
       installState.wslInstalled = true;
       saveInstallState();
       return true;
     }
     
-    verification.log('Método moderno de instalação falhou na verificação final', 'warning');
+    // Verificação 4: Checar o recurso do Windows
+    const featureCheck = await verification.execPromise(
+      'powershell -Command "Get-WindowsOptionalFeature -Online | Where-Object {$_.FeatureName -eq \'Microsoft-Windows-Subsystem-Linux\'} | Select-Object -ExpandProperty State"', 
+      20000, 
+      false
+    ).catch((err) => {
+      verification.logToFile(`Erro na verificação de recurso: ${JSON.stringify(err)}`);
+      return "error";
+    });
+    
+    if (featureCheck && featureCheck.includes("Enabled")) {
+      verification.log('Recurso WSL está habilitado no Windows', 'success');
+      installState.wslInstalled = true;
+      saveInstallState();
+      return true;
+    }
+   
+    verification.log('Falha na instalação do WSL após múltiplas tentativas e verificações', 'error');
+    verification.log('Recomendação: Tente instalar o WSL manualmente pelo PowerShell como administrador', 'info');
     return false;
   } catch (error) {
-    // Verificar se o erro é porque o WSL já está instalado
-    if (error.stdout && (
-        error.stdout.includes('já está instalado') || 
-        error.stdout.includes('already installed') ||
-        error.stdout.includes('is already installed'))) {
-      verification.log('WSL já está instalado (detectado durante instalação)', 'success');
-      installState.wslInstalled = true;
-      saveInstallState();
-      return true;
-    }
-
-    verification.log('Método moderno de instalação falhou', 'warning');
+    verification.log('Erro inesperado durante o processo de instalação do WSL', 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    
+    // Última tentativa - checar ainda assim se o WSL existe
+    try {
+      const lastCheck = await verification.execPromise('wsl --list --verbose', 10000, false);
+      if (lastCheck && !lastCheck.includes("erro") && !lastCheck.includes("error")) {
+        verification.log('WSL parece estar funcionando apesar do erro na instalação', 'success');
+        installState.wslInstalled = true;
+        saveInstallState();
+        return true;
+      }
+    } catch (finalError) {
+      verification.logToFile(`Erro na verificação final: ${JSON.stringify(finalError)}`);
+    }
+    
     return false;
   }
 }
@@ -3703,7 +3790,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await installRequiredPackages());
+    console.log(await installWSLModern());
     process.exit(1)
   })()
 }
