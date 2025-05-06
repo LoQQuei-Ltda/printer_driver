@@ -4486,52 +4486,14 @@ async function installSystem() {
       verification.log('Sistema configurado com sucesso!', 'success');
     }
 
-    // === FINAL VERIFICATION ===
-    // Verificar API final
-    verification.log('Verificando se a API está respondendo...', 'step');
-    const apiHealth = await verification.checkApiHealth();
-
-    if (!apiHealth) {
-      verification.log('API não está respondendo. Tentando reiniciar o serviço...', 'warning');
-      try {
-        await installComponent('api');
-
-        // Aguardar inicialização do serviço
-        verification.log('Aguardando inicialização do serviço...', 'info');
-        await new Promise(resolve => setTimeout(resolve, 15000));
-
-        // Verificar novamente
-        const apiRecheckHealth = await verification.checkApiHealth();
-        if (!apiRecheckHealth) {
-          verification.log('API ainda não está respondendo após reinicialização.', 'warning');
-          verification.log('Dica: Você pode reiniciar o computador para resolver este problema.', 'warning');
-        } else {
-          verification.log('API está respondendo corretamente após reinicialização!', 'success');
-        }
-      } catch (error) {
-        verification.log(`Erro ao reiniciar serviço: ${error.message || JSON.stringify(error)}`, 'error');
-        verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-      }
-    } else {
-      verification.log('API está respondendo corretamente!', 'success');
-    }
-
-    // Verificar impressora virtual
-    verification.log('Verificando impressora virtual...', 'step');
-    const printerStatus = await verification.checkWindowsPrinterInstalled();
+    // === VERIFICAÇÃO RECURSIVA E CORREÇÃO DE PROBLEMAS ===
+    verification.log('Iniciando verificação e correção automática de componentes com problemas...', 'header');
+    const verificationResult = await verifyAndFixInstallation(0, 5);
     
-    if (!printerStatus || !printerStatus.installed) {
-      verification.log('Impressora virtual não detectada, instalando...', 'warning');
-      const printerInstalled = await installWindowsPrinter();
-      
-      if (printerInstalled) {
-        verification.log('Impressora virtual instalada com sucesso!', 'success');
-      } else {
-        verification.log('Não foi possível instalar a impressora virtual automaticamente.', 'warning');
-        verification.log('Dica: Você pode tentar reiniciar o computador e executar o instalador novamente.', 'info');
-      }
+    if (verificationResult.warnings) {
+      verification.log('A instalação foi concluída, mas podem existir alguns problemas. Recomendamos reiniciar o computador e executar o instalador novamente caso encontre problemas.', 'warning');
     } else {
-      verification.log('Impressora virtual já está instalada!', 'success');
+      verification.log('Todos os componentes foram instalados e verificados com sucesso!', 'success');
     }
 
     // Informações de acesso
@@ -4546,7 +4508,7 @@ async function installSystem() {
       await askQuestion('Pressione ENTER para finalizar a instalação...');
     }
 
-    return { success: true, message: 'Instalação concluída com sucesso!' };
+    return { success: true, message: 'Instalação concluída com sucesso!', warnings: verificationResult.warnings };
   } catch (error) {
     let errorMessage = "Erro desconhecido";
 
@@ -4573,6 +4535,155 @@ async function installSystem() {
   } finally {
     // Fechar readline apenas se não estiver em Electron e se existir
     closeReadlineIfNeeded();
+  }
+}
+
+async function verifyAndFixInstallation(iterationCount = 0, maxIterations = 5) {
+  if (iterationCount >= maxIterations) {
+    log('Atingido o número máximo de verificações recursivas. Alguns componentes podem não estar instalados corretamente.', 'warning');
+    return { success: true, message: 'Instalação concluída, mas com possíveis problemas', warnings: true };
+  }
+
+  log(`Verificando instalação (verificação ${iterationCount + 1}/${maxIterations})...`, 'header');
+
+  // Verificar o estado atual do sistema
+  const systemStatus = await verification.checkSystemStatus();
+  
+  // Verificar se o sistema está totalmente configurado
+  if (systemStatus.systemConfigured && systemStatus.softwareStatus && systemStatus.softwareStatus.fullyConfigured) {
+    log('Verificação completa: Sistema está corretamente configurado!', 'success');
+    return { success: true, message: 'Instalação concluída com sucesso!' };
+  }
+
+  // Identificar componentes faltantes ou com problemas
+  const missingComponents = [];
+  
+  // Verificar WSL e Ubuntu (componentes básicos) primeiro
+  if (!systemStatus.wslStatus || !systemStatus.wslStatus.installed) {
+    missingComponents.push({ component: 'wsl', maxRetries: 3, retryCount: 0 });
+  } else if (!systemStatus.wslStatus.wsl2) {
+    missingComponents.push({ component: 'wsl2', maxRetries: 3, retryCount: 0 });
+  }
+  
+  if (!systemStatus.ubuntuInstalled) {
+    missingComponents.push({ component: 'ubuntu', maxRetries: 3, retryCount: 0 });
+  }
+  
+  // Verificar usuário padrão
+  if (!systemStatus.userConfigured) {
+    missingComponents.push({ component: 'user', maxRetries: 3, retryCount: 0 });
+  }
+  
+  // Verificar pacotes
+  if (systemStatus.softwareStatus && systemStatus.softwareStatus.packagesStatus) {
+    if (!systemStatus.softwareStatus.packagesStatus.allInstalled) {
+      missingComponents.push({ component: 'packages', maxRetries: 3, retryCount: 0 });
+    }
+  } else {
+    // Se não tem informação sobre pacotes, adicionar por segurança
+    missingComponents.push({ component: 'packages', maxRetries: 3, retryCount: 0 });
+  }
+  
+  // Verificar banco de dados
+  if (!systemStatus.softwareStatus || !systemStatus.softwareStatus.dbStatus || !systemStatus.softwareStatus.dbStatus.configured) {
+    missingComponents.push({ component: 'database', maxRetries: 3, retryCount: 0 });
+  }
+  
+  // Verificar serviços
+  if (systemStatus.softwareStatus && systemStatus.softwareStatus.servicesStatus) {
+    if (!systemStatus.softwareStatus.servicesStatus.allRunning) {
+      missingComponents.push({ component: 'services', maxRetries: 3, retryCount: 0 });
+    }
+  } else {
+    // Se não tem informação sobre serviços, adicionar por segurança
+    missingComponents.push({ component: 'services', maxRetries: 3, retryCount: 0 });
+  }
+  
+  // Verificar CUPS
+  if (systemStatus.softwareStatus && systemStatus.softwareStatus.servicesStatus) {
+    if (systemStatus.softwareStatus.servicesStatus.inactive && 
+        systemStatus.softwareStatus.servicesStatus.inactive.includes('cups')) {
+      missingComponents.push({ component: 'cups', maxRetries: 3, retryCount: 0 });
+    }
+  }
+  
+  // Verificar PM2
+  if (!systemStatus.softwareStatus || !systemStatus.softwareStatus.pm2Running) {
+    missingComponents.push({ component: 'pm2', maxRetries: 3, retryCount: 0 });
+  }
+  
+  // Verificar API
+  if (!systemStatus.softwareStatus || !systemStatus.softwareStatus.apiHealth) {
+    missingComponents.push({ component: 'api', maxRetries: 3, retryCount: 0 });
+  }
+  
+  // Verificar diretório /opt
+  if (!systemStatus.softwareStatus || !systemStatus.softwareStatus.optDirExists) {
+    missingComponents.push({ component: 'software', maxRetries: 3, retryCount: 0 });
+  }
+  
+  // Verificar impressora
+  if (!systemStatus.printerStatus || !systemStatus.printerStatus.installed) {
+    missingComponents.push({ component: 'printer', maxRetries: 3, retryCount: 0 });
+  }
+  
+  // Se não houver componentes faltantes, verificação concluída
+  if (missingComponents.length === 0) {
+    log('Verificação completa: Sistema está configurado corretamente!', 'success');
+    return { success: true, message: 'Instalação concluída com sucesso!' };
+  }
+  
+  // Registrar componentes que precisam ser instalados/corrigidos
+  log(`Foram identificados ${missingComponents.length} componentes que precisam ser instalados ou corrigidos:`, 'warning');
+  missingComponents.forEach((comp, index) => {
+    log(`${index + 1}. ${comp.component}`, 'info');
+  });
+  
+  // Tentar instalar cada componente faltante, com número limitado de tentativas por componente
+  for (const comp of missingComponents) {
+    await installComponentWithRetry(comp.component, comp.maxRetries);
+  }
+  
+  // Pausa entre verificações
+  log('Aguardando 10 segundos antes da próxima verificação...', 'info');
+  await new Promise(resolve => setTimeout(resolve, 10000));
+  
+  // Verificar novamente os componentes recursivamente
+  return await verifyAndFixInstallation(iterationCount + 1, maxIterations);
+}
+
+// Função para instalar um componente com múltiplas tentativas
+async function installComponentWithRetry(component, maxRetries = 3, currentRetry = 0) {
+  if (currentRetry >= maxRetries) {
+    log(`Atingido o número máximo de tentativas (${maxRetries}) para o componente ${component}`, 'error');
+    return false;
+  }
+  
+  log(`Instalando ${component} (tentativa ${currentRetry + 1}/${maxRetries})...`, 'step');
+  
+  try {
+    const result = await installComponent(component);
+    
+    if (result) {
+      log(`Componente ${component} instalado com sucesso!`, 'success');
+      return true;
+    } else {
+      log(`Falha ao instalar ${component}, tentando novamente...`, 'warning');
+      
+      // Pequeno atraso entre as tentativas
+      await new Promise(resolve => setTimeout(resolve, 5000));
+      
+      // Tentar novamente
+      return await installComponentWithRetry(component, maxRetries, currentRetry + 1);
+    }
+  } catch (error) {
+    log(`Erro ao instalar ${component}: ${error.message || 'Erro desconhecido'}`, 'error');
+    
+    // Pequeno atraso entre as tentativas
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Tentar novamente
+    return await installComponentWithRetry(component, maxRetries, currentRetry + 1);
   }
 }
 
