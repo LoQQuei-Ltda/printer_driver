@@ -1073,6 +1073,7 @@ async function checkIfDefaultUserConfigured() {
     log('Usuário "print_user" está configurado corretamente como padrão no WSL', 'success');
     return true;
   } catch (error) {
+    logToFile('Erro ao verificar usuário padrão: ', JSON.stringify(error));
     log('Falha ao verificar a configuração do usuário padrão', 'error');
     return false;
   }
