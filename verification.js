@@ -1055,7 +1055,7 @@ async function checkDatabaseConfiguration() {
       error: error?.message || 'Erro desconhecido'
     };
   }
-}uste
+}
 
 // Realiza uma verificação abrangente de todas as configurações do software
 async function checkSoftwareConfigurations() {

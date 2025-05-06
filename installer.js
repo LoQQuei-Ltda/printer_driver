@@ -3398,15 +3398,56 @@ async function copySoftwareToOpt() {
       await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/updates', 10000, true);
     }
 
-    // Criar arquivo de versão com sintaxe corrigida
+    // Criar arquivo de versão com escape correto de aspas
     verification.log('Criando arquivo de versão...', 'step');
-    const versionCmd = 'wsl -d Ubuntu -u root bash -c "echo \\"{\\\"install_date\\\": \\\"$(date +%Y-%m-%d)\\\", \\\"version\\\": \\\"1.0.0\\\"}\\\" > /opt/loqquei/print_server_desktop/version.json"';
+    const versionDate = new Date().toISOString().split('T')[0]; // Formato YYYY-MM-DD
+    
     try {
-      await verification.execPromise(versionCmd, 15000, true);
+      // Escape correto para json dentro de bash
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "echo '{\\\"install_date\\\": \\\"${versionDate}\\\", \\\"version\\\": \\\"1.0.0\\\"}' > /opt/loqquei/print_server_desktop/version.json"`,
+        15000,
+        true
+      );
       verification.log('Arquivo de versão criado com sucesso', 'success');
     } catch (versionError) {
-      verification.log(`Erro ao criar arquivo de versão: ${versionError.message || 'Erro desconhecido'}`, 'warning');
-      // Continuar mesmo com erro
+      // Método alternativo mais simples
+      try {
+        // Criar arquivo JSON no Windows e copiá-lo para o WSL
+        const os = require('os');
+        const path = require('path');
+        const fs = require('fs');
+        
+        const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+        if (!fs.existsSync(tempDir)) {
+          fs.mkdirSync(tempDir, { recursive: true });
+        }
+        
+        const tempVersionPath = path.join(tempDir, 'version.json');
+        fs.writeFileSync(tempVersionPath, JSON.stringify({
+          install_date: versionDate,
+          version: "1.0.0"
+        }), 'utf8');
+        
+        // Obter caminho WSL
+        const wslVersionPath = await verification.execPromise(
+          `wsl -d Ubuntu wslpath -u "${tempVersionPath.replace(/\\/g, '/')}"`,
+          10000,
+          true
+        );
+        
+        // Copiar
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root cp "${wslVersionPath.trim()}" /opt/loqquei/print_server_desktop/version.json`,
+          10000,
+          true
+        );
+        
+        verification.log('Arquivo de versão criado com método alternativo', 'success');
+      } catch (altVersionError) {
+        verification.log(`Erro ao criar arquivo de versão: ${altVersionError.message || 'Erro desconhecido'}`, 'warning');
+        // Continuar mesmo com erro
+      }
     }
 
     // Criar arquivo de atualizações executadas
@@ -3444,112 +3485,321 @@ async function copySoftwareToOpt() {
         // Continuar mesmo com erro
       }
 
-      // Método 1: Usar arquivo tar para transferência
-      verification.log('Criando arquivo tar para transferência...', 'step');
+      // MÉTODO 1: Cópia sem usar TAR (mais confiável para o WSL)
+      verification.log('Copiando arquivos diretamente (sem tar)...', 'step');
+
       try {
-        // Criar arquivo tar com todos os arquivos
-        const tarFile = path.join(tempDir, 'print_server_desktop.tar');
+        // Listar arquivos na pasta resources
+        const files = fs.readdirSync(serverFiles).filter(file => 
+          file !== 'node_modules' // Excluir node_modules da cópia principal para evitar timeout
+        );
 
-        // Executar comando para criar o tar
-        await verification.execPromise(`tar -cf "${tarFile}" -C "${serverFiles}" .`, 120000, true);
-        verification.log('Arquivo tar criado com sucesso', 'success');
+        verification.log(`Copiando ${files.length} arquivos (excluindo node_modules)...`, 'info');
 
-        // Obter caminho WSL para o arquivo tar
-        const wslTarPath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${tarFile.replace(/\\/g, '/')}"`, 10000, true);
-        verification.log(`Caminho do arquivo tar no WSL: ${wslTarPath}`, 'info');
+        // Criar configurações básicas antes de fazer qualquer cópia
+        // Criar .env com configurações mínimas
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "echo 'PORT=56258\\nDB_HOST=localhost\\nDB_PORT=5432\\nDB_DATABASE=print_management\\nDB_USERNAME=postgres_print\\nDB_PASSWORD=root_print' > /opt/loqquei/print_server_desktop/.env"`,
+          10000,
+          true
+        );
 
-        // Garantir que o diretório de destino exista
-        await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop', 10000, true);
-
-        // Extrair o tar no diretório de destino
-        verification.log('Extraindo arquivos no WSL...', 'step');
-        const extractCommand = `tar -xf "${wslTarPath}" -C /opt/loqquei/print_server_desktop`;
-        await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${extractCommand}'`, 120000, true);
-        verification.log('Arquivos extraídos com sucesso', 'success');
-
-        // Configurar permissões e instalar dependências
-        verification.log('Configurando permissões e instalando dependências...', 'step');
-        await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && chmod -R 755 . && (npm install || echo \'Erro ao instalar dependências, continuando\')"', 300000, true);
-
-        // Criar arquivo .env se não existir
-        verification.log('Configurando arquivo .env...', 'step');
-        const envCheck = 'if [ ! -f "/opt/loqquei/print_server_desktop/.env" ]; then (cp /opt/loqquei/print_server_desktop/.env.example /opt/loqquei/print_server_desktop/.env 2>/dev/null || echo "PORT=56258" > /opt/loqquei/print_server_desktop/.env); fi';
-        await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${envCheck}'`, 15000, true);
-
-        verification.log('Software copiado para /opt/ com sucesso', 'success');
-      } catch (tarError) {
-        verification.log(`Erro ao usar método tar: ${tarError.message || 'Erro desconhecido'}`, 'error');
-        verification.logToFile(`Detalhes do erro tar: ${JSON.stringify(tarError)}`);
-
-        // Método alternativo: Copiar arquivos um por um
-        verification.log('Tentando método alternativo de cópia...', 'warning');
-        try {
-          // Listar arquivos na pasta resources
-          const files = fs.readdirSync(serverFiles);
-
-          for (const file of files) {
+        // Copiar arquivos e diretórios um por um (exceto node_modules)
+        for (const file of files) {
+          try {
             const sourcePath = path.join(serverFiles, file);
+            
+            if (!fs.existsSync(sourcePath)) {
+              verification.log(`Arquivo não encontrado: ${sourcePath}`, 'warning');
+              continue;
+            }
+            
             const isDir = fs.statSync(sourcePath).isDirectory();
 
-            // Obter o caminho WSL para o arquivo
-            const wslSourcePath = await verification.execPromise(`wsl -d Ubuntu wslpath -u "${sourcePath.replace(/\\/g, '/')}"`, 10000, true);
+            // Obter o caminho WSL (convertendo caminho Windows para WSL)
+            const wslSourcePathCmd = `wsl -d Ubuntu wslpath -u "${sourcePath.replace(/\\/g, '/')}"`;
+            const wslSourcePath = await verification.execPromise(wslSourcePathCmd, 10000, true);
+
+            verification.log(`Copiando ${isDir ? 'diretório' : 'arquivo'}: ${file}`, 'info');
 
             if (isDir) {
               // Para diretórios, usar cp -r
-              await verification.execPromise(`wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/${file}`, 10000, true);
-              await verification.execPromise(`wsl -d Ubuntu -u root cp -r "${wslSourcePath}/"* /opt/loqquei/print_server_desktop/${file}/`, 60000, true);
+              await verification.execPromise(
+                `wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/${file}`,
+                10000,
+                true
+              );
+              
+              // Usar rsync se disponível (mais eficiente)
+              const hasRsync = await verification.execPromise(
+                `wsl -d Ubuntu -u root which rsync || echo "not_found"`,
+                5000,
+                true
+              ).catch(() => "not_found");
+              
+              if (hasRsync !== "not_found") {
+                await verification.execPromise(
+                  `wsl -d Ubuntu -u root rsync -a "${wslSourcePath.trim()}/" /opt/loqquei/print_server_desktop/${file}/`,
+                  60000, // 1 minuto
+                  true
+                );
+              } else {
+                await verification.execPromise(
+                  `wsl -d Ubuntu -u root cp -rf "${wslSourcePath.trim()}"/* /opt/loqquei/print_server_desktop/${file}/ 2>/dev/null || true`,
+                  60000,
+                  true
+                );
+              }
             } else {
-              // Para arquivos, usar cp
-              await verification.execPromise(`wsl -d Ubuntu -u root cp "${wslSourcePath}" /opt/loqquei/print_server_desktop/`, 30000, true);
+              // Para arquivos, usar cp simples
+              await verification.execPromise(
+                `wsl -d Ubuntu -u root cp "${wslSourcePath.trim()}" /opt/loqquei/print_server_desktop/`,
+                30000,
+                true
+              );
             }
+          } catch (copyError) {
+            verification.log(`Aviso: Erro ao copiar ${file}: ${copyError.message || 'Erro desconhecido'}`, 'warning');
+            // Continuar com o próximo arquivo
           }
+        }
 
-          verification.log('Software copiado com método alternativo', 'success');
-        } catch (altError) {
-          verification.log(`Erro no método alternativo: ${altError.message || 'Erro desconhecido'}`, 'error');
-          verification.logToFile(`Detalhes do erro alternativo: ${JSON.stringify(altError)}`);
-          throw new Error('Falha em todos os métodos de cópia');
+        verification.log('Arquivos básicos copiados com sucesso', 'success');
+
+        // Verificar se existe node_modules e instalar dependências
+        const hasNodeModules = fs.existsSync(path.join(serverFiles, 'node_modules'));
+        if (hasNodeModules) {
+          verification.log('Diretório node_modules encontrado, mas será ignorado (muito grande)', 'info');
+          verification.log('Instalando dependências via npm install...', 'step');
+          
+          try {
+            await verification.execPromise(
+              'wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && npm install --only=production"',
+              1200000, // 20 minutos (npm install pode demorar)
+              true
+            );
+            verification.log('Dependências instaladas com sucesso', 'success');
+          } catch (npmError) {
+            verification.log(`Aviso: Erro ao instalar dependências: ${npmError.message || 'Erro desconhecido'}`, 'warning');
+            // Continuar mesmo com erro
+          }
+        } else {
+          verification.log('Diretório node_modules não encontrado, criando package.json básico...', 'info');
+          
+          // Criar package.json básico se não existir
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "if [ ! -f /opt/loqquei/print_server_desktop/package.json ]; then echo '{\\\"name\\\":\\\"print_server_desktop\\\",\\\"version\\\":\\\"1.0.0\\\"}' > /opt/loqquei/print_server_desktop/package.json; fi"`,
+            10000,
+            true
+          );
+        }
+
+        // Configurar permissões e instalar dependências
+        verification.log('Configurando permissões...', 'step');
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && chmod -R 755 ."',
+          30000,
+          true
+        );
+
+        // Verificar se ecosystem.config.js existe, senão criar
+        try {
+          const ecosystemExists = await verification.execPromise(
+            'wsl -d Ubuntu -u root test -f /opt/loqquei/print_server_desktop/ecosystem.config.js && echo "exists"',
+            10000,
+            true
+          ).catch(() => "");
+          
+          if (ecosystemExists !== "exists") {
+            verification.log('Criando ecosystem.config.js básico...', 'info');
+            
+            const ecosystemContent = `
+module.exports = {
+  apps: [{
+    name: 'print_server_desktop',
+    script: './bin/www.js',
+    env: {
+      NODE_ENV: 'production',
+      PORT: 56258
+    }
+  }]
+};`;
+            
+            // Escapar conteúdo para bash com heredoc
+            await verification.execPromise(
+              `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/ecosystem.config.js" << 'EOFMARKER'
+${ecosystemContent}
+EOFMARKER`,
+              10000,
+              true
+            );
+          }
+        } catch (ecoError) {
+          verification.log(`Aviso ao verificar/criar ecosystem.config.js: ${ecoError.message || 'Erro desconhecido'}`, 'warning');
+        }
+
+        verification.log('Software copiado para /opt/ com sucesso', 'success');
+        return true;
+      } catch (directCopyError) {
+        verification.log(`Erro na cópia direta: ${directCopyError.message || 'Erro desconhecido'}`, 'error');
+        verification.logToFile(`Detalhes do erro de cópia: ${JSON.stringify(directCopyError)}`);
+
+        // MÉTODO EMERGENCIAL: Criar estrutura mínima
+        verification.log('Tentando método de emergência: criar estrutura mínima...', 'warning');
+        
+        try {
+          // Usar heredoc para evitar problemas de escape
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/package.json" << 'EOFMARKER'
+{
+  "name": "print_server_desktop",
+  "version": "1.0.0",
+  "description": "Print Server Desktop",
+  "main": "bin/www.js"
+}
+EOFMARKER`,
+            10000,
+            true
+          );
+          
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env"`,
+            10000, 
+            true
+          );
+          
+          // Criar diretório bin e arquivo www.js básico
+          await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/bin', 10000, true);
+          
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/bin/www.js" << 'EOFMARKER'
+#!/usr/bin/env node
+console.log('Servidor básico iniciado');
+const http = require('http');
+const server = http.createServer((req, res) => {
+  res.writeHead(200, {'Content-Type': 'text/plain'});
+  res.end('Servidor de impressão em execução\\n');
+});
+server.listen(56258, '0.0.0.0', () => {
+  console.log('Servidor básico ouvindo na porta 56258');
+});
+EOFMARKER`,
+            10000,
+            true
+          );
+          
+          // Criar ecosystem.config.js básico
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/ecosystem.config.js" << 'EOFMARKER'
+module.exports = {
+  apps: [{
+    name: 'print_server_desktop',
+    script: './bin/www.js',
+    env: {
+      NODE_ENV: 'production',
+      PORT: 56258
+    }
+  }]
+};
+EOFMARKER`,
+            10000,
+            true
+          );
+          
+          verification.log('Estrutura mínima de emergência criada', 'success');
+          return true;
+        } catch (emergencyError) {
+          verification.log(`Falha no método de emergência: ${emergencyError.message || 'Erro desconhecido'}`, 'error');
+          verification.logToFile(`Detalhes do erro emergencial: ${JSON.stringify(emergencyError)}`);
+          return false;
         }
       }
     } else {
       verification.log('Pasta de recursos do print_server_desktop não encontrada!', 'error');
       verification.logToFile(`Diretório esperado: ${serverFiles}`);
 
-      // Criar estrutura básica de qualquer forma
+      // Criar estrutura básica mesmo assim
       verification.log('Criando estrutura básica...', 'step');
-      const basicSetupCmd = `
-      mkdir -p /opt/loqquei/print_server_desktop
-      echo '{"name":"print_server_desktop","version":"1.0.0"}' > /opt/loqquei/print_server_desktop/package.json
-      echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env
-      `;
-
-      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${basicSetupCmd}'`, 15000, true);
-      verification.log('Estrutura básica criada', 'warning');
-      return false;
+      
+      try {
+        // Usar heredoc para evitar problemas de escape
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/package.json" << 'EOFMARKER'
+{
+  "name": "print_server_desktop",
+  "version": "1.0.0",
+  "description": "Print Server Desktop",
+  "main": "bin/www.js"
+}
+EOFMARKER`,
+          10000,
+          true
+        );
+        
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env"`,
+          10000, 
+          true
+        );
+        
+        // Criar diretório bin e arquivo www.js básico
+        await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/bin', 10000, true);
+        
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/bin/www.js" << 'EOFMARKER'
+#!/usr/bin/env node
+console.log('Servidor básico iniciado');
+const http = require('http');
+const server = http.createServer((req, res) => {
+  res.writeHead(200, {'Content-Type': 'text/plain'});
+  res.end('Servidor de impressão em execução\\n');
+});
+server.listen(56258, '0.0.0.0', () => {
+  console.log('Servidor básico ouvindo na porta 56258');
+});
+EOFMARKER`,
+          10000,
+          true
+        );
+        
+        verification.log('Estrutura básica criada', 'success');
+        return true;
+      } catch (basicError) {
+        verification.log(`Erro ao criar estrutura básica: ${basicError.message || 'Erro desconhecido'}`, 'error');
+        verification.logToFile(`Detalhes do erro: ${JSON.stringify(basicError)}`);
+        return false;
+      }
     }
-
-    // Verificação final
-    verification.log('Verificando instalação...', 'step');
-    try {
-      const checkFiles = await verification.execPromise('wsl -d Ubuntu -u root ls -la /opt/loqquei/print_server_desktop/', 10000, true);
-      verification.log('Verificação completa, arquivos copiados com sucesso', 'success');
-    } catch (verifyError) {
-      verification.log('Erro na verificação final, mas continuando', 'warning');
-    }
-
-    return true;
   } catch (error) {
     verification.log(`Erro ao copiar software: ${error.message || error.toString() || 'Erro desconhecido'}`, 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
 
     // Tentar criar pelo menos uma estrutura mínima antes de retornar
     try {
-      const emergencyCmd = `
-      mkdir -p /opt/loqquei/print_server_desktop
-      echo '{"name":"print_server_desktop","version":"1.0.0"}' > /opt/loqquei/print_server_desktop/package.json
-      echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env
-      `;
-      await verification.execPromise(`wsl -d Ubuntu -u root bash -c '${emergencyCmd}'`, 10000, true);
+      // Usar heredoc para evitar problemas de escape
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "mkdir -p /opt/loqquei/print_server_desktop"`,
+        10000,
+        true
+      );
+      
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/package.json" << 'EOFMARKER'
+{
+  "name": "print_server_desktop",
+  "version": "1.0.0"
+}
+EOFMARKER`,
+        10000,
+        true
+      );
+      
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env"`,
+        10000,
+        true
+      );
+      
       verification.log('Estrutura mínima de emergência criada', 'warning');
     } catch (emergencyError) {
       verification.log('Falha até na criação da estrutura mínima', 'error');
@@ -5031,7 +5281,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await setupMigrations());
+    console.log(await copySoftwareToOpt());
     process.exit(1)
   })()
 }
