@@ -1516,8 +1516,25 @@ async function installWSLLegacy() {
 }
 
 // Instalar o Ubuntu no WSL diretamente usando comandos Node
-async function installUbuntu() {
-  verification.log('Iniciando instalação do Ubuntu no WSL...', 'header');
+async function installUbuntu(attemptCount = 0) {
+  // Limite máximo de tentativas
+  const MAX_ATTEMPTS = 3;
+  
+  // Se já excedeu o número máximo de tentativas, retornar erro
+  if (attemptCount >= MAX_ATTEMPTS) {
+    verification.log(`Limite de ${MAX_ATTEMPTS} tentativas atingido, desistindo da instalação automática`, 'error');
+    verification.log('Por favor, instale o Ubuntu manualmente executando o comando abaixo em um Prompt de Comando como administrador:', 'info');
+    verification.log('wsl --install -d Ubuntu', 'info');
+    verification.log('Após a instalação manual, reinicie este instalador', 'info');
+    return false;
+  }
+  
+  // Se não é a primeira tentativa, mostrar mensagem específica
+  if (attemptCount > 0) {
+    verification.log(`Iniciando tentativa ${attemptCount + 1}/${MAX_ATTEMPTS} de instalação do Ubuntu...`, 'header');
+  } else {
+    verification.log('Iniciando instalação do Ubuntu no WSL...', 'header');
+  }
 
   // PASSO 1: Verificar se o Ubuntu já está instalado - com método mais confiável
   let ubuntuInstalled = false;
@@ -1647,6 +1664,48 @@ async function installUbuntu() {
     // Comando de instalação falhou com erro
     verification.log('Erro ao instalar Ubuntu com método direto', 'warning');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(installError)}`);
+    
+    // ***NOVO***: Verificar se o erro justifica uma nova tentativa
+    const errorMsg = installError.message || JSON.stringify(installError);
+    const retriableErrors = [
+      'erro 0x', // Códigos de erro Windows
+      'error 0x',
+      'timeout',
+      'time-out',
+      'access denied',
+      'acesso negado',
+      'wsl.exe',
+      'could not', 
+      'não foi possível'
+    ];
+    
+    const shouldRetry = retriableErrors.some(pattern => 
+      (typeof errorMsg === 'string' && errorMsg.toLowerCase().includes(pattern.toLowerCase()))
+    );
+    
+    if (shouldRetry) {
+      // Aguardar um tempo antes de tentar novamente (tempo crescente)
+      const waitTime = (attemptCount + 1) * 10000; // 10s, 20s, 30s...
+      verification.log(`Aguardando ${waitTime/1000} segundos antes de tentar novamente...`, 'info');
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      
+      // VERIFICAÇÃO RÁPIDA: Mesmo com erro, o Ubuntu pode ter sido instalado
+      try {
+        const quickCheck = await verification.execPromise('wsl --list', 15000, false);
+        if (quickCheck.toLowerCase().includes('ubuntu')) {
+          verification.log('Apesar do erro, Ubuntu foi detectado na lista!', 'success');
+          installState.ubuntuInstalled = true;
+          saveInstallState();
+          return true;
+        }
+      } catch (quickCheckError) {
+        // Ignorar erros
+      }
+      
+      // Tentar novamente com contador incrementado
+      verification.log('Iniciando nova tentativa de instalação...', 'step');
+      return await installUbuntu(attemptCount + 1);
+    }
   }
   
   // VERIFICAÇÃO FINAL: Tentar novamente verificar se o Ubuntu está instalado
@@ -1681,8 +1740,20 @@ async function installUbuntu() {
     return true;
   }
   
-  // Se chegamos aqui, realmente não conseguimos instalar o Ubuntu
-  verification.log('Não foi possível instalar o Ubuntu automaticamente', 'error');
+  // ***NOVO***: Tentar outra vez se ainda não excedemos o limite
+  if (attemptCount < MAX_ATTEMPTS - 1) {
+    verification.log(`Tentativa ${attemptCount + 1} falhou, iniciando tentativa ${attemptCount + 2}...`, 'warning');
+    
+    // Aguardar um tempo antes de tentar novamente (tempo crescente)
+    const waitTime = (attemptCount + 1) * 15000; // 15s, 30s, 45s...
+    verification.log(`Aguardando ${waitTime/1000} segundos antes de tentar novamente...`, 'info');
+    await new Promise(resolve => setTimeout(resolve, waitTime));
+    
+    return await installUbuntu(attemptCount + 1);
+  }
+  
+  // Se chegamos aqui, realmente não conseguimos instalar o Ubuntu após todas as tentativas
+  verification.log(`Não foi possível instalar o Ubuntu automaticamente após ${MAX_ATTEMPTS} tentativas`, 'error');
   verification.log('Por favor, instale o Ubuntu manualmente executando o comando abaixo em um Prompt de Comando como administrador:', 'info');
   verification.log('wsl --install -d Ubuntu', 'info');
   verification.log('Após a instalação manual, reinicie este instalador', 'info');
