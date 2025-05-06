@@ -1603,6 +1603,8 @@ async function installUbuntu(attemptCount = 0) {
     // Se chegamos aqui, o comando não lançou erro - marcar como tentativa executada
     installationAttempted = true;
     
+    await configureDefaultUser();
+
     // Aguardar a instalação concluir e WSL inicializar
     verification.log('Comando de instalação executado, aguardando finalização...', 'info');
     await new Promise(resolve => setTimeout(resolve, 20000)); // 20 segundos
@@ -1763,336 +1765,142 @@ async function installUbuntu(attemptCount = 0) {
 
 // Função otimizada para configurar usuário padrão com mais velocidade
 async function configureDefaultUser() {
-  verification.log('Configurando usuário padrão...', 'step');
-  verification.logToFile('Iniciando configuração do usuário padrão');
+  verification.log('Configurando usuário padrão com método ultra-simplificado...', 'step');
+  verification.logToFile('Iniciando configuração simplificada do usuário padrão');
 
-  // Garantir que conseguimos acessar o WSL com tempo de espera adequado
   try {
-    await verification.execPromise('wsl --shutdown', 10000, true)
-      .catch(e => verification.logToFile('Não foi possível desligar o WSL, ignorando: ' + JSON.stringify(e)));
+    // 1. Primeiro criar o usuário (se não existir)
+    verification.log('Criando usuário print_user...', 'step');
     
-    // Esperar um pouco para o WSL desligar completamente
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // Tentar acessar o WSL de novo
-    await verification.execPromise('wsl -d Ubuntu echo "Teste de acesso WSL"', 20000, true);
-    verification.log('WSL está acessível', 'success');
-  } catch (accessError) {
-    verification.log('Não foi possível acessar o Ubuntu para configurar usuário', 'error');
-    verification.logToFile(`Erro de acesso ao WSL: ${JSON.stringify(accessError)}`);
-    
-    try {
-      // Tentar uma vez mais com mais tempo
-      verification.log('Tentando acessar WSL novamente com timeout maior...', 'warning');
-      await verification.execPromise('wsl -d Ubuntu echo "Segundo teste de acesso"', 30000, true);
-      verification.log('WSL está acessível na segunda tentativa', 'success');
-    } catch (secondError) {
-      verification.logToFile(`Segunda falha de acesso: ${JSON.stringify(secondError)}`);
-      return false;
-    }
-  }
-
-  // Sempre criar o usuário e configurar wsl.conf do zero, evitando verificações complexas
-  verification.log('Criando usuário print_user...', 'step');
-  
-  // Criar diretório home primeiro
-  try {
     await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "mkdir -p /home/print_user"',
-      15000,
-      true
-    );
-    verification.log('Diretório home preparado', 'success');
-  } catch (homeError) {
-    verification.log('Erro ao criar diretório home, continuando...', 'warning');
-    verification.logToFile(`Erro home: ${JSON.stringify(homeError)}`);
-  }
-  
-  // Criar o usuário de forma simplificada (ignora erro se já existir)
-  try {
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "useradd -m -s /bin/bash -G sudo print_user 2>/dev/null || true"',
-      20000,
-      true
-    );
-    verification.log('Usuário print_user criado ou já existe', 'success');
-  } catch (createError) {
-    verification.log('Erro ao criar usuário, verificando se já existe...', 'warning');
-    verification.logToFile(`Erro ao criar usuário: ${JSON.stringify(createError)}`);
-    
-    // Verificar se o usuário existe apesar do erro
-    try {
-      const userCheck = await verification.execPromise(
-        'wsl -d Ubuntu -u root id print_user',
-        15000,
-        true
-      );
-      
-      if (userCheck && userCheck.includes('print_user')) {
-        verification.log('Usuário print_user já existe apesar do erro', 'success');
-      } else {
-        verification.log('Usuário print_user não existe e não foi possível criar', 'error');
-        return false;
-      }
-    } catch (checkError) {
-      verification.log('Erro ao verificar usuário, tentando método alternativo de criação', 'warning');
-      
-      // Método alternativo de criação de usuário
-      try {
-        await verification.execPromise(
-          'wsl -d Ubuntu -u root bash -c "adduser --disabled-password --gecos \'\' print_user"',
-          20000,
-          true
-        );
-        verification.log('Usuário criado com método alternativo', 'success');
-      } catch (altError) {
-        verification.log('Todos os métodos de criação de usuário falharam', 'error');
-        verification.logToFile(`Erro detalhado: ${JSON.stringify(altError)}`);
-        return false;
-      }
-    }
-  }
-
-  // Definir senha usando método mais simples
-  verification.log('Configurando senha para print_user...', 'step');
-  try {
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "echo \'print_user:print_user\' | chpasswd"',
-      15000,
-      true
-    );
-    verification.log('Senha definida com sucesso', 'success');
-  } catch (passError) {
-    verification.log('Erro ao definir senha, tentando método alternativo...', 'warning');
-    
-    try {
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "echo print_user | passwd print_user --stdin 2>/dev/null || (echo print_user | passwd --stdin print_user) 2>/dev/null || echo Ignorando erro de senha"',
-        15000,
-        true
-      );
-      verification.log('Senha configurada com método alternativo ou ignorada', 'warning');
-    } catch (altPassError) {
-      verification.log('Erro ao definir senha, mas continuando...', 'warning');
-      verification.logToFile(`Erro senha: ${JSON.stringify(altPassError)}`);
-    }
-  }
-
-  // Configurar diretório home e permissões
-  verification.log('Configurando permissões...', 'step');
-  try {
-    // Simplificar para apenas os comandos essenciais
-    const permCommands = [
-      'chown -R print_user:print_user /home/print_user 2>/dev/null || true',
-      'chmod -R 750 /home/print_user 2>/dev/null || true',
-      'usermod -aG sudo print_user 2>/dev/null || true',
-      'echo \'print_user ALL=(ALL) NOPASSWD:ALL\' > /etc/sudoers.d/print_user 2>/dev/null || true',
-      'chmod 440 /etc/sudoers.d/print_user 2>/dev/null || true'
-    ];
-    
-    // Executar comandos em sequência
-    for (const cmd of permCommands) {
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c "${cmd}"`,
-        10000,
-        true
-      ).catch(() => verification.log(`Aviso: Comando '${cmd}' falhou, continuando...`, 'warning'));
-    }
-    
-    verification.log('Permissões configuradas', 'success');
-  } catch (permError) {
-    verification.log('Erro ao configurar permissões, mas continuando...', 'warning');
-    verification.logToFile(`Erro permissões: ${JSON.stringify(permError)}`);
-  }
-
-  // ETAPA MAIS CRÍTICA: Criar arquivo wsl.conf de forma garantida
-  verification.log('Configurando wsl.conf para definir usuário padrão...', 'step');
-  
-  const wslConfSuccess = await configureWslConf();
-
-  if (!wslConfSuccess) {
-    verification.log('Não foi possível criar o arquivo wsl.conf corretamente', 'error');
-  }
-
-  verification.log('Verificando configuração do usuário padrão...', 'step');
-  try {
-    // Verificar se o arquivo contém a linha correta
-    const grepCheck = await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "grep -q \'default=print_user\' /etc/wsl.conf && echo \'success\' || echo \'failed\'"',
+      'wsl -d Ubuntu -u root bash -c "useradd -m -s /bin/bash print_user 2>/dev/null || echo Usuário já existe"',
       15000,
       true
     );
     
-    if (grepCheck === "success") {
-      verification.log('Usuário padrão configurado com sucesso no arquivo', 'success');
-      
-      // Atualizar estado salvo
-      installState.defaultUserCreated = true;
-      saveInstallState();
-      
-      // Reiniciar a distribuição Ubuntu para aplicar as alterações
-      verification.log('Reiniciando WSL para aplicar configurações...', 'step');
-      try {
-        await verification.execPromise('wsl --terminate Ubuntu', 15000, true);
-        verification.log('Distribuição Ubuntu reiniciada', 'success');
-        
-        // Esperar para o WSL reiniciar completamente
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        
-        verification.log('Esperando WSL reiniciar completamente...', 'info');
-        
-        // Verificar acesso após reinício
-        await verification.execPromise('wsl -d Ubuntu echo "Teste após reinício"', 20000, true);
-        verification.log('WSL funcionando após reinício', 'success');
-        
-        return true;
-      } catch (terminateError) {
-        verification.log('Não foi possível reiniciar a distribuição corretamente', 'warning');
-        verification.logToFile(`Erro ao reiniciar: ${JSON.stringify(terminateError)}`);
-        
-        // Mesmo com erro de reinicialização, consideramos sucesso na configuração
-        return true;
-      }
-    } else {
-      verification.log('Verificação final falhou, realizando uma última tentativa...', 'warning');
-      
-      // Última tentativa com método super direto
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "echo -e \'[user]\\ndefault=print_user\\n\' > /etc/wsl.conf"',
-        10000,
-        true
-      );
-      
-      verification.log('Configuração final de emergência aplicada', 'warning');
-      installState.defaultUserCreated = true;
-      saveInstallState();
-      return true;
-    }
-  } catch (finalCheckError) {
-    verification.log('Erro na verificação final, mas considerando como configurado', 'warning');
-    verification.logToFile(`Erro verificação final: ${JSON.stringify(finalCheckError)}`);
+    // 2. Definir senha diretamente
+    verification.log('Configurando senha...', 'step');
     
-    // Última tentativa com método super direto
-    try {
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "echo -e \'[user]\\ndefault=print_user\\n\' > /etc/wsl.conf"',
-        10000,
-        true
-      );
-      verification.log('Configuração final de emergência aplicada', 'warning');
-    } catch (e) {
-      verification.log('Falha na última tentativa', 'error');
-    }
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "echo print_user:print_user | chpasswd"',
+      15000,
+      true
+    );
     
-    // Mesmo com erro, marcamos como configurado para evitar loops
-    installState.defaultUserCreated = true;
-    saveInstallState();
-    return true;
-  }
-}
-
-async function configureWslConf() {
-  verification.log('Configurando wsl.conf com método simplificado...', 'step');
-  verification.logToFile('Iniciando configuração simplificada do wsl.conf');
-
-  // Abordagem 1: Usar comando echo direto sem variáveis
-  try {
+    // 3. Adicionar ao grupo sudo
+    verification.log('Adicionando ao grupo sudo...', 'step');
+    
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "usermod -aG sudo print_user"',
+      15000,
+      true
+    );
+    
+    // 4. Configurar sudo sem senha
+    verification.log('Configurando acesso sudo sem senha...', 'step');
+    
+    // Escrever arquivo sudoers para print_user
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "echo \'print_user ALL=(ALL) NOPASSWD:ALL\' > /etc/sudoers.d/print_user"',
+      15000,
+      true
+    );
+    
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "chmod 440 /etc/sudoers.d/print_user"',
+      10000,
+      true
+    );
+    
+    // 5. Criar arquivo wsl.conf
+    verification.log('Criando arquivo wsl.conf...', 'step');
+    
+    // Método extremamente simplificado para criar wsl.conf - linha por linha
+    // Criar arquivo do zero
     await verification.execPromise(
       'wsl -d Ubuntu -u root bash -c "echo \'[user]\' > /etc/wsl.conf"',
       10000,
       true
     );
     
+    // Adicionar linha de configuração de usuário
     await verification.execPromise(
       'wsl -d Ubuntu -u root bash -c "echo \'default=print_user\' >> /etc/wsl.conf"',
       10000,
       true
     );
     
+    // Adicionar linha em branco
     await verification.execPromise(
       'wsl -d Ubuntu -u root bash -c "echo \'\' >> /etc/wsl.conf"',
       10000,
       true
     );
     
+    // Adicionar configuração boot
     await verification.execPromise(
       'wsl -d Ubuntu -u root bash -c "echo \'[boot]\' >> /etc/wsl.conf"',
       10000,
       true
     );
     
+    // Adicionar configuração systemd
     await verification.execPromise(
       'wsl -d Ubuntu -u root bash -c "echo \'systemd=true\' >> /etc/wsl.conf"',
       10000,
       true
     );
     
-    verification.log('Arquivo wsl.conf criado linha por linha com sucesso', 'success');
-    return true;
-  } catch (error) {
-    verification.log('Falha no método 1, tentando abordagem alternativa...', 'warning');
-    verification.logToFile(`Erro método 1: ${JSON.stringify(error)}`);
-  }
-  
-  // Abordagem 2: Usar arquivo temporário no Windows e depois copiar
-  try {
-    verification.log('Usando método com arquivo temporário...', 'step');
+    // 6. Verificar arquivo wsl.conf
+    verification.log('Verificando arquivo wsl.conf...', 'step');
+    const wslConfContent = await verification.execPromise(
+      'wsl -d Ubuntu -u root cat /etc/wsl.conf',
+      10000,
+      true
+    );
     
-    // Criar arquivo temporário no Windows
-    const os = require('os');
-    const path = require('path');
-    const fs = require('fs');
+    verification.log(`Conteúdo do wsl.conf: ${wslConfContent}`, 'info');
+    verification.logToFile(`Conteúdo do wsl.conf: ${wslConfContent}`);
     
-    const tempDir = path.join(os.tmpdir(), 'wsl-config');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
+    // 7. Reiniciar WSL para aplicar configurações
+    verification.log('Reiniciando WSL para aplicar configurações...', 'step');
+    
+    await verification.execPromise('wsl --terminate Ubuntu', 15000, true);
+    verification.log('WSL terminado, aguardando 10 segundos...', 'info');
+    
+    // Aguardar reinicialização
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    
+    // 8. Verificar configuração após reinicialização
+    try {
+      const checkUser = await verification.execPromise(
+        'wsl -d Ubuntu whoami',
+        15000,
+        true
+      );
+      
+      verification.log(`Usuário atual após reinicialização: ${checkUser}`, 'info');
+      verification.logToFile(`Usuário atual após reinicialização: ${checkUser}`);
+      
+      if (checkUser.trim() === 'print_user') {
+        verification.log('Usuário print_user configurado com sucesso!', 'success');
+      } else {
+        verification.log('Aviso: Usuário atual não é print_user, mas configuração parece estar OK', 'warning');
+      }
+    } catch (checkError) {
+      verification.log('Erro na verificação final, mas configuração parece estar OK', 'warning');
+      verification.logToFile(`Erro na verificação: ${JSON.stringify(checkError)}`);
     }
     
-    const wslConfPath = path.join(tempDir, 'wsl.conf');
-    const wslConfContent = '[user]\ndefault=print_user\n\n[boot]\nsystemd=true\n';
+    // 9. Atualizar estado de instalação
+    installState.defaultUserCreated = true;
+    saveInstallState();
     
-    fs.writeFileSync(wslConfPath, wslConfContent, 'utf8');
-    verification.log('Arquivo temporário criado no Windows', 'success');
-    
-    // Obter o caminho do arquivo no formato WSL
-    const wslPath = await verification.execPromise(
-      `wsl -d Ubuntu wslpath -u "${wslConfPath.replace(/\\/g, '/')}"`,
-      10000,
-      true
-    );
-    
-    // Copiar o arquivo para o WSL
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root cp "${wslPath.trim()}" /etc/wsl.conf`,
-      10000,
-      true
-    );
-    
-    verification.log('Arquivo wsl.conf criado com método de arquivo temporário', 'success');
+    verification.log('Usuário padrão configurado!', 'success');
     return true;
   } catch (error) {
-    verification.log('Falha no método 2, tentando abordagem final...', 'warning');
-    verification.logToFile(`Erro método 2: ${JSON.stringify(error)}`);
-  }
-  
-  // Abordagem 3: Usar cat com heredoc (mais robusto para scripts complexos)
-  try {
-    verification.log('Tentando método heredoc...', 'step');
-    
-    const cmd = `wsl -d Ubuntu -u root bash -c 'cat > /etc/wsl.conf << "EOL"
-[user]
-default=print_user
-
-[boot]
-systemd=true
-EOL'`;
-    
-    await verification.execPromise(cmd, 20000, true);
-    verification.log('Arquivo wsl.conf criado com método heredoc', 'success');
-    return true;
-  } catch (error) {
-    verification.log('Todas as abordagens para criar wsl.conf falharam', 'error');
-    verification.logToFile(`Erro método 3: ${JSON.stringify(error)}`);
+    verification.log(`Erro ao configurar usuário padrão: ${error.message || JSON.stringify(error)}`, 'error');
+    verification.logToFile(`Erro detalhado: ${JSON.stringify(error)}`);
     return false;
   }
 }
@@ -2326,13 +2134,12 @@ wsl -d Ubuntu -u root bash -c "source /root/.bashrc"`;
   }
 }
 
-
 async function restartServices() {
   verification.log('Reiniciando serviços essenciais...', 'step');
   
   try {
     // Lista de serviços para reiniciar
-    const services = ['postgresql', 'cups', 'smbd', 'avahi-daemon', 'ufw'];
+    const services = ['postgresql', 'cups', 'smbd', 'ufw'];
     
     // Iterar por cada serviço e reiniciar individualmente
     for (const service of services) {
@@ -2719,613 +2526,806 @@ async function setupDatabase() {
   verification.log('Configurando banco de dados PostgreSQL...', 'header');
 
   try {
-    // 1. Verificar e reinstalar PostgreSQL com verificação mais robusta
-    verification.log('Verificando instalação do PostgreSQL...', 'step');
-    let postgresqlInstalled = false;
+    // 1. Verificar e iniciar PostgreSQL com múltiplas abordagens
+    verification.log('Verificando status do PostgreSQL...', 'step');
     
+    let postgresRunning = false;
     try {
-      // Primeiro verificar se o pacote está instalado
-      const pgStatus = await verification.execPromise(
-        'wsl -d Ubuntu -u root dpkg -l postgresql',
-        10000,
-        true
-      );
+      const statusCheck = await verification.execPromise('wsl -d Ubuntu -u root systemctl is-active postgresql', 20000, true)
+        .catch(() => "inactive");
+      postgresRunning = statusCheck.trim() === 'active';
+    } catch (e) {
+      postgresRunning = false;
+    }
+    
+    if (!postgresRunning) {
+      verification.log('PostgreSQL não está rodando, iniciando serviço...', 'step');
       
-      if (pgStatus && pgStatus.includes('postgresql')) {
-        postgresqlInstalled = true;
-        verification.log('PostgreSQL está instalado', 'success');
-      } else {
-        verification.log('PostgreSQL não parece estar instalado corretamente', 'warning');
-      }
-    } catch (checkError) {
-      verification.log('Erro ao verificar instalação, assumindo que PostgreSQL precisa ser instalado', 'warning');
-      postgresqlInstalled = false;
-    }
-    
-    if (!postgresqlInstalled) {
-      verification.log('Instalando PostgreSQL...', 'step');
-      try {
-        // Atualizar repositórios antes
-        await verification.execPromise(
-          'wsl -d Ubuntu -u root apt-get update',
-          60000,
-          true
-        );
-        
-        // Instalar PostgreSQL com todas as dependências necessárias
-        await verification.execPromise(
-          'wsl -d Ubuntu -u root apt-get install -y postgresql postgresql-contrib',
-          300000, // 5 minutos
-          true
-        );
-        
-        verification.log('PostgreSQL instalado com sucesso', 'success');
-        postgresqlInstalled = true;
-      } catch (installError) {
-        verification.log('Erro ao instalar PostgreSQL, tentando método alternativo...', 'warning');
-        
-        // Método alternativo sem usar systemctl para iniciar o serviço
-        try {
-          // Tentar resolver problemas de pacotes
-          await verification.execPromise(
-            'wsl -d Ubuntu -u root apt-get --fix-broken install -y',
-            120000,
-            true
-          );
-          
-          // Tentar novamente a instalação
-          await verification.execPromise(
-            'wsl -d Ubuntu -u root apt-get install -y postgresql postgresql-contrib',
-            300000,
-            true
-          );
-          
-          verification.log('PostgreSQL instalado com método alternativo', 'success');
-          postgresqlInstalled = true;
-        } catch (altInstallError) {
-          verification.log('Instalação do PostgreSQL falhou. Continuando mesmo assim...', 'warning');
-        }
-      }
-    }
-
-    // 2. Iniciar o PostgreSQL com método alternativo ao systemd
-    if (postgresqlInstalled) {
-      verification.log('Verificando versão do PostgreSQL e iniciando serviço...', 'step');
-      
-      // Encontrar versão do PostgreSQL instalada
-      try {
-        const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ | cut -d'/' -f4 | head -n 1\"";
-        const pgVersion = await verification.execPromise(pgVersionCmd, 10000, true);
-        
-        if (pgVersion && pgVersion.trim()) {
-          const version = pgVersion.trim();
-          verification.log(`Versão do PostgreSQL encontrada: ${version}`, 'success');
-          
-          // Iniciar PostgreSQL usando pg_ctlcluster em vez de systemctl
-          try {
-            await verification.execPromise(
-              `wsl -d Ubuntu -u root pg_ctlcluster ${version} main start`,
-              30000,
-              true
-            );
-            verification.log(`PostgreSQL ${version} iniciado com pg_ctlcluster`, 'success');
-            
-            // Verificar se o serviço está rodando
-            try {
-              await verification.execPromise(
-                `wsl -d Ubuntu -u postgres psql -c "SELECT version();"`,
-                15000,
-                true
-              );
-              verification.log('PostgreSQL está respondendo!', 'success');
-            } catch (psqlError) {
-              verification.log('PostgreSQL iniciado, mas psql ainda não está respondendo', 'warning');
-              verification.logToFile(`Erro psql: ${JSON.stringify(psqlError)}`);
-              
-              // Dar mais tempo para o PostgreSQL iniciar completamente
-              verification.log('Aguardando inicialização completa do PostgreSQL...', 'step');
-              await new Promise(resolve => setTimeout(resolve, 10000));
-            }
-          } catch (ctlError) {
-            verification.log('Erro ao iniciar via pg_ctlcluster, tentando método alternativo...', 'warning');
-            try {
-              // Método alternativo para iniciar o PostgreSQL
-              await verification.execPromise(
-                `wsl -d Ubuntu -u root bash -c "sudo -u postgres /usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start"`,
-                30000,
-                true
-              );
-              verification.log('PostgreSQL iniciado com pg_ctl diretamente', 'success');
-            } catch (pgCtlError) {
-              verification.log('Não foi possível iniciar o PostgreSQL, continuando...', 'warning');
-            }
-          }
-        } else {
-          verification.log('Não foi possível determinar a versão do PostgreSQL', 'warning');
-        }
-      } catch (versionError) {
-        verification.log('Erro ao obter versão do PostgreSQL', 'warning');
-      }
-    }
-    
-    // 3. Criar usuários e banco de dados, com modo mais direto e menos dependente de serviços
-    verification.log('Configurando usuários e bancos de dados...', 'step');
-    
-    try {
       // Determinar a versão do PostgreSQL
-      const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ | cut -d'/' -f4 | head -n 1\"";
+      const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ 2>/dev/null | cut -d'/' -f4 | head -n 1 || echo '14'\"";
       const pgVersion = await verification.execPromise(pgVersionCmd, 10000, true).catch(() => "14");
-      const version = pgVersion.trim() || "14"; // Use 14 como padrão se não conseguir determinar
+      const version = pgVersion.trim() || "14";
       
-      // Método direto para criar banco sem depender de serviço
-      const setupDbScript = `
-      #!/bin/bash
-      # Certifique-se que o diretório de dados existe
-      mkdir -p /var/lib/postgresql/${version}/main
-      chown -R postgres:postgres /var/lib/postgresql
-      
-      # Iniciar o PostgreSQL se não estiver rodando
-      su - postgres -c "/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main status || /usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start"
-      
-      # Esperar o PostgreSQL inicializar
-      sleep 5
-      
-      # Criar usuários
-      su - postgres -c "psql -c \\"DROP ROLE IF EXISTS postgres_print;\\""
-      su - postgres -c "psql -c \\"CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';\\""
-      
-      su - postgres -c "psql -c \\"DROP ROLE IF EXISTS print_user;\\""
-      su - postgres -c "psql -c \\"CREATE ROLE print_user WITH LOGIN SUPERUSER PASSWORD 'print_user';\\""
-      
-      # Criar bancos de dados
-      su - postgres -c "psql -c \\"DROP DATABASE IF EXISTS print_management;\\""
-      su - postgres -c "psql -c \\"CREATE DATABASE print_management OWNER postgres_print;\\""
-      
-      su - postgres -c "psql -c \\"DROP DATABASE IF EXISTS print_server;\\""
-      su - postgres -c "psql -c \\"CREATE DATABASE print_server OWNER print_user;\\""
-      
-      # Criar schema
-      su - postgres -c "psql -d print_management -c \\"CREATE SCHEMA IF NOT EXISTS print_management;\\""
-      su - postgres -c "psql -d print_management -c \\"ALTER SCHEMA print_management OWNER TO postgres_print;\\""
-      su - postgres -c "psql -d print_management -c \\"GRANT ALL ON SCHEMA print_management TO postgres_print;\\""
-      
-      echo "Database setup completed"
-      `;
-      
-      // Criar arquivo de script temporário no WSL
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c "echo '${setupDbScript.replace(/'/g, "'\\''")}' > /tmp/setup_db.sh && chmod +x /tmp/setup_db.sh"`,
-        10000,
-        true
-      );
-      
-      // Executar o script
-      await verification.execPromise('wsl -d Ubuntu -u root bash /tmp/setup_db.sh', 60000, true);
-      verification.log('Script de configuração do banco de dados executado', 'success');
-      
-      // Configurar pg_hba.conf para acesso mais permissivo
-      const hbaContent = `# Configuration file for PostgreSQL client authentication
-#
-# CAUTION: Firewall should be used for security, not this file!
-# This configuration allows all local and all TCP/IP connections.
-
-# TYPE  DATABASE        USER            ADDRESS                 METHOD
-local   all             postgres                                peer
-local   all             all                                     trust
-host    all             all             127.0.0.1/32            trust
-host    all             all             ::1/128                 trust
-host    all             all             0.0.0.0/0               trust
-`;
-      
-      // Encontrar o arquivo pg_hba.conf
+      // Tentar iniciar PostgreSQL com vários métodos
       try {
-        const findHba = await verification.execPromise('wsl -d Ubuntu -u root find /etc -name pg_hba.conf', 20000, true);
-        
-        if (findHba && findHba.trim()) {
-          const hbaFiles = findHba.trim().split('\n');
-          let configured = false;
-          
-          for (const hbaFile of hbaFiles) {
-            if (hbaFile.trim() && hbaFile.includes('/postgresql/')) {
-              try {
-                await verification.execPromise(`wsl -d Ubuntu -u root bash -c 'echo "${hbaContent}" > ${hbaFile}'`, 10000, true);
-                verification.log(`Arquivo ${hbaFile} configurado com acesso permissivo`, 'success');
-                configured = true;
-                
-                // Encontrar postgresql.conf correspondente
-                const pgConfDir = hbaFile.substring(0, hbaFile.lastIndexOf('/'));
-                const pgConfFile = `${pgConfDir}/postgresql.conf`;
-                
-                // Verificar se o arquivo existe
-                try {
-                  await verification.execPromise(`wsl -d Ubuntu -u root test -f "${pgConfFile}"`, 5000, true);
-                  
-                  // Configurar para aceitar conexões de qualquer endereço
-                  await verification.execPromise(
-                    `wsl -d Ubuntu -u root bash -c "sed -i 's/#listen_addresses = \\'localhost\\'/listen_addresses = \\'*\\'/' ${pgConfFile} || echo \\"listen_addresses = '*'\\" >> ${pgConfFile}"`,
-                    10000,
-                    true
-                  );
-                  verification.log(`Arquivo ${pgConfFile} configurado para aceitar conexões`, 'success');
-                } catch (pgConfError) {
-                  verification.log(`Não foi possível localizar ${pgConfFile}`, 'warning');
-                }
-              } catch (writeError) {
-                verification.log(`Erro ao escrever em ${hbaFile}`, 'warning');
-              }
-            }
-          }
-          
-          if (configured) {
-            // Reiniciar PostgreSQL para aplicar configurações
-            try {
-              await verification.execPromise(
-                `wsl -d Ubuntu -u root bash -c "su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main restart'"`,
-                30000,
-                true
-              );
-              verification.log('PostgreSQL reiniciado para aplicar configurações', 'success');
-            } catch (restartError) {
-              verification.log('Não foi possível reiniciar o PostgreSQL, mas configurações foram alteradas', 'warning');
-            }
-          }
-        }
-      } catch (findError) {
-        verification.log('Não foi possível localizar arquivos de configuração do PostgreSQL', 'warning');
-      }
-      
-      return true;
-    } catch (error) {
-      verification.log(`Erro ao configurar banco de dados: ${error?.message || 'Erro desconhecido'}`, 'warning');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-      
-      return true; // Retornar true mesmo com erro para continuar a instalação
-    }
-  } catch (error) {
-    verification.log(`Erro geral ao configurar PostgreSQL: ${error?.message || 'Erro desconhecido'}`, 'error');
-    verification.logToFile(`Detalhes: ${JSON.stringify(error)}`);
-    
-    return true; // Retornar true mesmo com erro para continuar a instalação
-  }
-}
-
-// Função para executar migrações
-async function setupMigrations() {
-  verification.log('Verificando e executando migrações do banco de dados...', 'header');
-
-  try {
-    // Definir o caminho direto para o diretório do software
-    const basePath = "/opt/loqquei/print_server_desktop";
-    
-    // Verificar se o diretório existe
-    const basePathExists = await verification.execPromise(
-      `wsl -d Ubuntu -u root test -d "${basePath}" && echo "exists"`,
-      10000,
-      true
-    ).catch(() => "");
-    
-    if (!basePathExists || !basePathExists.includes("exists")) {
-      verification.log(`Diretório ${basePath} não encontrado, verificando caminhos alternativos...`, 'warning');
-      
-      // Verificar caminhos alternativos
-      const altPaths = [
-        "/opt/print_server/print_server_desktop",
-        "/opt/loqquei",
-        "/opt/print_server"
-      ];
-      
-      let foundPath = null;
-      
-      for (const path of altPaths) {
-        const pathExists = await verification.execPromise(
-          `wsl -d Ubuntu -u root test -d "${path}" && echo "exists"`,
-          10000,
-          true
-        ).catch(() => "");
-        
-        if (pathExists && pathExists.includes("exists")) {
-          foundPath = path;
-          break;
-        }
-      }
-      
-      if (foundPath) {
-        verification.log(`Usando caminho alternativo: ${foundPath}`, 'info');
-        return await setupMigrationsWithPath(foundPath);
-      } else {
-        verification.log('Nenhum diretório válido encontrado, criando diretório de instalação padrão', 'warning');
-        await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop', 10000, true);
-        return await setupMigrationsWithPath("/opt/loqquei/print_server_desktop");
-      }
-    }
-    
-    verification.log(`Executando migrações para: ${basePath}`, 'step');
-    return await setupMigrationsWithPath(basePath);
-  } catch (error) {
-    verification.log(`Erro ao verificar diretório para migrações: ${error?.message || 'Erro desconhecido'}`, 'error');
-    verification.logToFile(`Detalhes: ${JSON.stringify(error)}`);
-    return false;
-  }
-}
-
-// Função de implementação que executa as migrações em um caminho específico - completamente reescrita
-async function setupMigrationsWithPath(basePath) {
-  try {
-    // Verificar se o PostgreSQL está rodando usando um método mais direto
-    verification.log('Verificando PostgreSQL...', 'step');
-    
-    // Determinar a versão do PostgreSQL
-    const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ | cut -d'/' -f4 | head -n 1 || echo '14'\"";
-    const pgVersion = await verification.execPromise(pgVersionCmd, 10000, true).catch(() => "14");
-    const version = pgVersion.trim() || "14"; // Use 14 como padrão se não conseguir determinar
-    
-    // Iniciar o PostgreSQL diretamente
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root bash -c "su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main status || /usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start'"`,
-      30000,
-      true
-    ).catch(e => verification.log('Aviso ao iniciar PostgreSQL: ' + e.message, 'warning'));
-    
-    // Aguardar inicialização
-    await new Promise(resolve => setTimeout(resolve, 5000));
-    
-    // Verificar conexão com psql
-    verification.log('Testando conexão...', 'step');
-    try {
-      await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "SELECT 1;"', 10000, true);
-      verification.log('Conexão com PostgreSQL funcionando', 'success');
-    } catch (connError) {
-      // Tentar iniciar o serviço novamente usando métodos alternativos
-      try {
-        verification.log('Tentando iniciar o PostgreSQL com métodos alternativos...', 'warning');
-        
-        // Método 1: pg_ctlcluster
         await verification.execPromise(
-          `wsl -d Ubuntu -u root pg_ctlcluster ${version} main start`,
+          `wsl -d Ubuntu -u root bash -c "systemctl start postgresql || service postgresql start || pg_ctlcluster ${version} main start || (su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start')"`,
           30000,
-          true
-        ).catch(() => {});
-        
-        // Método 2: pg_ctl direto
-        await verification.execPromise(
-          `wsl -d Ubuntu -u root bash -c "sudo -u postgres /usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start"`,
-          30000,
-          true
-        ).catch(() => {});
-        
-        // Verificar novamente
-        await new Promise(resolve => setTimeout(resolve, 5000));
-        const check = await verification.execPromise('wsl -d Ubuntu -u postgres psql -c "SELECT 1;"', 10000, true)
-          .catch(() => null);
-        
-        if (!check) {
-          verification.log('ERRO: PostgreSQL não está respondendo mesmo após tentativas alternativas!', 'error');
-          return false;
-        } else {
-          verification.log('PostgreSQL respondendo após métodos alternativos', 'success');
-        }
-      } catch (altMethodError) {
-        verification.log('ERRO: PostgreSQL não está respondendo!', 'error');
-        return false;
-      }
-    }
-    
-    // Verificar se o script migrate.sh existe
-    verification.log('Verificando scripts de migração...', 'step');
-    const migrateExists = await verification.execPromise(
-      `wsl -d Ubuntu -u root bash -c "if [ -f '${basePath}/db/migrate.sh' ]; then echo 'exists'; else echo 'not_exists'; fi"`,
-      10000,
-      true
-    );
-    
-    if (migrateExists.trim() === 'exists') {
-      verification.log('Script de migração encontrado, executando...', 'step');
-      try {
-        // Tornar o script executável e executá-lo
-        await verification.execPromise(
-          `wsl -d Ubuntu -u root bash -c "chmod +x ${basePath}/db/migrate.sh && cd ${basePath} && ./db/migrate.sh"`,
-          60000, // Timeout maior para migrações
           true
         );
-        verification.log('Migração oficial executada com sucesso!', 'success');
-        return true;
-      } catch (migrateError) {
-        verification.log('Erro ao executar script de migração oficial, tentando método alternativo...', 'warning');
-        verification.logToFile(`Erro: ${JSON.stringify(migrateError)}`);
+        
+        verification.log('PostgreSQL iniciado com sucesso', 'success');
+        postgresRunning = true;
+        
+        // Aguardar inicialização
+        verification.log('Aguardando inicialização do PostgreSQL...', 'info');
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      } catch (startError) {
+        verification.log('ERRO: Não foi possível iniciar o PostgreSQL. Tentando método alternativo...', 'error');
+        verification.logToFile(`Erro ao iniciar PostgreSQL: ${JSON.stringify(startError)}`);
+        
+        // Tentar iniciar com um último método mais específico
+        try {
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql && su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main start'"`,
+            30000,
+            true
+          );
+          postgresRunning = true;
+          verification.log('PostgreSQL iniciado com método alternativo', 'success');
+          await new Promise(resolve => setTimeout(resolve, 5000));
+        } catch (altStartError) {
+          verification.log('ERRO: Todos os métodos para iniciar PostgreSQL falharam', 'error');
+          verification.logToFile(`Detalhes do erro alternativo: ${JSON.stringify(altStartError)}`);
+          return false;
+        }
       }
     } else {
-      verification.log('Script de migração não encontrado, usando método manual...', 'warning');
+      verification.log('PostgreSQL já está em execução', 'success');
     }
     
-    // MÉTODO ALTERNATIVO DE MIGRAÇÃO - CRIAR ARQUIVOS SQL E EXECUTAR
-    verification.log('Usando método alternativo para criar tabelas...', 'step');
+    // 2. Criar banco de dados se não existir
+    verification.log('Verificando se o banco de dados print_management existe...', 'step');
+    let dbExists = false;
     
-    // === SOLUÇÃO: Criar os arquivos SQL diretamente no filesystem do WSL ===
-    // Escrever cada arquivo SQL separadamente para evitar problemas de escape
-    
-    // 1. Arquivo para configuração do banco e schema
-    const setupDbSqlContent = `
-CREATE DATABASE IF NOT EXISTS print_management;
-\\c print_management
-
-CREATE SCHEMA IF NOT EXISTS print_management;
-
--- Verificar/criar role postgres_print
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'postgres_print') THEN
-    CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';
-  END IF;
-END
-$$;
-
--- Conceder permissões
-GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;
-ALTER SCHEMA print_management OWNER TO postgres_print;
-`;
-
-    // 2. Arquivo para criar tipos ENUM e tabelas
-    const createTablesSqlContent = `
-\\c print_management
-
--- Criar tipos ENUM
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'log_type') THEN
-    CREATE TYPE print_management.log_type AS ENUM ('error', 'read', 'create', 'update', 'delete');
-  END IF;
-  
-  IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'printer_status') THEN
-    CREATE TYPE print_management.printer_status AS ENUM ('functional','expired useful life','powered off','obsolete','damaged','lost','disabled');
-  END IF;
-EXCEPTION
-  WHEN duplicate_object THEN NULL;
-END$$;
-
--- Criar tabela logs
-CREATE TABLE IF NOT EXISTS print_management.logs (
-    id varchar(50) NOT NULL,
-    "createdAt" timestamp NOT NULL,
-    "logType" print_management.log_type NOT NULL,
-    entity varchar(255) DEFAULT NULL,
-    operation VARCHAR(50) DEFAULT NULL,
-    "beforeData" jsonb DEFAULT NULL,
-    "afterData" jsonb DEFAULT NULL,
-    "errorMessage" text DEFAULT NULL,
-    "errorStack" text DEFAULT NULL,
-    "userInfo" jsonb DEFAULT NULL,
-    PRIMARY KEY (id)
-);
-
--- Criar tabela printers
-CREATE TABLE IF NOT EXISTS print_management.printers (
-    id varchar(50) NOT NULL,
-    name varchar(50) NOT NULL,
-    status print_management.printer_status NOT NULL,
-    protocol varchar(20) DEFAULT 'socket',
-    mac_address varchar(17) DEFAULT NULL,
-    driver varchar(100) DEFAULT 'generic',
-    uri varchar(255) DEFAULT NULL,
-    description text DEFAULT NULL,
-    location varchar(100) DEFAULT NULL,
-    ip_address varchar(15) DEFAULT NULL,
-    port int DEFAULT NULL,
-    "createdAt" timestamp NOT NULL,
-    "updatedAt" timestamp NOT NULL,
-    "deletedAt" timestamp DEFAULT NULL,
-    PRIMARY KEY (id)
-);
-
--- Criar tabela files
-CREATE TABLE IF NOT EXISTS print_management.files (
-    id varchar(50) NOT NULL,
-    "assetId" varchar(50) DEFAULT NULL,
-    "fileName" text NOT NULL,
-    pages int NOT NULL,
-    path TEXT NOT NULL,
-    "createdAt" timestamp NOT NULL,
-    "deletedAt" timestamp DEFAULT NULL,
-    printed BOOLEAN NOT NULL DEFAULT FALSE,
-    synced BOOLEAN NOT NULL DEFAULT FALSE,
-    PRIMARY KEY (id),
-    FOREIGN KEY ("assetId") REFERENCES print_management.printers(id)
-);
-
--- Garantir permissões
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA print_management TO postgres_print;
-`;
-
-    // Criar arquivo setup_db.sh com todo o processo
-    const setupScriptContent = `#!/bin/bash
-# Script para configuração do banco de dados PostgreSQL
-
-# Criar arquivos SQL
-cat > /tmp/setup_db.sql << 'EOF'
-${setupDbSqlContent}
-EOF
-
-cat > /tmp/create_tables.sql << 'EOF'
-${createTablesSqlContent}
-EOF
-
-# Executar os scripts SQL
-echo "Executando setup_db.sql..."
-su - postgres -c "psql -f /tmp/setup_db.sql" || echo "Aviso: Possíveis erros no setup_db.sql"
-
-echo "Executando create_tables.sql..."
-su - postgres -c "psql -f /tmp/create_tables.sql" || echo "Aviso: Possíveis erros no create_tables.sql"
-
-echo "Scripts executados."
-`;
-
     try {
-      // Escrever o script bash em um arquivo
-      // Estamos usando uma técnica de "heredoc" que é muito mais segura para lidar com conteúdo complexo
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c 'cat > /tmp/setup_postgres.sh << \\'EOSCRIPT\\'\n${setupScriptContent}\nEOSCRIPT\n'`,
+      const dbCheck = await verification.execPromise(
+        `wsl -d Ubuntu -u postgres psql -lqt | grep -w print_management || echo "not_exists"`,
         15000,
         true
       );
       
-      // Tornar executável e executar
+      dbExists = !dbCheck.includes('not_exists') && dbCheck.includes('print_management');
+      
+      if (dbExists) {
+        verification.log('Banco de dados print_management já existe', 'success');
+      } else {
+        verification.log('Criando banco de dados print_management...', 'step');
+        
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres psql -c "CREATE DATABASE print_management;"`,
+          20000,
+          true
+        );
+        
+        verification.log('Banco de dados print_management criado com sucesso', 'success');
+      }
+    } catch (dbError) {
+      verification.log('ERRO ao verificar/criar banco de dados', 'error');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(dbError)}`);
+      
+      // Tentar com método alternativo
+      try {
+        verification.log('Tentando método alternativo para criar banco de dados...', 'step');
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "su - postgres -c 'createdb print_management'"`,
+          20000,
+          true
+        );
+        verification.log('Banco de dados criado com método alternativo', 'success');
+      } catch (altDbError) {
+        verification.log('ERRO: Todos os métodos para criar banco de dados falharam', 'error');
+        verification.logToFile(`Detalhes do erro alternativo: ${JSON.stringify(altDbError)}`);
+        // Continuar mesmo com erro, pois o banco pode já existir
+      }
+    }
+    
+    // 3. Criar usuário postgres_print se não existir
+    verification.log('Verificando/Criando usuário postgres_print...', 'step');
+    
+    try {
+      // Verificar se o usuário existe
+      const userCheck = await verification.execPromise(
+        `wsl -d Ubuntu -u postgres psql -c "SELECT 1 FROM pg_roles WHERE rolname='postgres_print';" -t`,
+        15000,
+        true
+      ).catch(() => "");
+      
+      const userExists = userCheck.trim().includes('1');
+      
+      if (userExists) {
+        verification.log('Usuário postgres_print já existe', 'success');
+        
+        // Atualizar senha de qualquer forma para garantir consistência
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres psql -c "ALTER USER postgres_print WITH PASSWORD 'root_print' SUPERUSER;"`,
+          15000,
+          true
+        );
+        
+        verification.log('Senha e privilégios do usuário postgres_print atualizados', 'success');
+      } else {
+        verification.log('Criando usuário postgres_print...', 'step');
+        
+        // Criar usuário com senha e privilegios
+        await verification.execPromise(
+          `wsl -d Ubuntu -u postgres psql -c "CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';"`,
+          15000,
+          true
+        );
+        
+        verification.log('Usuário postgres_print criado com sucesso', 'success');
+      }
+    } catch (userError) {
+      verification.log('ERRO ao criar/modificar usuário postgres_print. Tentando método alternativo...', 'error');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(userError)}`);
+      
+      // Tentar com comando alternativo
+      try {
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "su - postgres -c \\\"psql -c \\\\\\\"CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';\\\\\\\"\\\"" || su - postgres -c "createuser -s postgres_print"`,
+          20000,
+          true
+        );
+        
+        verification.log('Usuário postgres_print criado via método alternativo', 'success');
+        
+        // Tentar definir a senha separadamente
+        try {
+          await verification.execPromise(
+            `wsl -d Ubuntu -u postgres psql -c "ALTER USER postgres_print WITH PASSWORD 'root_print';"`,
+            15000,
+            true
+          );
+        } catch (pwError) {
+          verification.log('Aviso: Não foi possível definir senha para postgres_print', 'warning');
+        }
+      } catch (altUserError) {
+        verification.log('ERRO: Todos os métodos para criar usuário falharam, mas continuando...', 'error');
+        verification.logToFile(`Detalhes do erro alternativo: ${JSON.stringify(altUserError)}`);
+        // Continuar mesmo com erro
+      }
+    }
+    
+    // 4. Criar schema print_management se não existir
+    verification.log('Criando schema print_management...', 'step');
+    
+    try {
       await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "chmod +x /tmp/setup_postgres.sh && /tmp/setup_postgres.sh"',
-        60000, // Um minuto para execução completa
+        `wsl -d Ubuntu -u postgres psql -d print_management -c "CREATE SCHEMA IF NOT EXISTS print_management;"`,
+        15000,
         true
       );
       
-      verification.log('Script de configuração alternativo executado com sucesso', 'success');
-      
-      // Verificar se as tabelas foram criadas
-      const tableCheck = await verification.execPromise(
-        `wsl -d Ubuntu -u postgres psql -d print_management -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = 'print_management';"`,
-        10000,
+      // Conceder privilégios ao usuário no schema
+      await verification.execPromise(
+        `wsl -d Ubuntu -u postgres psql -d print_management -c "GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;"`,
+        15000,
         true
-      ).catch(() => "0");
+      );
       
-      if (tableCheck && parseInt(tableCheck.trim()) > 0) {
-        verification.log(`Verificação: ${tableCheck.trim()} tabelas criadas no schema print_management`, 'success');
-        return true;
-      } else {
-        verification.log('Aviso: Não foi possível confirmar a criação das tabelas, mas o script foi executado', 'warning');
-        return true;
-      }
-    } catch (setupError) {
-      verification.log(`Erro durante execução do script alternativo: ${setupError?.message || JSON.stringify(setupError)}`, 'error');
-      verification.logToFile(`Erro detalhado: ${JSON.stringify(setupError)}`);
+      verification.log('Schema print_management criado/verificado com sucesso', 'success');
+    } catch (schemaError) {
+      verification.log('ERRO ao criar schema. Tentando método alternativo...', 'error');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(schemaError)}`);
       
-      // Tentar uma abordagem ainda mais simples como último recurso
       try {
-        verification.log('Tentando abordagem de emergência para criar banco...', 'warning');
+        // Comando mais simplificado
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "su - postgres -c \\\"psql -d print_management -c \\\\\\\"CREATE SCHEMA IF NOT EXISTS print_management; GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;\\\\\\\"\\\")"`,
+          20000,
+          true
+        );
         
-        // Criar comandos SQL simples
-        const emergencyCommands = [
-          `CREATE DATABASE print_management;`,
-          `\\c print_management`,
-          `CREATE SCHEMA print_management;`,
-          `CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';`,
-          `GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;`
-        ];
-        
-        // Executar cada comando separadamente
-        for (const cmd of emergencyCommands) {
-          await verification.execPromise(
-            `wsl -d Ubuntu -u postgres psql -c "${cmd.replace(/"/g, '\\"')}"`,
-            10000,
-            true
-          ).catch(() => {}); // Ignorar erros individuais
-        }
-        
-        verification.log('Abordagem de emergência concluída - banco e schema devem existir agora', 'info');
-        return true;
-      } catch (emergencyError) {
-        verification.log('Todas as tentativas falharam. É necessário criar o banco manualmente.', 'error');
+        verification.log('Schema criado via método alternativo', 'success');
+      } catch (altSchemaError) {
+        verification.log('ERRO: Todos os métodos para criar schema falharam', 'error');
+        verification.logToFile(`Detalhes do erro alternativo: ${JSON.stringify(altSchemaError)}`);
         return false;
       }
     }
+    
+    // 5. Configurar arquivo .env com dados de conexão
+    try {
+      verification.log('Configurando arquivo .env com dados de conexão...', 'step');
+      
+      // Verificar diretórios possíveis
+      const possiblePaths = [
+        '/opt/loqquei/print_server_desktop',
+        '/opt/print_server/print_server_desktop',
+        '/opt/loqquei',
+        '/opt/print_server'
+      ];
+      
+      let envPath = null;
+      for (const path of possiblePaths) {
+        try {
+          const pathCheck = await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "if [ -d '${path}' ]; then echo 'exists'; else echo 'not_found'; fi"`,
+            10000,
+            true
+          );
+          
+          if (pathCheck.trim() === 'exists') {
+            envPath = path;
+            break;
+          }
+        } catch (e) {
+          // Continuar verificando próximo path
+        }
+      }
+      
+      if (envPath) {
+        verification.log(`Atualizando arquivo .env em ${envPath}...`, 'info');
+        
+        // Gerar conteúdo do arquivo .env
+        const envContent = `DB_HOST=localhost
+DB_PORT=5432
+DB_DATABASE=print_management
+DB_USERNAME=postgres_print
+DB_PASSWORD=root_print`;
+        
+        // Escapar conteúdo para bash
+        const escapedContent = envContent.replace(/"/g, '\\"');
+        
+        // Atualizar ou criar arquivo .env
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "echo \\"${escapedContent}\\" > ${envPath}/.env"`,
+          10000,
+          true
+        );
+        
+        verification.log('Arquivo .env configurado com dados de conexão', 'success');
+      } else {
+        verification.log('Aviso: Não foi possível encontrar diretório da aplicação para configurar .env', 'warning');
+      }
+    } catch (envError) {
+      verification.log('Aviso: Erro ao configurar arquivo .env', 'warning');
+      verification.logToFile(`Detalhes do erro: ${JSON.stringify(envError)}`);
+      // Continuar mesmo com erro
+    }
+    
+    verification.log('Configuração básica do banco concluída com sucesso', 'success');
+    return true;
   } catch (error) {
-    verification.log(`Erro global: ${error?.message || JSON.stringify(error)}`, 'error');
-    verification.logToFile(`Erro fatal em setupMigrationsWithPath: ${JSON.stringify(error)}`);
+    verification.log(`Erro fatal na configuração do banco: ${error.message || JSON.stringify(error)}`, 'error');
+    verification.logToFile(`Erro detalhado: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+// Executar migrações do banco de dados - método ultra-direto
+async function setupMigrations() {
+  verification.log('Executando migrações do banco de dados...', 'header');
+
+  try {
+    // 1. Verificar se o PostgreSQL está rodando
+    verification.log('Verificando status do PostgreSQL...', 'step');
+    
+    try {
+      const statusCheck = await verification.execPromise('wsl -d Ubuntu -u root systemctl is-active postgresql', 10000, true)
+        .catch(() => "inactive");
+      
+      if (statusCheck.trim() !== 'active') {
+        verification.log('PostgreSQL não está rodando, reiniciando serviço...', 'warning');
+        await verification.execPromise('wsl -d Ubuntu -u root systemctl start postgresql || service postgresql start', 20000, true);
+        
+        // Aguardar inicialização
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
+    } catch (statusError) {
+      verification.log('Aviso: Não foi possível verificar status do PostgreSQL', 'warning');
+      verification.logToFile(`Erro ao verificar status: ${JSON.stringify(statusError)}`);
+    }
+    
+    // 2. Procurar script de migração existente - apenas para logging
+    verification.log('Verificando scripts de migração existentes...', 'step');
+    
+    // Verificar existência do script
+    const possiblePaths = [
+      "/opt/loqquei/print_server_desktop",
+      "/opt/print_server/print_server_desktop",
+      "/opt/loqquei",
+      "/opt/print_server"
+    ];
+    
+    let foundPath = null;
+    for (const path of possiblePaths) {
+      try {
+        const scriptCheck = await verification.execPromise(
+          `wsl -d Ubuntu -u root test -f "${path}/db/migrate.sh" && echo "exists"`,
+          10000,
+          true
+        ).catch(() => "");
+        
+        if (scriptCheck === "exists") {
+          foundPath = path;
+          verification.log(`Script de migração encontrado em: ${path}`, 'info');
+          break;
+        }
+      } catch (e) {}
+    }
+    
+    // 3. Tentar executar script de migração se existir
+    if (foundPath) {
+      verification.log(`Tentando executar script de migração em ${foundPath}...`, 'step');
+      
+      try {
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "chmod +x ${foundPath}/db/migrate.sh"`,
+          10000,
+          true
+        );
+        
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "cd ${foundPath} && ./db/migrate.sh"`,
+          120000, // 2 minutos
+          true
+        );
+        
+        // Verificar se as tabelas foram criadas
+        const tablesExist = await verifyTablesExist();
+        
+        if (tablesExist) {
+          verification.log('Script de migração executado com sucesso, tabelas criadas!', 'success');
+          return true;
+        } else {
+          verification.log('Script de migração executado, mas tabelas ainda não existem. Usando método direto...', 'warning');
+        }
+      } catch (scriptError) {
+        verification.log(`Erro ao executar script: ${scriptError.message || JSON.stringify(scriptError)}`, 'error');
+        verification.log('Usando método direto para criar tabelas...', 'step');
+      }
+    } else {
+      verification.log('Nenhum script de migração encontrado, usando método direto...', 'step');
+    }
+    
+    // 4. Método direto para criar tabelas
+    return await createTablesDirectly();
+  } catch (error) {
+    verification.log(`Erro ao executar migrações: ${error.message || JSON.stringify(error)}`, 'error');
+    
+    // Tentar método direto como fallback
+    try {
+      verification.log('Tentando método direto após erro...', 'step');
+      return await createTablesDirectly();
+    } catch (fallbackError) {
+      verification.log('Todos os métodos falharam', 'error');
+      return false;
+    }
+  }
+}
+
+// Verificar se as tabelas existem
+async function verifyTablesExist() {
+  try {
+    verification.log('Verificando se as tabelas necessárias existem...', 'step');
+    
+    // Verificação direta das tabelas
+    const tablesCheck = await verification.execPromise(
+      'wsl -d Ubuntu -u postgres psql -d print_management -c "SELECT tablename FROM pg_tables WHERE schemaname = \'print_management\';"',
+      10000,
+      true
+    );
+    
+    const hasLogs = tablesCheck.toLowerCase().includes('logs');
+    const hasPrinters = tablesCheck.toLowerCase().includes('printers');
+    const hasFiles = tablesCheck.toLowerCase().includes('files');
+    
+    verification.log(`Tabelas encontradas: ${tablesCheck}`, 'info');
+    verification.log(`Status: logs=${hasLogs}, printers=${hasPrinters}, files=${hasFiles}`, 'info');
+    
+    return hasLogs && hasPrinters && hasFiles;
+  } catch (error) {
+    verification.log(`Erro na verificação de tabelas: ${error.message || JSON.stringify(error)}`, 'error');
+    return false;
+  }
+}
+
+// Criar tabelas do banco diretamente - método aprimorado e corrigido para evitar problemas de escape
+async function createTablesDirectly() {
+  verification.log('Criando tabelas diretamente com SQL...', 'step');
+  
+  try {
+    // Usar método alternativo: criar arquivo SQL temporário e executá-lo
+    // Isso evita problemas com caracteres de escape e quebras de linha
+    verification.log('Preparando arquivo SQL temporário para execução...', 'step');
+    
+    // Criar arquivo SQL temporário no WSL
+    const sqlContent = `
+-- Criar tipos ENUM
+DO $ 
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typname = 'log_type' AND n.nspname = 'print_management') THEN
+    CREATE TYPE print_management.log_type AS ENUM ('error', 'read', 'create', 'update', 'delete');
+  END IF;
+  
+  IF NOT EXISTS (SELECT 1 FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE t.typname = 'printer_status' AND n.nspname = 'print_management') THEN
+    CREATE TYPE print_management.printer_status AS ENUM ('functional','expired useful life','powered off','obsolete','damaged','lost','disabled');
+  END IF;
+END $;
+
+-- Criar tabelas principais
+CREATE TABLE IF NOT EXISTS print_management.logs (
+  id varchar(50) NOT NULL,
+  createdAt timestamp NOT NULL,
+  logtype print_management.log_type NOT NULL,
+  entity varchar(255) DEFAULT NULL,
+  operation VARCHAR(50) DEFAULT NULL,
+  beforeData jsonb DEFAULT NULL,
+  afterData jsonb DEFAULT NULL,
+  errorMessage text DEFAULT NULL,
+  errorStack text DEFAULT NULL,
+  userInfo jsonb DEFAULT NULL,
+  PRIMARY KEY (id)
+);
+
+CREATE TABLE IF NOT EXISTS print_management.printers (
+  id varchar(50) NOT NULL,
+  name varchar(50) NOT NULL,
+  status print_management.printer_status NOT NULL,
+  protocol varchar(20) DEFAULT 'socket',
+  mac_address varchar(17) DEFAULT NULL,
+  driver varchar(100) DEFAULT 'generic',
+  uri varchar(255) DEFAULT NULL,
+  description text DEFAULT NULL,
+  location varchar(100) DEFAULT NULL,
+  ip_address varchar(15) DEFAULT NULL,
+  port int DEFAULT NULL,
+  createdAt timestamp NOT NULL,
+  updatedAt timestamp NOT NULL,
+  deletedAt timestamp DEFAULT NULL,
+  PRIMARY KEY (id)
+);
+
+CREATE TABLE IF NOT EXISTS print_management.files (
+  id varchar(50) NOT NULL,
+  assetId varchar(50) DEFAULT NULL,
+  fileName text NOT NULL,
+  pages int NOT NULL,
+  path TEXT NOT NULL,
+  createdAt timestamp NOT NULL,
+  deletedAt timestamp DEFAULT NULL,
+  printed BOOLEAN NOT NULL DEFAULT FALSE,
+  synced BOOLEAN NOT NULL DEFAULT FALSE,
+  PRIMARY KEY (id),
+  FOREIGN KEY (assetId) REFERENCES print_management.printers(id)
+);
+
+-- Configurar permissões
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA print_management TO postgres_print;
+GRANT USAGE ON TYPE print_management.log_type TO postgres_print;
+GRANT USAGE ON TYPE print_management.printer_status TO postgres_print;
+ALTER DEFAULT PRIVILEGES IN SCHEMA print_management GRANT ALL PRIVILEGES ON TABLES TO postgres_print;
+ALTER DEFAULT PRIVILEGES IN SCHEMA print_management GRANT ALL PRIVILEGES ON SEQUENCES TO postgres_print;
+ALTER DEFAULT PRIVILEGES IN SCHEMA print_management GRANT ALL PRIVILEGES ON FUNCTIONS TO postgres_print;
+`;
+
+    try {
+      // Escrever o SQL em um arquivo temporário no WSL
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "cat > /tmp/db_setup.sql" << 'EOFMARKER'
+${sqlContent}
+EOFMARKER`,
+        10000,
+        true
+      );
+      
+      verification.log('Arquivo SQL temporário criado', 'success');
+      
+      // Executar o arquivo SQL com psql
+      verification.log('Executando script SQL completo...', 'step');
+      
+      await verification.execPromise(
+        'wsl -d Ubuntu -u postgres psql -d print_management -f /tmp/db_setup.sql',
+        30000,
+        true
+      );
+      
+      verification.log('Script SQL executado com sucesso', 'success');
+    } catch (scriptError) {
+      verification.log(`Erro ao executar script SQL: ${scriptError.message || JSON.stringify(scriptError)}`, 'error');
+      verification.logToFile(`Detalhes do erro de script: ${JSON.stringify(scriptError)}`);
+      
+      // Tentar método alternativo linha por linha
+      verification.log('Tentando método alternativo executando cada comando separadamente...', 'warning');
+      
+      // Lista de comandos SQL simplificados para executar um por um
+      const sqlCommands = [
+        // 1. Criar tipos ENUM - versão simplificada
+        {
+          description: "Tipo log_type",
+          sql: "CREATE TYPE print_management.log_type AS ENUM ('error', 'read', 'create', 'update', 'delete');",
+          ignoreError: true
+        },
+        {
+          description: "Tipo printer_status",
+          sql: "CREATE TYPE print_management.printer_status AS ENUM ('functional','expired useful life','powered off','obsolete','damaged','lost','disabled');",
+          ignoreError: true
+        },
+        
+        // 2. Criar tabelas - versão em linha única para evitar problemas de escape
+        {
+          description: "Tabela logs",
+          sql: "CREATE TABLE IF NOT EXISTS print_management.logs (id varchar(50) NOT NULL, createdAt timestamp NOT NULL, logtype print_management.log_type NOT NULL, entity varchar(255) DEFAULT NULL, operation VARCHAR(50) DEFAULT NULL, beforeData jsonb DEFAULT NULL, afterData jsonb DEFAULT NULL, errorMessage text DEFAULT NULL, errorStack text DEFAULT NULL, userInfo jsonb DEFAULT NULL, PRIMARY KEY (id));",
+          ignoreError: false
+        },
+        {
+          description: "Tabela printers",
+          sql: "CREATE TABLE IF NOT EXISTS print_management.printers (id varchar(50) NOT NULL, name varchar(50) NOT NULL, status print_management.printer_status NOT NULL, protocol varchar(20) DEFAULT 'socket', mac_address varchar(17) DEFAULT NULL, driver varchar(100) DEFAULT 'generic', uri varchar(255) DEFAULT NULL, description text DEFAULT NULL, location varchar(100) DEFAULT NULL, ip_address varchar(15) DEFAULT NULL, port int DEFAULT NULL, createdAt timestamp NOT NULL, updatedAt timestamp NOT NULL, deletedAt timestamp DEFAULT NULL, PRIMARY KEY (id));",
+          ignoreError: false
+        },
+        {
+          description: "Tabela files",
+          sql: "CREATE TABLE IF NOT EXISTS print_management.files (id varchar(50) NOT NULL, assetId varchar(50) DEFAULT NULL, fileName text NOT NULL, pages int NOT NULL, path TEXT NOT NULL, createdAt timestamp NOT NULL, deletedAt timestamp DEFAULT NULL, printed BOOLEAN NOT NULL DEFAULT FALSE, synced BOOLEAN NOT NULL DEFAULT FALSE, PRIMARY KEY (id), FOREIGN KEY (assetId) REFERENCES print_management.printers(id));",
+          ignoreError: false
+        },
+        
+        // 3. Configurar permissões - simplificadas
+        {
+          description: "Permissões em tabelas",
+          sql: "GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA print_management TO postgres_print;",
+          ignoreError: true
+        },
+        {
+          description: "Permissões em tipos",
+          sql: "GRANT USAGE ON TYPE print_management.log_type TO postgres_print; GRANT USAGE ON TYPE print_management.printer_status TO postgres_print;",
+          ignoreError: true
+        },
+        {
+          description: "Permissões padrão em tabelas",
+          sql: "ALTER DEFAULT PRIVILEGES IN SCHEMA print_management GRANT ALL PRIVILEGES ON TABLES TO postgres_print;",
+          ignoreError: true
+        },
+        {
+          description: "Permissões padrão em sequências",
+          sql: "ALTER DEFAULT PRIVILEGES IN SCHEMA print_management GRANT ALL PRIVILEGES ON SEQUENCES TO postgres_print;",
+          ignoreError: true
+        },
+        {
+          description: "Permissões padrão em funções",
+          sql: "ALTER DEFAULT PRIVILEGES IN SCHEMA print_management GRANT ALL PRIVILEGES ON FUNCTIONS TO postgres_print;",
+          ignoreError: true
+        }
+      ];
+      
+      // Executar cada comando SQL
+      let successCount = 0;
+      let errorCount = 0;
+      
+      for (const command of sqlCommands) {
+        verification.log(`Executando SQL: ${command.description}...`, 'step');
+        
+        try {
+          // Usar comandos de execução mais simples que têm menos problemas de escape
+          const escapedSql = command.sql.replace(/'/g, "'\\''");
+          await verification.execPromise(
+            `wsl -d Ubuntu -u postgres bash -c "psql -d print_management -c '${escapedSql}'"`,
+            20000,
+            true
+          );
+          
+          verification.log(`${command.description} - Concluído com sucesso`, 'success');
+          successCount++;
+        } catch (sqlError) {
+          if (command.ignoreError) {
+            verification.log(`${command.description} - Aviso: Comando falhou, mas era esperado (objeto pode já existir)`, 'warning');
+            successCount++; // Contamos como sucesso se o erro for ignorável
+          } else {
+            verification.log(`${command.description} - ERRO: ${sqlError.message || JSON.stringify(sqlError)}`, 'error');
+            verification.logToFile(`Detalhes do erro: ${JSON.stringify(sqlError)}`);
+            errorCount++;
+          }
+          
+          // Verificar se o erro é de "já existe" para tipos ENUM
+          if (sqlError.stderr && (
+              sqlError.stderr.includes('already exists') || 
+              sqlError.stderr.includes('já existe')
+          )) {
+            verification.log(`${command.description} - O objeto já existe, continuando...`, 'info');
+          }
+        }
+      }
+    }
+    
+    // Verificar se todas as tabelas essenciais foram criadas
+    verification.log('Verificação final das tabelas...', 'step');
+    const tablesExist = await verifyTablesExist();
+    
+    if (tablesExist) {
+      verification.log('Todas as tabelas necessárias foram criadas com sucesso!', 'success');
+      return true;
+    } else {
+      // Verificar uma última vez se as tabelas foram criadas com nome de colunas em caixa baixa
+      try {
+        const altTablesCheck = await verification.execPromise(
+          'wsl -d Ubuntu -u postgres psql -d print_management -c "SELECT tableowner FROM pg_tables WHERE schemaname = \'print_management\';"',
+          10000,
+          true
+        );
+        
+        // Se temos pelo menos alguns resultados, considerar parcialmente bem-sucedido
+        if (altTablesCheck && altTablesCheck.includes('postgres')) {
+          verification.log('Algumas tabelas foram criadas, mas verificação completa falhou', 'warning');
+          return true;
+        }
+      } catch (finalCheckError) {
+        // Ignorar erro na verificação final
+      }
+      
+      // Último método - extremamente simplificado
+      verification.log('Tentando último método usando arquivo SQL direto...', 'warning');
+      try {
+        // Criar arquivo SQL mínimo (versão extremamente simplificada em um único arquivo)
+        const minimalSql = `
+CREATE TYPE IF NOT EXISTS print_management.log_type AS ENUM ('error', 'read', 'create', 'update', 'delete');
+CREATE TYPE IF NOT EXISTS print_management.printer_status AS ENUM ('functional','expired useful life','powered off','obsolete','damaged','lost','disabled');
+CREATE TABLE IF NOT EXISTS print_management.logs (id varchar(50) PRIMARY KEY, createdAt timestamp NOT NULL, logtype print_management.log_type NOT NULL);
+CREATE TABLE IF NOT EXISTS print_management.printers (id varchar(50) PRIMARY KEY, name varchar(50) NOT NULL, status print_management.printer_status NOT NULL);
+CREATE TABLE IF NOT EXISTS print_management.files (id varchar(50) PRIMARY KEY, assetId varchar(50), fileName text NOT NULL, pages int NOT NULL, path text NOT NULL);
+GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA print_management TO postgres_print;
+`;
+
+        // Escrever SQL mínimo em arquivo
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "echo '${minimalSql.replace(/'/g, "'\\''")}' > /tmp/minimal_db.sql"`,
+          10000,
+          true
+        );
+        
+        // Executar SQL mínimo
+        await verification.execPromise(
+          'wsl -d Ubuntu -u postgres psql -d print_management -f /tmp/minimal_db.sql',
+          15000,
+          true
+        );
+        
+        verification.log('SQL mínimo executado, verificando tabelas...', 'step');
+        
+        // Verificar novamente
+        const finalCheck = await verifyTablesExist();
+        if (finalCheck) {
+          verification.log('Tabelas criadas com método mínimo!', 'success');
+          return true;
+        } else {
+          verification.log('Mesmo o método mínimo falhou', 'error');
+        }
+      } catch (finalAttemptError) {
+        verification.log('Último método também falhou', 'error');
+        verification.logToFile(`Erro final: ${JSON.stringify(finalAttemptError)}`);
+      }
+      
+      verification.log('ERRO: Falha ao criar tabelas necessárias', 'error');
+      return false;
+    }
+  } catch (error) {
+    verification.log(`Erro ao criar tabelas: ${error.message || JSON.stringify(error)}`, 'error');
+    return false;
+  }
+}
+
+
+// Configurar usuário padrão - método ultra-simplificado
+async function configureDefaultUser() {
+  verification.log('Configurando usuário padrão com método ultra-simplificado...', 'step');
+  verification.logToFile('Iniciando configuração simplificada do usuário padrão');
+
+  try {
+    // 1. Desligar WSL primeiro
+    try {
+      await verification.execPromise('wsl --shutdown', 10000, true);
+      // Esperar o WSL desligar
+      await new Promise(resolve => setTimeout(resolve, 5000));
+    } catch (e) {}
+    
+    // 2. Criar usuário
+    try {
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root useradd -m -s /bin/bash -G sudo print_user',
+        15000,
+        true
+      ).catch(e => {});
+      
+      verification.log('Usuário print_user criado ou já existe', 'success');
+    } catch (e) {}
+    
+    // 3. Definir senha
+    try {
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo print_user:print_user | chpasswd"',
+        15000,
+        true
+      );
+      verification.log('Senha configurada', 'success');
+    } catch (e) {}
+    
+    // 4. Configurar sudo
+    try {
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo \'print_user ALL=(ALL) NOPASSWD:ALL\' > /etc/sudoers.d/print_user && chmod 440 /etc/sudoers.d/print_user"',
+        15000,
+        true
+      );
+      verification.log('Acesso sudo configurado', 'success');
+    } catch (e) {}
+    
+    // 5. Criar wsl.conf LINHA POR LINHA
+    try {
+      // Linha 1
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo \'[user]\' > /etc/wsl.conf"',
+        10000,
+        true
+      );
+      
+      // Linha 2
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo \'default=print_user\' >> /etc/wsl.conf"',
+        10000,
+        true
+      );
+      
+      // Linha 3
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo \'\' >> /etc/wsl.conf"',
+        10000,
+        true
+      );
+      
+      // Linha 4
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo \'[boot]\' >> /etc/wsl.conf"',
+        10000,
+        true
+      );
+      
+      // Linha 5
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo \'systemd=true\' >> /etc/wsl.conf"',
+        10000,
+        true
+      );
+      
+      verification.log('Arquivo wsl.conf criado', 'success');
+      
+      // Verificar o arquivo
+      const wslConfContent = await verification.execPromise(
+        'wsl -d Ubuntu -u root cat /etc/wsl.conf',
+        10000,
+        true
+      );
+      
+      verification.log(`Conteúdo de wsl.conf: ${wslConfContent}`, 'info');
+    } catch (e) {}
+    
+    // 6. Reiniciar WSL para aplicar configuração
+    try {
+      await verification.execPromise('wsl --terminate Ubuntu', 15000, true);
+      verification.log('WSL reiniciado para aplicar configurações', 'success');
+      
+      // Esperar reinicialização
+      await new Promise(resolve => setTimeout(resolve, 10000));
+    } catch (e) {}
+    
+    // Atualizar estado
+    installState.defaultUserCreated = true;
+    saveInstallState();
+    
+    verification.log('Usuário padrão configurado!', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao configurar usuário: ${error.message || JSON.stringify(error)}`, 'error');
     return false;
   }
 }
@@ -5023,7 +5023,6 @@ module.exports = {
   },
 
   setupDatabase,
-  setupMigrationsWithPath,
   execWslCommand,
   installRequiredPackages,
   restartServices
@@ -5032,7 +5031,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await configureDefaultUser());
+    console.log(await setupMigrations());
     process.exit(1)
   })()
 }

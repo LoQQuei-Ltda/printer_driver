@@ -156,7 +156,7 @@ function prepareServerFiles() {
     
     // Copiar todos os arquivos, exceto node_modules e .git
     log('Copiando arquivos...');
-    if (copyDir(SOURCE_DIR, TARGET_DIR, ['node_modules', '.git', '.github'])) {
+    if (copyDir(SOURCE_DIR, TARGET_DIR, ['.git', '.github'])) {
       log('Arquivos copiados com sucesso!');
     } else {
       log('AVISO: Houve problemas durante a cópia dos arquivos.');
