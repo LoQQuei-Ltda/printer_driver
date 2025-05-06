@@ -451,7 +451,6 @@ async function installComponent(component, status) {
           // Reiniciar outros serviços fundamentais
           log('Reiniciando serviços adicionais...', 'step');
           await verification.execPromise('wsl -d Ubuntu -u root service postgresql restart', 30000, true);
-          await verification.execPromise('wsl -d Ubuntu -u root service avahi-daemon restart', 30000, true);
           
           // Consideramos sucesso mesmo se alguns serviços falharem
           log('Serviços configurados', cupsResult && sambaResult && dbResult ? 'success' : 'warning');
