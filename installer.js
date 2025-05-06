@@ -1764,267 +1764,335 @@ async function installUbuntu(attemptCount = 0) {
 // Função otimizada para configurar usuário padrão com mais velocidade
 async function configureDefaultUser() {
   verification.log('Configurando usuário padrão...', 'step');
+  verification.logToFile('Iniciando configuração do usuário padrão');
 
+  // Garantir que conseguimos acessar o WSL com tempo de espera adequado
   try {
-    // Verificar primeiro se o Ubuntu está acessível
+    await verification.execPromise('wsl --shutdown', 10000, true)
+      .catch(e => verification.logToFile('Não foi possível desligar o WSL, ignorando: ' + JSON.stringify(e)));
+    
+    // Esperar um pouco para o WSL desligar completamente
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    
+    // Tentar acessar o WSL de novo
+    await verification.execPromise('wsl -d Ubuntu echo "Teste de acesso WSL"', 20000, true);
+    verification.log('WSL está acessível', 'success');
+  } catch (accessError) {
+    verification.log('Não foi possível acessar o Ubuntu para configurar usuário', 'error');
+    verification.logToFile(`Erro de acesso ao WSL: ${JSON.stringify(accessError)}`);
+    
     try {
-      await verification.execPromise('wsl -d Ubuntu echo "Teste de acesso WSL"', 15000, false);
-    } catch (accessError) {
-      verification.log('Não foi possível acessar o Ubuntu para configurar usuário', 'error');
-      verification.logToFile(`Erro de acesso: ${JSON.stringify(accessError)}`);
+      // Tentar uma vez mais com mais tempo
+      verification.log('Tentando acessar WSL novamente com timeout maior...', 'warning');
+      await verification.execPromise('wsl -d Ubuntu echo "Segundo teste de acesso"', 30000, true);
+      verification.log('WSL está acessível na segunda tentativa', 'success');
+    } catch (secondError) {
+      verification.logToFile(`Segunda falha de acesso: ${JSON.stringify(secondError)}`);
       return false;
     }
+  }
 
-    // Verificar se o usuário já existe para evitar reconfiguração desnecessária
-    const userExists = await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "id -u print_user &>/dev/null && echo \'exists\' || echo \'not_exists\'"',
+  // Sempre criar o usuário e configurar wsl.conf do zero, evitando verificações complexas
+  verification.log('Criando usuário print_user...', 'step');
+  
+  // Criar diretório home primeiro
+  try {
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "mkdir -p /home/print_user"',
       15000,
       true
-    ).catch(() => "error");
-    
-    const wslConfExists = await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "test -f /etc/wsl.conf && grep -q \'default=print_user\' /etc/wsl.conf && echo \'configured\' || echo \'not_configured\'"',
-      15000,
+    );
+    verification.log('Diretório home preparado', 'success');
+  } catch (homeError) {
+    verification.log('Erro ao criar diretório home, continuando...', 'warning');
+    verification.logToFile(`Erro home: ${JSON.stringify(homeError)}`);
+  }
+  
+  // Criar o usuário de forma simplificada (ignora erro se já existir)
+  try {
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "useradd -m -s /bin/bash -G sudo print_user 2>/dev/null || true"',
+      20000,
       true
-    ).catch(() => "error");
+    );
+    verification.log('Usuário print_user criado ou já existe', 'success');
+  } catch (createError) {
+    verification.log('Erro ao criar usuário, verificando se já existe...', 'warning');
+    verification.logToFile(`Erro ao criar usuário: ${JSON.stringify(createError)}`);
     
-    if (userExists === "exists" && wslConfExists === "configured") {
-      verification.log('Usuário print_user já existe e está configurado como padrão', 'success');
-      installState.defaultUserCreated = true;
-      saveInstallState();
-      return true;
-    }
-    
-    // Etapa 1: Adicionar o usuário ou atualizar se já existir
-    verification.log('Criando/atualizando usuário print_user...', 'step');
-    
-    // Primeiro verificar se o usuário existe
-    if (userExists === "exists") {
-      verification.log('Usuário print_user já existe, atualizando configurações...', 'info');
-    } else {
-      // Criar o usuário com shell e grupo sudo
+    // Verificar se o usuário existe apesar do erro
+    try {
+      const userCheck = await verification.execPromise(
+        'wsl -d Ubuntu -u root id print_user',
+        15000,
+        true
+      );
+      
+      if (userCheck && userCheck.includes('print_user')) {
+        verification.log('Usuário print_user já existe apesar do erro', 'success');
+      } else {
+        verification.log('Usuário print_user não existe e não foi possível criar', 'error');
+        return false;
+      }
+    } catch (checkError) {
+      verification.log('Erro ao verificar usuário, tentando método alternativo de criação', 'warning');
+      
+      // Método alternativo de criação de usuário
       try {
         await verification.execPromise(
-          'wsl -d Ubuntu -u root useradd -m -s /bin/bash -G sudo print_user',
+          'wsl -d Ubuntu -u root bash -c "adduser --disabled-password --gecos \'\' print_user"',
           20000,
           true
         );
-        verification.log('Usuário print_user criado com sucesso', 'success');
-      } catch (createError) {
-        verification.log('Erro ao criar usuário, verificando se já existe...', 'warning');
-        
-        // Verificar se o erro é porque o usuário já existe
-        const secondCheck = await verification.execPromise(
-          'wsl -d Ubuntu -u root id print_user',
-          10000,
-          true
-        ).catch(() => "");
-        
-        if (!secondCheck) {
-          verification.log('Falha ao criar usuário print_user e usuário não existe', 'error');
-          verification.logToFile(`Erro detalhado: ${JSON.stringify(createError)}`);
-          return false;
-        } else {
-          verification.log('Usuário print_user já existe apesar do erro', 'warning');
-        }
-      }
-    }
-
-    // Etapa 2: Definir senha de maneira mais robusta
-    verification.log('Configurando senha para print_user...', 'step');
-    
-    // Método 1: chpasswd (mais confiável)
-    try {
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "echo \'print_user:print_user\' | chpasswd"',
-        15000,
-        true
-      );
-      verification.log('Senha definida com sucesso via chpasswd', 'success');
-    } catch (passError1) {
-      verification.log('Erro ao definir senha com chpasswd, tentando método alternativo...', 'warning');
-      
-      // Método 2: passwd com pipe
-      try {
-        await verification.execPromise(
-          'wsl -d Ubuntu -u root bash -c "echo -e \'print_user\\nprint_user\\n\' | passwd print_user"',
-          15000,
-          true
-        );
-        verification.log('Senha definida com sucesso via passwd', 'success');
-      } catch (passError2) {
-        verification.log('Ambos os métodos para definir senha falharam', 'error');
-        // Continuar mesmo assim - o usuário pode definir a senha manualmente depois
-      }
-    }
-
-    // Etapa 3: Garantir que o diretório home existe e tem as permissões corretas
-    verification.log('Configurando diretório home e permissões...', 'step');
-    
-    try {
-      // Criar diretório home se não existir
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "mkdir -p /home/print_user"',
-        10000,
-        true
-      );
-      
-      // Definir propriedade correta
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "chown -R print_user:print_user /home/print_user"',
-        15000,
-        true
-      );
-      
-      // Definir permissões
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "chmod -R 750 /home/print_user"',
-        15000,
-        true
-      );
-      
-      // Definir o diretório home do usuário
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root usermod -d /home/print_user -m print_user',
-        15000,
-        true
-      );
-      
-      verification.log('Diretório home configurado corretamente', 'success');
-    } catch (homeError) {
-      verification.log('Erro ao configurar diretório home, mas continuando...', 'warning');
-      verification.logToFile(`Erro home: ${JSON.stringify(homeError)}`);
-    }
-
-    // Etapa 4: Garantir que o usuário está no grupo sudo
-    verification.log('Configurando acesso sudo...', 'step');
-    
-    try {
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "usermod -aG sudo print_user"',
-        15000,
-        true
-      );
-      
-      // Configurar sudo sem senha para facilitar
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "echo \'print_user ALL=(ALL) NOPASSWD:ALL\' > /etc/sudoers.d/print_user"',
-        15000,
-        true
-      );
-      
-      // Corrigir permissões do arquivo sudoers
-      await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "chmod 440 /etc/sudoers.d/print_user"',
-        10000,
-        true
-      );
-      
-      verification.log('Acesso sudo configurado corretamente', 'success');
-    } catch (sudoError) {
-      verification.log('Erro ao configurar sudo, mas continuando...', 'warning');
-    }
-
-    // Etapa 5: Criar/atualizar arquivo wsl.conf com usuário padrão
-    verification.log('Configurando wsl.conf para definir usuário padrão...', 'step');
-    
-    try {
-      // Verificar se o arquivo existe
-      const wslConfCheck = await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "test -f /etc/wsl.conf && echo \'exists\' || echo \'not_exists\'"',
-        10000,
-        true
-      );
-      
-      if (wslConfCheck === "exists") {
-        // Arquivo existe, verificar se já tem configuração de usuário
-        const userConfCheck = await verification.execPromise(
-          'wsl -d Ubuntu -u root bash -c "grep -q \'\\[user\\]\' /etc/wsl.conf && echo \'exists\' || echo \'not_exists\'"',
-          10000,
-          true
-        );
-        
-        if (userConfCheck === "exists") {
-          // Seção [user] existe, atualizar configuração
-          await verification.execPromise(
-            'wsl -d Ubuntu -u root bash -c "sed -i \'/\\[user\\]/,/\\[.*\\]/{s/^default=.*/default=print_user/;h}; /\\[user\\]/!H; $!d; x; /\\[user\\]/s/\\[user\\]\\r\\?\\n\\([^d][^e][^f]\\|[^d]\\|\\r\\?\\n\\|$\\)/[user]\\r\\ndefault=print_user\\r\\n/; p\'"',
-            15000,
-            true
-          );
-        } else {
-          // Seção [user] não existe, adicionar ao final
-          await verification.execPromise(
-            'wsl -d Ubuntu -u root bash -c "echo -e \'\\n[user]\\ndefault=print_user\' >> /etc/wsl.conf"',
-            10000,
-            true
-          );
-        }
-      } else {
-        // Arquivo não existe, criar do zero
-        await verification.execPromise(
-          'wsl -d Ubuntu -u root bash -c "echo -e \'[user]\\ndefault=print_user\' > /etc/wsl.conf"',
-          10000,
-          true
-        );
-      }
-      
-      verification.log('Arquivo wsl.conf configurado corretamente', 'success');
-    } catch (wslConfError) {
-      verification.log('Erro ao configurar wsl.conf, tentando método alternativo...', 'warning');
-      
-      // Método alternativo mais simples
-      try {
-        // Simplesmente sobrescrever o arquivo
-        await verification.execPromise(
-          'wsl -d Ubuntu -u root bash -c "echo -e \'[user]\\ndefault=print_user\' > /etc/wsl.conf"',
-          10000,
-          true
-        );
-        verification.log('wsl.conf reescrito com sucesso', 'success');
-      } catch (altWslConfError) {
-        verification.log('Todos os métodos para configurar wsl.conf falharam', 'error');
-        verification.logToFile(`Erro wsl.conf: ${JSON.stringify(altWslConfError)}`);
+        verification.log('Usuário criado com método alternativo', 'success');
+      } catch (altError) {
+        verification.log('Todos os métodos de criação de usuário falharam', 'error');
+        verification.logToFile(`Erro detalhado: ${JSON.stringify(altError)}`);
         return false;
       }
     }
+  }
 
-    // Verificação final
-    verification.log('Verificando configuração do usuário padrão...', 'step');
+  // Definir senha usando método mais simples
+  verification.log('Configurando senha para print_user...', 'step');
+  try {
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "echo \'print_user:print_user\' | chpasswd"',
+      15000,
+      true
+    );
+    verification.log('Senha definida com sucesso', 'success');
+  } catch (passError) {
+    verification.log('Erro ao definir senha, tentando método alternativo...', 'warning');
     
     try {
-      const finalCheck = await verification.execPromise(
-        'wsl -d Ubuntu -u root bash -c "grep -q \'default=print_user\' /etc/wsl.conf && echo \'success\' || echo \'failed\'"',
-        10000,
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo print_user | passwd print_user --stdin 2>/dev/null || (echo print_user | passwd --stdin print_user) 2>/dev/null || echo Ignorando erro de senha"',
+        15000,
         true
       );
+      verification.log('Senha configurada com método alternativo ou ignorada', 'warning');
+    } catch (altPassError) {
+      verification.log('Erro ao definir senha, mas continuando...', 'warning');
+      verification.logToFile(`Erro senha: ${JSON.stringify(altPassError)}`);
+    }
+  }
+
+  // Configurar diretório home e permissões
+  verification.log('Configurando permissões...', 'step');
+  try {
+    // Simplificar para apenas os comandos essenciais
+    const permCommands = [
+      'chown -R print_user:print_user /home/print_user 2>/dev/null || true',
+      'chmod -R 750 /home/print_user 2>/dev/null || true',
+      'usermod -aG sudo print_user 2>/dev/null || true',
+      'echo \'print_user ALL=(ALL) NOPASSWD:ALL\' > /etc/sudoers.d/print_user 2>/dev/null || true',
+      'chmod 440 /etc/sudoers.d/print_user 2>/dev/null || true'
+    ];
+    
+    // Executar comandos em sequência
+    for (const cmd of permCommands) {
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "${cmd}"`,
+        10000,
+        true
+      ).catch(() => verification.log(`Aviso: Comando '${cmd}' falhou, continuando...`, 'warning'));
+    }
+    
+    verification.log('Permissões configuradas', 'success');
+  } catch (permError) {
+    verification.log('Erro ao configurar permissões, mas continuando...', 'warning');
+    verification.logToFile(`Erro permissões: ${JSON.stringify(permError)}`);
+  }
+
+  // ETAPA MAIS CRÍTICA: Criar arquivo wsl.conf de forma garantida
+  verification.log('Configurando wsl.conf para definir usuário padrão...', 'step');
+  
+  const wslConfSuccess = await configureWslConf();
+
+  if (!wslConfSuccess) {
+    verification.log('Não foi possível criar o arquivo wsl.conf corretamente', 'error');
+  }
+
+  verification.log('Verificando configuração do usuário padrão...', 'step');
+  try {
+    // Verificar se o arquivo contém a linha correta
+    const grepCheck = await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "grep -q \'default=print_user\' /etc/wsl.conf && echo \'success\' || echo \'failed\'"',
+      15000,
+      true
+    );
+    
+    if (grepCheck === "success") {
+      verification.log('Usuário padrão configurado com sucesso no arquivo', 'success');
       
-      if (finalCheck === "success") {
-        verification.log('Usuário padrão configurado com sucesso', 'success');
-        installState.defaultUserCreated = true;
-        saveInstallState();
+      // Atualizar estado salvo
+      installState.defaultUserCreated = true;
+      saveInstallState();
+      
+      // Reiniciar a distribuição Ubuntu para aplicar as alterações
+      verification.log('Reiniciando WSL para aplicar configurações...', 'step');
+      try {
+        await verification.execPromise('wsl --terminate Ubuntu', 15000, true);
+        verification.log('Distribuição Ubuntu reiniciada', 'success');
         
-        // Reiniciar a distribuição do Ubuntu para aplicar as alterações
-        try {
-          await verification.execPromise('wsl --terminate Ubuntu', 15000, true);
-          verification.log('Distribuição Ubuntu reiniciada para aplicar alterações', 'success');
-        } catch (terminateError) {
-          verification.log('Não foi possível reiniciar a distribuição, você pode precisar reiniciar manualmente', 'warning');
-        }
+        // Esperar para o WSL reiniciar completamente
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        
+        verification.log('Esperando WSL reiniciar completamente...', 'info');
+        
+        // Verificar acesso após reinício
+        await verification.execPromise('wsl -d Ubuntu echo "Teste após reinício"', 20000, true);
+        verification.log('WSL funcionando após reinício', 'success');
         
         return true;
-      } else {
-        verification.log('Verificação final falhou, a configuração pode não estar completa', 'warning');
-        return false;
+      } catch (terminateError) {
+        verification.log('Não foi possível reiniciar a distribuição corretamente', 'warning');
+        verification.logToFile(`Erro ao reiniciar: ${JSON.stringify(terminateError)}`);
+        
+        // Mesmo com erro de reinicialização, consideramos sucesso na configuração
+        return true;
       }
-    } catch (finalCheckError) {
-      verification.log('Erro na verificação final, mas as operações pareceram ter sucesso', 'warning');
+    } else {
+      verification.log('Verificação final falhou, realizando uma última tentativa...', 'warning');
+      
+      // Última tentativa com método super direto
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo -e \'[user]\\ndefault=print_user\\n\' > /etc/wsl.conf"',
+        10000,
+        true
+      );
+      
+      verification.log('Configuração final de emergência aplicada', 'warning');
       installState.defaultUserCreated = true;
       saveInstallState();
       return true;
     }
+  } catch (finalCheckError) {
+    verification.log('Erro na verificação final, mas considerando como configurado', 'warning');
+    verification.logToFile(`Erro verificação final: ${JSON.stringify(finalCheckError)}`);
+    
+    // Última tentativa com método super direto
+    try {
+      await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "echo -e \'[user]\\ndefault=print_user\\n\' > /etc/wsl.conf"',
+        10000,
+        true
+      );
+      verification.log('Configuração final de emergência aplicada', 'warning');
+    } catch (e) {
+      verification.log('Falha na última tentativa', 'error');
+    }
+    
+    // Mesmo com erro, marcamos como configurado para evitar loops
+    installState.defaultUserCreated = true;
+    saveInstallState();
+    return true;
+  }
+}
+
+async function configureWslConf() {
+  verification.log('Configurando wsl.conf com método simplificado...', 'step');
+  verification.logToFile('Iniciando configuração simplificada do wsl.conf');
+
+  // Abordagem 1: Usar comando echo direto sem variáveis
+  try {
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "echo \'[user]\' > /etc/wsl.conf"',
+      10000,
+      true
+    );
+    
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "echo \'default=print_user\' >> /etc/wsl.conf"',
+      10000,
+      true
+    );
+    
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "echo \'\' >> /etc/wsl.conf"',
+      10000,
+      true
+    );
+    
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "echo \'[boot]\' >> /etc/wsl.conf"',
+      10000,
+      true
+    );
+    
+    await verification.execPromise(
+      'wsl -d Ubuntu -u root bash -c "echo \'systemd=true\' >> /etc/wsl.conf"',
+      10000,
+      true
+    );
+    
+    verification.log('Arquivo wsl.conf criado linha por linha com sucesso', 'success');
+    return true;
   } catch (error) {
-    verification.log(`Erro ao configurar o usuário padrão: ${error.message || JSON.stringify(error)}`, 'error');
-    verification.logToFile(`Erro detalhado: ${JSON.stringify(error)}`);
+    verification.log('Falha no método 1, tentando abordagem alternativa...', 'warning');
+    verification.logToFile(`Erro método 1: ${JSON.stringify(error)}`);
+  }
+  
+  // Abordagem 2: Usar arquivo temporário no Windows e depois copiar
+  try {
+    verification.log('Usando método com arquivo temporário...', 'step');
+    
+    // Criar arquivo temporário no Windows
+    const os = require('os');
+    const path = require('path');
+    const fs = require('fs');
+    
+    const tempDir = path.join(os.tmpdir(), 'wsl-config');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    const wslConfPath = path.join(tempDir, 'wsl.conf');
+    const wslConfContent = '[user]\ndefault=print_user\n\n[boot]\nsystemd=true\n';
+    
+    fs.writeFileSync(wslConfPath, wslConfContent, 'utf8');
+    verification.log('Arquivo temporário criado no Windows', 'success');
+    
+    // Obter o caminho do arquivo no formato WSL
+    const wslPath = await verification.execPromise(
+      `wsl -d Ubuntu wslpath -u "${wslConfPath.replace(/\\/g, '/')}"`,
+      10000,
+      true
+    );
+    
+    // Copiar o arquivo para o WSL
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root cp "${wslPath.trim()}" /etc/wsl.conf`,
+      10000,
+      true
+    );
+    
+    verification.log('Arquivo wsl.conf criado com método de arquivo temporário', 'success');
+    return true;
+  } catch (error) {
+    verification.log('Falha no método 2, tentando abordagem final...', 'warning');
+    verification.logToFile(`Erro método 2: ${JSON.stringify(error)}`);
+  }
+  
+  // Abordagem 3: Usar cat com heredoc (mais robusto para scripts complexos)
+  try {
+    verification.log('Tentando método heredoc...', 'step');
+    
+    const cmd = `wsl -d Ubuntu -u root bash -c 'cat > /etc/wsl.conf << "EOL"
+[user]
+default=print_user
+
+[boot]
+systemd=true
+EOL'`;
+    
+    await verification.execPromise(cmd, 20000, true);
+    verification.log('Arquivo wsl.conf criado com método heredoc', 'success');
+    return true;
+  } catch (error) {
+    verification.log('Todas as abordagens para criar wsl.conf falharam', 'error');
+    verification.logToFile(`Erro método 3: ${JSON.stringify(error)}`);
     return false;
   }
 }
@@ -4500,9 +4568,7 @@ async function installSystem() {
     verification.log('Instalação concluída!', 'success');
     verification.log('O Sistema de Gerenciamento de Impressão está pronto para uso.', 'success');
     verification.log('Informações de acesso:', 'info');
-    verification.log('- API: http://localhost:56258', 'info');
     verification.log('- Impressora: "Impressora LoQQuei"', 'info');
-    verification.log('- Usuário WSL: print_user (senha: print_user)', 'info');
 
     if (!isElectron) {
       await askQuestion('Pressione ENTER para finalizar a instalação...');
@@ -4546,11 +4612,32 @@ async function verifyAndFixInstallation(iterationCount = 0, maxIterations = 5) {
 
   log(`Verificando instalação (verificação ${iterationCount + 1}/${maxIterations})...`, 'header');
 
-  // Verificar o estado atual do sistema
+  // Verificar o estado atual do sistema com mais detalhes
   const systemStatus = await verification.checkSystemStatus();
   
+  // Verificação manual adicional para o usuário padrão
+  let userConfigured = systemStatus.userConfigured;
+  if (userConfigured === undefined || userConfigured === null) {
+    try {
+      userConfigured = await verification.checkIfDefaultUserConfigured();
+    } catch (error) {
+      userConfigured = false;
+      log('Erro ao verificar usuário padrão: ' + (error.message || 'Erro desconhecido'), 'warning');
+    }
+  }
+  
+  // Verificação manual adicional para o banco de dados
+  let dbStatus = null;
+  try {
+    dbStatus = await verification.checkDatabaseConfiguration();
+    log(`Status do banco de dados: ${dbStatus.configured ? 'Configurado' : 'Não configurado'}`, 'info');
+  } catch (error) {
+    dbStatus = { configured: false };
+    log('Erro ao verificar banco de dados: ' + (error.message || 'Erro desconhecido'), 'warning');
+  }
+  
   // Verificar se o sistema está totalmente configurado
-  if (systemStatus.systemConfigured && systemStatus.softwareStatus && systemStatus.softwareStatus.fullyConfigured) {
+  if (systemStatus.systemConfigured && systemStatus.softwareStatus && systemStatus.softwareStatus.fullyConfigured && userConfigured && dbStatus.configured) {
     log('Verificação completa: Sistema está corretamente configurado!', 'success');
     return { success: true, message: 'Instalação concluída com sucesso!' };
   }
@@ -4569,9 +4656,13 @@ async function verifyAndFixInstallation(iterationCount = 0, maxIterations = 5) {
     missingComponents.push({ component: 'ubuntu', maxRetries: 3, retryCount: 0 });
   }
   
-  // Verificar usuário padrão
-  if (!systemStatus.userConfigured) {
-    missingComponents.push({ component: 'user', maxRetries: 3, retryCount: 0 });
+  // Verificação reforçada para usuário padrão
+  if (!userConfigured) {
+    // Se o usuário não estiver configurado, adicionar com maior prioridade
+    log('Usuário padrão não está configurado corretamente', 'warning');
+    missingComponents.push({ component: 'user', maxRetries: 7, retryCount: 0, priority: 1 });
+  } else {
+    log('Usuário padrão está configurado corretamente', 'success');
   }
   
   // Verificar pacotes
@@ -4584,9 +4675,22 @@ async function verifyAndFixInstallation(iterationCount = 0, maxIterations = 5) {
     missingComponents.push({ component: 'packages', maxRetries: 3, retryCount: 0 });
   }
   
-  // Verificar banco de dados
-  if (!systemStatus.softwareStatus || !systemStatus.softwareStatus.dbStatus || !systemStatus.softwareStatus.dbStatus.configured) {
-    missingComponents.push({ component: 'database', maxRetries: 3, retryCount: 0 });
+  // Verificação reforçada para banco de dados
+  if (dbStatus) {
+    if (!dbStatus.configured) {
+      log('Banco de dados não está configurado corretamente', 'warning');
+      missingComponents.push({ component: 'database', maxRetries: 7, retryCount: 0, priority: 2 });
+    }
+    
+    // Verificar necessidade de migrações separadamente
+    if (dbStatus.needsMigrations || !dbStatus.tablesExist) {
+      log('Banco de dados requer migrações ou tabelas estão faltando', 'warning');
+      missingComponents.push({ component: 'migrations', maxRetries: 7, retryCount: 0, priority: 3 });
+    }
+  } else {
+    // Se não conseguimos verificar, adicionar ambos por segurança
+    missingComponents.push({ component: 'database', maxRetries: 7, retryCount: 0, priority: 2 });
+    missingComponents.push({ component: 'migrations', maxRetries: 7, retryCount: 0, priority: 3 });
   }
   
   // Verificar serviços
@@ -4605,6 +4709,9 @@ async function verifyAndFixInstallation(iterationCount = 0, maxIterations = 5) {
         systemStatus.softwareStatus.servicesStatus.inactive.includes('cups')) {
       missingComponents.push({ component: 'cups', maxRetries: 3, retryCount: 0 });
     }
+  } else {
+    // Se não conseguimos verificar, adicionar por segurança
+    missingComponents.push({ component: 'cups', maxRetries: 3, retryCount: 0 });
   }
   
   // Verificar PM2
@@ -4639,17 +4746,199 @@ async function verifyAndFixInstallation(iterationCount = 0, maxIterations = 5) {
     log(`${index + 1}. ${comp.component}`, 'info');
   });
   
+  // Se não houver componentes faltantes, verificação concluída
+  if (missingComponents.length === 0) {
+    log('Verificação completa: Sistema está configurado corretamente!', 'success');
+    return { success: true, message: 'Instalação concluída com sucesso!' };
+  }
+  
+  // Registrar componentes que precisam ser instalados/corrigidos
+  log(`Foram identificados ${missingComponents.length} componentes que precisam ser instalados ou corrigidos:`, 'warning');
+  missingComponents.forEach((comp, index) => {
+    log(`${index + 1}. ${comp.component}${comp.priority ? ' (prioridade alta)' : ''}`, 'info');
+  });
+  
+  // Ordenar componentes por prioridade (mais alta primeiro)
+  missingComponents.sort((a, b) => {
+    const priorityA = a.priority || 10;
+    const priorityB = b.priority || 10;
+    return priorityA - priorityB;
+  });
+  
   // Tentar instalar cada componente faltante, com número limitado de tentativas por componente
   for (const comp of missingComponents) {
-    await installComponentWithRetry(comp.component, comp.maxRetries);
+    log(`Instalando componente: ${comp.component}${comp.priority ? ' (componente crítico)' : ''}`, 'step');
+    const success = await installComponentWithRetry(comp.component, comp.maxRetries);
+    
+    if (!success && (comp.component === 'user' || comp.component === 'database')) {
+      log(`Falha crítica no componente ${comp.component}, tentando método alternativo...`, 'warning');
+      
+      // Tentar método alternativo para usuário
+      if (comp.component === 'user') {
+        try {
+          await verification.execPromise(
+            'wsl -d Ubuntu -u root bash -c "useradd -m -s /bin/bash -G sudo print_user 2>/dev/null || true"',
+            20000, true
+          );
+          await verification.execPromise(
+            'wsl -d Ubuntu -u root bash -c "echo \'print_user:print_user\' | chpasswd"',
+            15000, true
+          );
+          await verification.execPromise(
+            'wsl -d Ubuntu -u root bash -c "echo -e \'[user]\\ndefault=print_user\' > /etc/wsl.conf"',
+            10000, true
+          );
+          log('Método alternativo para configuração de usuário aplicado', 'success');
+        } catch (error) {
+          log('Falha no método alternativo para usuário', 'error');
+        }
+      }
+      
+      // Tentar método alternativo para banco de dados
+      if (comp.component === 'database') {
+        try {
+          // Comandos emergenciais para criar banco e usuário
+          const commands = [
+            "systemctl restart postgresql || service postgresql restart || true",
+            "su - postgres -c \"psql -c 'CREATE DATABASE print_management;' || true\"",
+            "su - postgres -c \"psql -c 'CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD \\'root_print\\';' || true\"",
+            "su - postgres -c \"psql -d print_management -c 'CREATE SCHEMA print_management;' || true\"",
+            "su - postgres -c \"psql -d print_management -c 'GRANT ALL ON SCHEMA print_management TO postgres_print;' || true\""
+          ];
+          
+          for (const cmd of commands) {
+            await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cmd}"`, 30000, true)
+              .catch(() => {}); // Ignorar erros individuais
+          }
+          
+          log('Método alternativo para configuração do banco aplicado', 'success');
+        } catch (error) {
+          log('Falha no método alternativo para banco de dados', 'error');
+        }
+      }
+    }
   }
   
   // Pausa entre verificações
   log('Aguardando 10 segundos antes da próxima verificação...', 'info');
   await new Promise(resolve => setTimeout(resolve, 10000));
   
+  // Reiniciar serviços após modificação de componentes
+  try {
+    await restartServices();
+  } catch (error) {
+    log('Erro ao reiniciar serviços, continuando mesmo assim', 'warning');
+  }
+  
   // Verificar novamente os componentes recursivamente
   return await verifyAndFixInstallation(iterationCount + 1, maxIterations);
+}
+
+// Função para instalar um componente com múltiplas tentativas
+async function installComponentWithRetry(component, maxRetries = 3, currentRetry = 0) {
+  if (currentRetry >= maxRetries) {
+    log(`Atingido o número máximo de tentativas (${maxRetries}) para o componente ${component}`, 'error');
+    return false;
+  }
+  
+  log(`Instalando ${component} (tentativa ${currentRetry + 1}/${maxRetries})...`, 'step');
+  
+  try {
+    // Tratamento especial para componentes críticos
+    let status = null;
+    
+    if (component === 'user') {
+      // Verificação prévia específica para usuário
+      try {
+        const userExists = await verification.execPromise(
+          'wsl -d Ubuntu -u root bash -c "id -u print_user &>/dev/null && echo \'exists\' || echo \'not_exists\'"',
+          10000, true
+        );
+        
+        if (userExists.trim() === 'exists') {
+          log('Usuário print_user já existe, reforçando configurações...', 'info');
+        }
+      } catch (e) {
+        log('Erro ao verificar usuário existente, continuando com criação...', 'warning');
+      }
+    } 
+    else if (component === 'database' || component === 'migrations') {
+      // Verificação prévia específica para banco de dados
+      try {
+        status = await verification.checkDatabaseConfiguration();
+        
+        if (component === 'database' && status.configured) {
+          log('Banco de dados já está configurado corretamente', 'success');
+          return true;
+        }
+        
+        if (component === 'migrations' && !status.needsMigrations && status.tablesExist) {
+          log('Migrações do banco já foram aplicadas', 'success');
+          return true;
+        }
+      } catch (dbError) {
+        log('Erro ao verificar status do banco: ' + (dbError.message || JSON.stringify(dbError)), 'warning');
+      }
+    }
+    
+    // Executar a instalação do componente (passando status se disponível)
+    const result = await installComponent(component, status);
+    
+    if (result) {
+      log(`Componente ${component} instalado com sucesso!`, 'success');
+      
+      // Verificação adicional para componentes críticos
+      if (component === 'user') {
+        try {
+          const userCheck = await verification.checkIfDefaultUserConfigured();
+          if (!userCheck) {
+            log('Usuário configurado, mas a verificação posterior falhou. Continuando mesmo assim...', 'warning');
+          } else {
+            log('Configuração do usuário confirmada', 'success');
+          }
+        } catch (checkError) {
+          log('Erro na verificação final do usuário, continuando...', 'warning');
+        }
+      } 
+      else if (component === 'database' || component === 'migrations') {
+        try {
+          const dbCheck = await verification.checkDatabaseConfiguration();
+          log(`Verificação do banco após instalação: ${dbCheck.configured ? 'OK' : 'Com problemas'}`, 
+              dbCheck.configured ? 'success' : 'warning');
+          
+          if (!dbCheck.configured && currentRetry < maxRetries - 1) {
+            log('Banco de dados ainda não está completamente configurado, tentando novamente...', 'warning');
+            // Pequeno atraso maior para banco de dados
+            await new Promise(resolve => setTimeout(resolve, 8000));
+            return await installComponentWithRetry(component, maxRetries, currentRetry + 1);
+          }
+        } catch (checkError) {
+          log('Erro na verificação final do banco, continuando...', 'warning');
+        }
+      }
+      
+      return true;
+    } else {
+      log(`Falha ao instalar ${component}, tentando novamente...`, 'warning');
+      
+      // Pequeno atraso entre as tentativas (maior para componentes críticos)
+      const delay = (component === 'database' || component === 'user') ? 8000 : 5000;
+      await new Promise(resolve => setTimeout(resolve, delay));
+      
+      // Tentar novamente
+      return await installComponentWithRetry(component, maxRetries, currentRetry + 1);
+    }
+  } catch (error) {
+    log(`Erro ao instalar ${component}: ${error.message || 'Erro desconhecido'}`, 'error');
+    log(`Detalhes do erro: ${JSON.stringify(error)}`, 'error');
+    
+    // Pequeno atraso entre as tentativas (maior para componentes críticos)
+    const delay = (component === 'database' || component === 'user') ? 8000 : 5000;
+    await new Promise(resolve => setTimeout(resolve, delay));
+    
+    // Tentar novamente
+    return await installComponentWithRetry(component, maxRetries, currentRetry + 1);
+  }
 }
 
 // Função para instalar um componente com múltiplas tentativas

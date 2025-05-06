@@ -1051,40 +1051,67 @@ async function shouldConfigureSystem(installState) {
 
 async function checkIfDefaultUserConfigured() {
   log('Verificando se o usuário padrão está configurado...', 'step');
+  logToFile('Iniciando verificação do usuário padrão');
   
   try {
-    // Verificar se o usuário 'print_user' existe no sistema WSL
-    const stdout = await execPromise('wsl.exe -d Ubuntu -u root bash -c "getent passwd print_user"', 12000, true);
-
-    // Se o usuário 'print_user' não existir, o comando retornará vazio
-    if (!stdout || !stdout.includes('print_user:')) {
-      log('Usuário "print_user" não encontrado no WSL', 'error');
+    // Verificar primeiro se o WSL está acessível
+    try {
+      await execPromise('wsl -d Ubuntu echo "WSL Test"', 10000, true);
+    } catch (wslError) {
+      logToFile(`Erro ao acessar WSL: ${JSON.stringify(wslError)}`);
+      log('WSL não está acessível para verificar usuário', 'error');
       return false;
     }
     
-    // Verificar se o usuário 'print_user' está configurado como o padrão no wsl.conf
-    const wslConfResult = await execPromise('wsl.exe -d Ubuntu -u root cat /etc/wsl.conf', 12000, true);
+    // 1. Verificar se o usuário 'print_user' existe no sistema WSL com comando mais simples
+    const userExistsCommand = 'wsl -d Ubuntu -u root bash -c "id print_user &>/dev/null && echo exists || echo not_exists"';
+    const userExists = await execPromise(userExistsCommand, 15000, true)
+      .catch(err => {
+        logToFile(`Erro ao verificar existência do usuário: ${JSON.stringify(err)}`);
+        return "error";
+      });
     
-    if (!wslConfResult || !wslConfResult.includes('default=print_user')) {
-      log('Usuário "print_user" não está configurado como padrão no WSL', 'error');
+    logToFile(`Resultado da verificação de usuário: ${userExists}`);
+    
+    if (userExists !== "exists") {
+      log('Usuário "print_user" não encontrado no WSL ou erro na verificação', 'error');
+      return false;
+    }
+    
+    // 2. Verificar se o arquivo wsl.conf existe
+    const wslConfExistsCommand = 'wsl -d Ubuntu -u root bash -c "test -f /etc/wsl.conf && echo exists || echo not_exists"';
+    const wslConfExists = await execPromise(wslConfExistsCommand, 15000, true)
+      .catch(err => {
+        logToFile(`Erro ao verificar existência do wsl.conf: ${JSON.stringify(err)}`);
+        return "error";
+      });
+      
+    logToFile(`Resultado da verificação do arquivo wsl.conf: ${wslConfExists}`);
+    
+    if (wslConfExists !== "exists") {
+      log('Arquivo wsl.conf não encontrado no WSL', 'error');
+      return false;
+    }
+    
+    // 3. Verificar se o usuário está configurado como padrão com comando mais simples
+    const userDefaultCommand = 'wsl -d Ubuntu -u root bash -c "grep -q \'default=print_user\' /etc/wsl.conf && echo configured || echo not_configured"';
+    const userDefault = await execPromise(userDefaultCommand, 15000, true)
+      .catch(err => {
+        logToFile(`Erro ao verificar configuração padrão: ${JSON.stringify(err)}`);
+        return "error";
+      });
+      
+    logToFile(`Resultado da verificação de usuário padrão: ${userDefault}`);
+    
+    if (userDefault !== "configured") {
+      log('Usuário "print_user" não está configurado como padrão no wsl.conf', 'error');
       return false;
     }
     
     log('Usuário "print_user" está configurado corretamente como padrão no WSL', 'success');
     return true;
   } catch (error) {
-    try {
-      const wslConfResult = await execPromise('wsl.exe -d Ubuntu -u root cat /etc/wsl.conf', 12000, true);
-    
-      if (!wslConfResult || !wslConfResult.includes('default=print_user')) {
-        log('Usuário "print_user" não está configurado como padrão no WSL', 'error');
-        return false;
-      }
-
-      return true;
-    } catch {}
-
-    logToFile('Erro ao verificar usuário padrão: ', JSON.stringify(error));
+    logToFile(`Erro geral ao verificar usuário padrão: ${JSON.stringify(error)}`);
     log('Falha ao verificar a configuração do usuário padrão', 'error');
     return false;
   }
