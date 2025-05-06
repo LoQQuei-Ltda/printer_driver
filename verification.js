@@ -1073,6 +1073,17 @@ async function checkIfDefaultUserConfigured() {
     log('Usuário "print_user" está configurado corretamente como padrão no WSL', 'success');
     return true;
   } catch (error) {
+    try {
+      const wslConfResult = await execPromise('wsl.exe -d Ubuntu -u root cat /etc/wsl.conf', 12000, true);
+    
+      if (!wslConfResult || !wslConfResult.includes('default=print_user')) {
+        log('Usuário "print_user" não está configurado como padrão no WSL', 'error');
+        return false;
+      }
+
+      return true;
+    } catch {}
+
     logToFile('Erro ao verificar usuário padrão: ', JSON.stringify(error));
     log('Falha ao verificar a configuração do usuário padrão', 'error');
     return false;

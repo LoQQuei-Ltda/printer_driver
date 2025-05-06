@@ -4562,7 +4562,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await installUbuntu());
+    console.log(await configureDefaultUser());
     process.exit(1)
   })()
 }
