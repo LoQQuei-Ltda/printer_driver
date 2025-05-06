@@ -306,244 +306,106 @@ async function checkWSLStatusDetailed() {
   log("Verificando status detalhado do WSL...", "step");
 
   try {
-    // Resultado padrão, será modificado ao longo da verificação
-    let result = { 
-      installed: false, 
-      wsl2: false, 
-      hasDistro: false, 
-      hasUbuntu: false 
-    };
-
-    // FASE 1: Verificar se o WSL está instalado (múltiplos métodos)
-    const wslDetectionMethods = [
-      // Método 1: Verificar o executável
-      async () => fs.existsSync("C:\\Windows\\System32\\wsl.exe"),
-      
-      // Método 2: Verificar o registro
-      async () => {
-        try {
-          const regCheck = await execPromise(
-            'powershell -Command "Test-Path HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss"', 
-            10000, 
-            true
-          );
-          return regCheck.trim().toLowerCase() === 'true';
-        } catch (e) {
-          return false;
-        }
-      },
-      
-      // Método 3: Verificar se algum comando do WSL funciona
-      async () => {
-        for (const cmd of ["wsl --version", "wsl --list", "wsl --status"]) {
-          try {
-            await execPromise(cmd, 10000, true);
-            return true;
-          } catch (e) {
-            // Se o stderr ou stdout inclui algo que indica que o WSL existe
-            if (e.stdout && (
-                e.stdout.includes("Versão") || 
-                e.stdout.includes("Version") || 
-                e.stdout.includes("Status") || 
-                e.stdout.includes("Lista") || 
-                e.stdout.includes("List") ||
-                e.stdout.includes("WSL") ||
-                e.stdout.includes("distribuições") ||
-                e.stdout.includes("distributions")
-            )) {
-              return true;
-            }
-          }
-        }
-        return false;
-      },
-      
-      // Método 4: Verificar serviços associados ao WSL
-      async () => {
-        try {
-          const serviceCheck = await execPromise(
-            'powershell -Command "Get-Service -Name \'LxssManager\' | Select-Object -ExpandProperty Status"',
-            10000,
-            true
-          );
-          return serviceCheck.trim().toLowerCase().includes("running");
-        } catch (e) {
-          return false;
-        }
-      }
-    ];
-    
-    // Tentar cada método de detecção
-    for (const method of wslDetectionMethods) {
-      try {
-        if (await method()) {
-          result.installed = true;
-          log("WSL está instalado (verificado com sucesso)", "success");
-          break;
-        }
-      } catch (e) {
-        // Continuar para o próximo método
-      }
-    }
-    
-    if (!result.installed) {
+    // Verificar se o WSL está presente
+    if (!fs.existsSync("C:\\Windows\\System32\\wsl.exe")) {
       log("WSL não encontrado no sistema", "warning");
-      return result;
+      return { installed: false, wsl2: false, hasDistro: false };
     }
-    
-    // FASE 2: Verificar se o WSL2 está configurado (também com vários métodos)
-    const wsl2DetectionMethods = [
-      // Método 1: Verificar a versão padrão
-      async () => {
-        try {
-          const defaultVersion = await execPromise('wsl --get-default-version', 10000, true);
-          return defaultVersion.trim() === '2';
-        } catch (e) {
-          return false;
-        }
-      },
-      
-      // Método 2: Verificar a versão via status
-      async () => {
-        try {
-          const statusOutput = await execPromise('wsl --status', 15000, true);
-          return statusOutput.includes("Versão Padrão: 2") || 
-                 statusOutput.includes("Default Version: 2") ||
-                 statusOutput.includes("Padrão: 2") ||
-                 statusOutput.includes("Default: 2");
-        } catch (e) {
-          // Verificar stderr e stdout para casos onde o comando falha mas retorna informações úteis
-          if (e.stdout && (
-              e.stdout.includes("Versão Padrão: 2") || 
-              e.stdout.includes("Default Version: 2") ||
-              e.stdout.includes("Padrão: 2") ||
-              e.stdout.includes("Default: 2")
-          )) {
-            return true;
-          }
-          return false;
-        }
-      },
-      
-      // Método 3: Verificar distribuições e sua versão
-      async () => {
-        try {
-          const listVerbose = await execPromise('wsl --list --verbose', 15000, true);
-          const lines = listVerbose.replace(/\x00/g, "").split('\n').filter(l => l.trim());
-          
-          // Se houver pelo menos uma linha além do cabeçalho e alguma estiver com versão 2
-          if (lines.length > 1) {
-            return lines.slice(1).some(line => line.includes('2'));
-          }
-          return false;
-        } catch (e) {
-          return false;
-        }
-      },
-      
-      // Método 4: Verificar kernel WSL2 (método indireto)
-      async () => {
-        try {
-          // Verificar se há algum kernel do WSL2
-          const kernelCheck = await execPromise(
-            'powershell -Command "Test-Path C:\\Windows\\System32\\lxss\\tools\\kernel"',
-            10000,
-            true
-          );
-          return kernelCheck.trim().toLowerCase() === 'true';
-        } catch (e) {
-          return false;
-        }
-      },
-      
-      // Método 5: Verificar Ubuntu funcionando (método mais pragmático)
-      async () => {
-        try {
-          // Se o Ubuntu estiver funcionando, provavelmente WSL2 está ok
-          const ubuntuCheck = await execPromise('wsl -d Ubuntu cat /proc/version', 15000, true);
-          // Se não lançar erro, podemos assumir que o WSL2 está funcionando
-          return true;
-        } catch (e) {
-          return false;
-        }
-      }
-    ];
-    
-    // Tentar cada método para detectar WSL2
-    for (const method of wsl2DetectionMethods) {
+
+    // Verificar se o WSL pode ser executado
+    try {
+      // Tentar verificar versão WSL primeiro (método mais novo)
+      const wslVersion = await execPromise("wsl --version", 10000, true);
+      log(`WSL instalado: ${wslVersion}`, "success");
+    } catch (e) {
       try {
-        if (await method()) {
-          result.wsl2 = true;
-          log("WSL 2 está configurado (verificado com sucesso)", "success");
-          break;
+        // Algumas versões não têm o comando --version
+        const wslStatus = await execPromise("wsl --status", 10000, true);
+        log("WSL está instalado e responde a comandos", "success");
+      } catch (e2) {
+        // Tente um comando muito básico como último recurso
+        try {
+          await execPromise("wsl --list", 10000, true);
+          log("WSL está instalado (verificado via --list)", "success");
+        } catch (e3) {
+          log("WSL está instalado mas não responde corretamente a comandos", "warning");
+          return { installed: true, wsl2: false, hasDistro: false };
         }
-      } catch (e) {
-        // Continuar para o próximo método
-      }
-    }
-    
-    // PRAGMATISMO: Se o Ubuntu está instalado e funcionando, consideramos o WSL2 como configurado
-    // mesmo que os métodos anteriores retornem falso (isso resolve o problema no Windows 10)
-    if (!result.wsl2) {
-      // Verificar se há alguma distribuição, especialmente o Ubuntu
-      try {
-        const ubuntuWorks = await execPromise('wsl -d Ubuntu echo "test"', 15000, true)
-          .then(() => true)
-          .catch(() => false);
-        
-        if (ubuntuWorks) {
-          log("WSL 2 considerado configurado porque o Ubuntu está funcionando (método pragmático)", "success");
-          result.wsl2 = true;
-        } else {
-          log("WSL 2 parece não estar configurado corretamente", "warning");
-        }
-      } catch (e) {
-        log("Erro na verificação pragmática do WSL 2", "warning");
       }
     }
 
-    // FASE 3: Verificar se existem distribuições
+    // Verificar se o WSL 2 está configurado
     try {
-      const distributions = await execPromise("wsl --list", 10000, true);
-      const normalizedOutput = distributions.replace(/\x00/g, "").trim();
-      const lines = normalizedOutput.split('\n').filter(l => l.trim());
-      
-      // Se há mais de uma linha (além do cabeçalho), há distribuições
-      if (lines.length > 1) {
-        result.hasDistro = true;
-        // Verificar se Ubuntu está entre as distribuições
-        result.hasUbuntu = lines.some((line) => line.toLowerCase().includes("ubuntu"));
+      const wslDefault = await execPromise("wsl --set-default-version 2", 10000, true);
+
+      function verifyDefaultWsl(message) {
+        const cleanMessage = message.replace(/\u0000/g, '');
         
-        if (result.hasUbuntu) {
-          log("Distribuição Ubuntu encontrada", "success");
-          
-          // Se o Ubuntu está instalado, considerar o WSL2 configurado por pragmatismo
-          if (!result.wsl2) {
-            log("WSL 2 considerado configurado porque o Ubuntu está instalado (método pragmático)", "success");
-            result.wsl2 = true;
-          }
+        const concluded = cleanMessage.toLowerCase().includes("conclu");
+        const exited = cleanMessage.toLowerCase().includes("xito") || 
+                            cleanMessage.toLowerCase().includes("exito");
+        
+        return concluded || exited;
+      }
+
+      const resultVerify = verifyDefaultWsl(wslDefault);
+
+      if (resultVerify) {
+        log("WSL 2 configurado como padrão", "success");
+      } else {
+        log(wslDefault);
+        log("Não foi possível confirmar a configuração do WSL 2", "error");
+      }
+
+      // Se não der erro, verificar se já tem distribuição
+      try {
+        const distributions = await execPromise("wsl --list --verbose", 10000, true);
+        const cleanedDistributions = distributions.replace(/\x00/g, "").trim();
+        const lines = cleanedDistributions.split("\n").slice(1);
+        const hasDistribution = lines.some((line) => line.toLowerCase().includes("ubuntu"));
+
+        if (hasDistribution) {
+          log("WSL 2 configurado e com distribuição instalada", "success");
+          return { installed: true, wsl2: true, hasDistro: true };
         } else {
-          log("Há distribuições, mas nenhuma Ubuntu", "warning");
+          log("WSL 2 configurado, mas sem distribuição instalada", "success");
+          return { installed: true, wsl2: true, hasDistro: false };
+        }
+      } catch (e3) {
+        log("Erro ao listar distribuições do WSL", "warning");
+        return { installed: true, wsl2: true, hasDistro: false };
+      }
+    } catch (e4) {
+      // Verificar se o erro é porque o WSL2 já está configurado
+      if (e4.stdout && (e4.stdout.includes("já está configurado") || e4.stdout.includes("already configured"))) {
+        log("WSL 2 já está configurado como padrão", "success");
+
+        // Verificar se tem distribuição
+        try {
+          const wslList = await execPromise("wsl --list", 10000, true);
+          const hasDistribution = wslList.toLowerCase().includes("ubuntu");
+
+          if (hasDistribution) {
+            log("WSL 2 configurado e com distribuição instalada", "success");
+            return { installed: true, wsl2: true, hasDistro: true };
+          } else {
+            log("WSL 2 configurado, mas sem distribuição instalada", "success");
+            return { installed: true, wsl2: true, hasDistro: false };
+          }
+        } catch (e5) {
+          log("Erro ao listar distribuições do WSL", "warning");
+          return { installed: true, wsl2: true, hasDistro: false };
         }
       } else {
-        log("Nenhuma distribuição WSL encontrada", "warning");
-      }
-    } catch (listError) {
-      // Se o erro indica que não há distribuições
-      if (listError.stdout && (
-          listError.stdout.includes("não tem distribuições") || 
-          listError.stdout.includes("no distributions"))) {
-        log("WSL está instalado, mas sem distribuições", "warning");
-      } else {
-        log("Erro ao verificar distribuições WSL", "warning");
+        log("Erro ao configurar WSL 2 como padrão", "warning");
+        logToFile(`Detalhes do erro: ${JSON.stringify(e4)}`);
+        return { installed: true, wsl2: false, hasDistro: false };
       }
     }
-    
-    return result;
   } catch (error) {
     log("Erro ao verificar status do WSL", "error");
     logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-    return { installed: false, wsl2: false, hasDistro: false, hasUbuntu: false };
+    return { installed: false, wsl2: false, hasDistro: false };
   }
 }
 
