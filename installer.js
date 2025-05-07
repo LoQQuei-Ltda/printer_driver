@@ -4182,7 +4182,7 @@ function onListening() {
       }
     }
   } catch (error) {
-    verification.log(`Erro ao copiar software: ${error.message || error.toString() || 'Erro desconhecido'}`, 'error');
+    verification.log(`Erro ao copiar software: ${JSON.stringify(error) || 'Erro desconhecido'}`, 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
 
     // Tentar criar pelo menos uma estrutura mínima antes de retornar

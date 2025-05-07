@@ -83,7 +83,6 @@ function log(message, type = "info") {
   logToFile(`[${timestamp}][${type}] ${message}`);
 }
 
-// Função para executar comandos e retornar uma Promise
 function execPromise(command, timeoutMs = 30000, quiet = false) {
   if (!quiet) {
     log(`Executando: ${command}`, "step");
@@ -104,21 +103,24 @@ function execPromise(command, timeoutMs = 30000, quiet = false) {
     // Garantir que não há espaços entre > e /dev/null
     fixedCommand = fixedCommand.replace(/ > \/dev\/null/g, ' >/dev/null');
   }
+  
+  // 3. MODIFICAÇÃO: Usar a flag -d sem -e para evitar conflitos
+  // mas sem incluir um bash -c explícito que pode finalizar sessões
+  if (fixedCommand.startsWith('wsl -d Ubuntu -u root bash -c')) {
+    // Manter o comando como está, é um formato seguro
+  } else if (fixedCommand.startsWith('wsl -d Ubuntu -u root')) {
+    // Adicionar proteção para evitar que o comando feche a sessão
+    const comando = fixedCommand.substring('wsl -d Ubuntu -u root'.length).trim();
+    fixedCommand = `wsl -d Ubuntu -u root bash -c "${comando.replace(/"/g, '\\"')}"`;
+  }
 
   return new Promise((resolve, reject) => {
     // Criar um timer para o timeout
     const timeout = setTimeout(() => {
       logToFile(`TIMEOUT: Comando excedeu ${timeoutMs / 1000}s: ${command}`);
 
-      // Em caso de timeout, tentar matar o processo
-      if (childProcess && childProcess.pid) {
-        try {
-          process.kill(childProcess.pid);
-        } catch (e) {
-          logToFile(`Erro ao matar processo: ${e.message}`);
-        }
-      }
-
+      // MODIFICADO: Não matar processos em caso de timeout 
+      // Apenas registrar o timeout e rejeitar a promise
       reject(new Error(`Tempo limite excedido (${timeoutMs / 1000}s): ${command}`));
     }, timeoutMs);
 
