@@ -296,7 +296,6 @@ module.exports = {
                         
                         // Se ainda não encontrou, manter o IP original
                         if (!internalIp) {
-                            updatedPrinters.push(printer);
                             continue;
                         }
                     }

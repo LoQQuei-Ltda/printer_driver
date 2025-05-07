@@ -108,6 +108,197 @@ if (setupWSL) {
   return;
 }
 
+async function ensureServicesRunning() {
+  console.log('Verificando e garantindo que todos os serviços necessários estejam ativos...');
+  
+  try {
+    // Verificar acesso ao WSL primeiro
+    try {
+      await verification.execPromise('wsl -d Ubuntu -u root echo "WSL Access Check"', 10000, true);
+    } catch (wslError) {
+      console.error('Erro ao acessar WSL:', wslError);
+      // Se não conseguir acessar o WSL, não podemos continuar
+      return false;
+    }
+    
+    // Lista de serviços essenciais para verificar e iniciar se necessário
+    const essentialServices = [
+      {
+        name: 'dbus',
+        checkCmd: 'systemctl is-active dbus',
+        startCmd: 'systemctl start dbus || service dbus start'
+      },
+      {
+        name: 'postgresql',
+        checkCmd: 'systemctl is-active postgresql',
+        startCmd: 'systemctl start postgresql || service postgresql start || pg_ctlcluster $(ls -d /etc/postgresql/*/ 2>/dev/null | cut -d\'/\' -f4 | head -n 1 || echo "14") main start'
+      },
+      {
+        name: 'cups',
+        checkCmd: 'systemctl is-active cups',
+        startCmd: 'systemctl start cups || service cups start'
+      },
+      {
+        name: 'smbd',
+        checkCmd: 'systemctl is-active smbd',
+        startCmd: 'systemctl start smbd || service smbd start'
+      },
+      {
+        name: 'avahi-daemon',
+        checkCmd: 'systemctl is-active avahi-daemon',
+        startCmd: 'systemctl start avahi-daemon || service avahi-daemon start'
+      }
+    ];
+    
+    // Verificar e iniciar cada serviço essencial
+    for (const service of essentialServices) {
+      console.log(`Verificando serviço: ${service.name}...`);
+      
+      // Verificar status atual do serviço
+      let isActive = false;
+      try {
+        const status = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${service.checkCmd}"`, 15000, true);
+        isActive = status.trim() === 'active';
+      } catch (checkError) {
+        console.log(`Serviço ${service.name} está inativo ou não pôde ser verificado`);
+        isActive = false;
+      }
+      
+      // Se o serviço não estiver ativo, tentar iniciá-lo
+      if (!isActive) {
+        console.log(`Iniciando serviço ${service.name}...`);
+        try {
+          await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${service.startCmd}"`, 30000, true);
+          console.log(`Serviço ${service.name} iniciado com sucesso`);
+        } catch (startError) {
+          console.error(`Erro ao iniciar serviço ${service.name}:`, startError.message || startError);
+          // Continuar mesmo se um serviço falhar, para tentar iniciar os outros
+        }
+      } else {
+        console.log(`Serviço ${service.name} já está ativo`);
+      }
+    }
+    
+    // Verificar se a API está em execução por PM2
+    console.log('Verificando serviço de API...');
+    let apiRunning = false;
+    try {
+      const pm2List = await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 list"', 15000, true);
+      apiRunning = pm2List.includes('online') && pm2List.includes('print_server_desktop');
+    } catch (apiCheckError) {
+      console.log('Serviço de API não encontrado ou PM2 não está respondendo');
+      apiRunning = false;
+    }
+    
+    // Se a API não estiver rodando, tentar iniciá-la
+    if (!apiRunning) {
+      console.log('Iniciando serviço de API...');
+      
+      try {
+        // Buscar quaisquer diretórios possíveis de forma mais completa
+        const possiblePaths = [
+          '/opt/loqquei/print_server_desktop',
+          '/opt/print_server/print_server_desktop',
+          '/opt/loqquei',
+          '/opt/print_server'
+        ];
+        
+        let apiPath = null;
+        
+        // Verificar cada caminho possível
+        for (const path of possiblePaths) {
+          try {
+            const pathCheck = await verification.execPromise(
+              `wsl -d Ubuntu -u root bash -c "if [ -d '${path}' ]; then echo 'exists'; else echo 'not_found'; fi"`, 
+              15000, 
+              true
+            );
+            
+            if (pathCheck.trim() === 'exists') {
+              // Verificar se tem ecosystem.config.js ou bin/www.js
+              const appCheck = await verification.execPromise(
+                `wsl -d Ubuntu -u root bash -c "if [ -f '${path}/ecosystem.config.js' ] || [ -f '${path}/bin/www.js' ]; then echo 'valid'; else echo 'invalid'; fi"`, 
+                15000, 
+                true
+              );
+              
+              if (appCheck.trim() === 'valid') {
+                apiPath = path;
+                console.log(`Diretório da API encontrado: ${path}`);
+                break;
+              }
+            }
+          } catch (pathError) {
+            // Ignorar erros individuais e continuar verificando
+          }
+        }
+        
+        if (apiPath) {
+          // Tentar iniciar com métodos diferentes para maior robustez
+          try {
+            // Método 1: PM2 resurrect (restabelece estado anterior)
+            await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cd ${apiPath} && pm2 resurrect"`, 30000, true);
+          } catch (resurError) {
+            try {
+              // Método 2: Reiniciar todos
+              await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cd ${apiPath} && pm2 restart all"`, 30000, true);
+            } catch (restartError) {
+              try {
+                // Método 3: Iniciar com ecosystem.config.js
+                await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cd ${apiPath} && pm2 start ecosystem.config.js"`, 30000, true);
+              } catch (startError) {
+                try {
+                  // Método 4: Iniciar com bin/www.js diretamente
+                  await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cd ${apiPath} && pm2 start bin/www.js --name print_server_desktop"`, 30000, true);
+                } catch (finalError) {
+                  console.error('Todos os métodos para iniciar a API falharam:', finalError.message || finalError);
+                }
+              }
+            }
+          }
+          
+          // Verificar se a API está em execução após tentativas
+          try {
+            const finalPm2Check = await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 list"', 15000, true);
+            if (finalPm2Check.includes('online') && finalPm2Check.includes('print_server_desktop')) {
+              console.log('API iniciada com sucesso!');
+            } else {
+              console.error('API pode não ter iniciado corretamente. Verificando portas...');
+              
+              // Verificar se a porta está em uso como última verificação
+              const portCheck = await verification.execPromise(
+                'wsl -d Ubuntu -u root bash -c "netstat -tuln | grep :56258"', 
+                10000, 
+                true
+              ).catch(() => "");
+              
+              if (portCheck.includes('56258')) {
+                console.log('Porta da API 56258 está ativa, serviço parece estar funcionando');
+              } else {
+                console.error('Porta da API 56258 não encontrada, serviço pode não estar funcional');
+              }
+            }
+          } catch (checkError) {
+            console.error('Erro ao verificar status final da API:', checkError.message || checkError);
+          }
+        } else {
+          console.error('Não foi possível encontrar o diretório da API');
+        }
+      } catch (apiError) {
+        console.error('Erro ao iniciar serviço de API:', apiError.message || apiError);
+      }
+    } else {
+      console.log('Serviço de API já está ativo');
+    }
+    
+    console.log('Verificação e inicialização de serviços concluída');
+    return true;
+  } catch (error) {
+    console.error('Erro durante a verificação/inicialização de serviços:', error.message || error);
+    return false;
+  }
+}
+
 function interpretarMensagemLog(message, type) {
   const lowerMessage = message.toLowerCase();
 
@@ -1069,6 +1260,7 @@ app.whenReady().then(async () => {
 
   printersSync();
   initTask();
+  await ensureServicesRunning();
   
   // Verificar se o usuário está autenticado
   if (isAuthenticated()) {
@@ -2530,8 +2722,6 @@ ipcMain.on('listar-arquivos', async (event) => {
     } catch (error) {
       console.error(error.data);
     }
-
-    await installer.configureDefaultUser()
 
     if (response?.status === 200) {
       files = response.data?.data.sort((a, b) => {

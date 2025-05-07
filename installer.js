@@ -1763,148 +1763,6 @@ async function installUbuntu(attemptCount = 0) {
   return false;
 }
 
-// Função otimizada para configurar usuário padrão com mais velocidade
-async function configureDefaultUser() {
-  verification.log('Configurando usuário padrão com método ultra-simplificado...', 'step');
-  verification.logToFile('Iniciando configuração simplificada do usuário padrão');
-
-  try {
-    // 1. Primeiro criar o usuário (se não existir)
-    verification.log('Criando usuário print_user...', 'step');
-    
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "useradd -m -s /bin/bash print_user 2>/dev/null || echo Usuário já existe"',
-      15000,
-      true
-    );
-    
-    // 2. Definir senha diretamente
-    verification.log('Configurando senha...', 'step');
-    
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "echo print_user:print_user | chpasswd"',
-      15000,
-      true
-    );
-    
-    // 3. Adicionar ao grupo sudo
-    verification.log('Adicionando ao grupo sudo...', 'step');
-    
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "usermod -aG sudo print_user"',
-      15000,
-      true
-    );
-    
-    // 4. Configurar sudo sem senha
-    verification.log('Configurando acesso sudo sem senha...', 'step');
-    
-    // Escrever arquivo sudoers para print_user
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "echo \'print_user ALL=(ALL) NOPASSWD:ALL\' > /etc/sudoers.d/print_user"',
-      15000,
-      true
-    );
-    
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "chmod 440 /etc/sudoers.d/print_user"',
-      10000,
-      true
-    );
-    
-    // 5. Criar arquivo wsl.conf
-    verification.log('Criando arquivo wsl.conf...', 'step');
-    
-    // Método extremamente simplificado para criar wsl.conf - linha por linha
-    // Criar arquivo do zero
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "echo \'[user]\' > /etc/wsl.conf"',
-      10000,
-      true
-    );
-    
-    // Adicionar linha de configuração de usuário
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "echo \'default=print_user\' >> /etc/wsl.conf"',
-      10000,
-      true
-    );
-    
-    // Adicionar linha em branco
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "echo \'\' >> /etc/wsl.conf"',
-      10000,
-      true
-    );
-    
-    // Adicionar configuração boot
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "echo \'[boot]\' >> /etc/wsl.conf"',
-      10000,
-      true
-    );
-    
-    // Adicionar configuração systemd
-    await verification.execPromise(
-      'wsl -d Ubuntu -u root bash -c "echo \'systemd=true\' >> /etc/wsl.conf"',
-      10000,
-      true
-    );
-    
-    // 6. Verificar arquivo wsl.conf
-    verification.log('Verificando arquivo wsl.conf...', 'step');
-    const wslConfContent = await verification.execPromise(
-      'wsl -d Ubuntu -u root cat /etc/wsl.conf',
-      10000,
-      true
-    );
-    
-    verification.log(`Conteúdo do wsl.conf: ${wslConfContent}`, 'info');
-    verification.logToFile(`Conteúdo do wsl.conf: ${wslConfContent}`);
-    
-    // 7. Reiniciar WSL para aplicar configurações
-    verification.log('Reiniciando WSL para aplicar configurações...', 'step');
-    
-    await verification.execPromise('wsl --terminate Ubuntu', 15000, true);
-    verification.log('WSL terminado, aguardando 10 segundos...', 'info');
-    
-    // Aguardar reinicialização
-    await new Promise(resolve => setTimeout(resolve, 10000));
-    
-    // 8. Verificar configuração após reinicialização
-    try {
-      const checkUser = await verification.execPromise(
-        'wsl -d Ubuntu whoami',
-        15000,
-        true
-      );
-      
-      verification.log(`Usuário atual após reinicialização: ${checkUser}`, 'info');
-      verification.logToFile(`Usuário atual após reinicialização: ${checkUser}`);
-      
-      if (checkUser.trim() === 'print_user') {
-        verification.log('Usuário print_user configurado com sucesso!', 'success');
-      } else {
-        verification.log('Aviso: Usuário atual não é print_user, mas configuração parece estar OK', 'warning');
-      }
-    } catch (checkError) {
-      verification.log('Erro na verificação final, mas configuração parece estar OK', 'warning');
-      verification.logToFile(`Erro na verificação: ${JSON.stringify(checkError)}`);
-    }
-    
-    // 9. Atualizar estado de instalação
-    installState.defaultUserCreated = true;
-    saveInstallState();
-    
-    verification.log('Usuário padrão configurado!', 'success');
-    return true;
-  } catch (error) {
-    verification.log(`Erro ao configurar usuário padrão: ${error.message || JSON.stringify(error)}`, 'error');
-    verification.logToFile(`Erro detalhado: ${JSON.stringify(error)}`);
-    return false;
-  }
-}
-
 async function cleanAptLocks() {
   verification.log('Limpando locks do APT...', 'step');
 
@@ -2068,103 +1926,8 @@ async function installRequiredPackages() {
 
     verification.log('Configurando inicialização automática de serviços no WSL...', 'step');
     
-    // CORREÇÃO: Formatação adequada do script com quebras de linha e verificações melhores
-    const startupScriptContent = `# Início: Serviços customizados no WSL
-# Verifica se estamos no WSL
-if [ -z "\$WSL_DISTRO_NAME" ]; then
-  return
-fi
-
-# Verifica se os serviços existem antes de tentar iniciá-los
-echo "Iniciando serviços do Print Server..."
-
-# Iniciar dbus primeiro (necessário para outros serviços)
-if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q dbus; then
-  sudo service dbus start
-fi
-
-# Iniciar avahi-daemon (para descoberta de impressoras)
-if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q avahi-daemon; then
-  sudo service avahi-daemon start
-fi
-
-# Iniciar CUPS (servidor de impressão)
-if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q cups; then
-  sudo service cups start
-fi
-
-# Iniciar Samba (compartilhamento de arquivos)
-if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q smbd; then
-  sudo service smbd start
-fi
-
-# Iniciar PostgreSQL (banco de dados)
-# Primeiro tenta com service
-if command -v service >/dev/null 2>&1 && service --status-all 2>/dev/null | grep -q postgresql; then
-  sudo service postgresql start
-else
-  # Se falhar, tenta usar pg_ctl diretamente
-  PG_VERSION=\$(ls -d /etc/postgresql/*/ 2>/dev/null | cut -d'/' -f4 | head -n 1 || echo "")
-  if [ -n "\$PG_VERSION" ]; then
-    sudo -u postgres /usr/lib/postgresql/\$PG_VERSION/bin/pg_ctl -D /var/lib/postgresql/\$PG_VERSION/main start 2>/dev/null || true
-  fi
-fi
-
-# Verificar se PM2 está instalado e iniciar a aplicação
-if command -v pm2 >/dev/null 2>&1; then
-  echo "Iniciando aplicações com PM2..."
-  if [ -d "/opt/loqquei/print_server_desktop" ]; then
-    cd /opt/loqquei/print_server_desktop && pm2 resurrect 2>/dev/null || pm2 start ecosystem.config.js 2>/dev/null || pm2 start bin/www.js --name print_server_desktop 2>/dev/null || true
-  elif [ -d "/opt/print_server/print_server_desktop" ]; then
-    cd /opt/print_server/print_server_desktop && pm2 resurrect 2>/dev/null || pm2 start ecosystem.config.js 2>/dev/null || pm2 start bin/www.js --name print_server_desktop 2>/dev/null || true
-  fi
-fi
-
-# Fim: Serviços customizados no WSL
-`;
-
-    try {
-      // Usar método alternativo: criar arquivo SQL temporário no WSL
-      verification.log('Atualizando script de inicialização de serviços...', 'step');
-      
-      // Escrever o script em um arquivo temporário no WSL
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c "cat > /tmp/wsl_startup_append.sh" << 'EOFMARKER'
-${startupScriptContent}
-EOFMARKER`,
-        10000,
-        true
-      );
-      
-      // Verificar e adicionar ao .bashrc de forma mais robusta
-      verification.log('Configurando inicialização automática no .bashrc...', 'step');
-      
-      // Verificar e adicionar ao .bashrc do root
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c "grep -q 'Serviços customizados no WSL' /root/.bashrc || cat /tmp/wsl_startup_append.sh >> /root/.bashrc"`,
-        10000,
-        true
-      );
-      
-      // Também adicionar ao .bashrc do usuário padrão para garantir que funcione independente do usuário
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c "grep -q 'Serviços customizados no WSL' /home/print_user/.bashrc 2>/dev/null || cat /tmp/wsl_startup_append.sh >> /home/print_user/.bashrc 2>/dev/null || true"`,
-        10000,
-        true
-      );
-      
-      // Limpar arquivos temporários
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root rm -f /tmp/wsl_startup_append.sh`,
-        5000,
-        true
-      );
-
-      verification.log('Inicialização automática configurada com sucesso.', 'success');
-    } catch (bashrcError) {
-      verification.log(`Erro ao configurar inicialização automática: ${JSON.stringify(bashrcError) || 'Erro desconhecido'}`, 'warning');
-      verification.logToFile(`Detalhes: ${JSON.stringify(bashrcError)}`);
-    }
+    await setupAutomaticServices();
+    await setupWindowsStartup();
 
     // Iniciar os serviços manualmente após a instalação
     try {
@@ -2200,6 +1963,537 @@ EOFMARKER`,
     // Mesmo com erro, retornar true para continuar a instalação
     verification.log('Continuando instalação mesmo com erros nos pacotes...', 'warning');
     return true;
+  }
+}
+
+// Função aprimorada para garantir que os serviços sejam iniciados automaticamente com o WSL
+// Função aprimorada para garantir que os serviços sejam iniciados automaticamente com o WSL
+async function setupAutomaticServices() {
+  verification.log('Configurando inicialização automática de serviços...', 'step');
+  
+  try {
+    // Usaremos abordagem de arquivos temporários para evitar problemas de escape
+    const os = require('os');
+    const path = require('path');
+    const fs = require('fs');
+    
+    // 1. Criar diretório temporário se não existir
+    const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+    
+    // 2. Criar arquivo wsl.conf
+    verification.log('Configurando systemd no WSL...', 'step');
+    const wslConfContent = `[boot]
+systemd=true
+
+[user]
+default=print_user
+`;
+    const wslConfPath = path.join(tempDir, 'wsl.conf');
+    fs.writeFileSync(wslConfPath, wslConfContent, 'utf8');
+    
+    // Obter caminho WSL
+    const wslPath = await verification.execPromise(
+      `wsl -d Ubuntu wslpath -u "${wslConfPath.replace(/\\/g, '/')}"`,
+      10000,
+      true
+    );
+    
+    // Copiar para o WSL
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root cp "${wslPath.trim()}" /etc/wsl.conf`,
+      10000,
+      true
+    );
+    
+    verification.log('Arquivo wsl.conf criado com sucesso', 'success');
+    
+    // 3. Criar arquivo de serviço systemd
+    verification.log('Criando serviço systemd para inicialização automática...', 'step');
+    const serviceContent = `[Unit]
+Description=Print Server Services
+After=network.target postgresql.service cups.service smbd.service
+Wants=postgresql.service cups.service smbd.service avahi-daemon.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/loqquei/print_server_desktop/start-services.sh
+
+[Install]
+WantedBy=multi-user.target
+`;
+    const servicePath = path.join(tempDir, 'print-server.service');
+    fs.writeFileSync(servicePath, serviceContent, 'utf8');
+    
+    // Obter caminho WSL
+    const serviceWslPath = await verification.execPromise(
+      `wsl -d Ubuntu wslpath -u "${servicePath.replace(/\\/g, '/')}"`,
+      10000,
+      true
+    );
+    
+    // Criar diretório de destino se não existir
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root mkdir -p /etc/systemd/system`,
+      5000,
+      true
+    );
+    
+    // Copiar para o WSL
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root cp "${serviceWslPath.trim()}" /etc/systemd/system/print-server.service`,
+      10000,
+      true
+    );
+    
+    verification.log('Arquivo de serviço systemd criado com sucesso', 'success');
+    
+    // 4. Criar script de inicialização
+    verification.log('Criando script de inicialização de serviços...', 'step');
+    const scriptContent = `#!/bin/bash
+# Script de inicialização de serviços do Print Server
+# Este script inicia todos os serviços necessários e verifica se estão rodando
+
+LOG_FILE="/var/log/print-server-startup.log"
+
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG_FILE"
+}
+
+log "=== Iniciando serviços do Print Server ==="
+
+# Criar diretório de log se não existir
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+chmod 644 "$LOG_FILE"
+
+# Função para iniciar um serviço e verificar se está rodando
+start_service() {
+  local service_name="$1"
+  local max_attempts=3
+  local attempt=1
+  
+  log "Iniciando serviço: $service_name"
+  
+  while [ $attempt -le $max_attempts ]; do
+    log "Tentativa $attempt de $max_attempts para iniciar $service_name"
+    
+    # Tentar iniciar o serviço
+    if systemctl is-active --quiet "$service_name"; then
+      log "Serviço $service_name já está ativo"
+      return 0
+    else
+      log "Tentando iniciar $service_name..."
+      systemctl start "$service_name" >/dev/null 2>&1 || service "$service_name" start >/dev/null 2>&1
+      
+      # Verificar se iniciou com sucesso
+      if systemctl is-active --quiet "$service_name" || service "$service_name" status >/dev/null 2>&1; then
+        log "Serviço $service_name iniciado com sucesso"
+        return 0
+      else
+        log "Falha ao iniciar $service_name na tentativa $attempt"
+        sleep 2
+        attempt=$((attempt + 1))
+      fi
+    fi
+  done
+  
+  log "ERRO: Não foi possível iniciar $service_name após $max_attempts tentativas"
+  return 1
+}
+
+# Verificar e garantir permissões corretas nos diretórios
+log "Verificando permissões de diretórios..."
+if [ -d "/opt/loqquei/print_server_desktop" ]; then
+  chmod -R 755 /opt/loqquei/print_server_desktop
+elif [ -d "/opt/print_server/print_server_desktop" ]; then
+  chmod -R 755 /opt/print_server/print_server_desktop
+fi
+
+# Iniciar serviços na ordem correta
+log "Iniciando serviços principais..."
+
+# Primeiro dbus (muitos serviços dependem dele)
+start_service dbus
+
+# Depois os serviços principais
+start_service avahi-daemon
+start_service postgresql
+start_service cups
+start_service smbd
+
+# Iniciar PM2 para gerenciar o servidor Node.js
+log "Verificando aplicação Node.js..."
+
+if command -v pm2 >/dev/null 2>&1; then
+  log "PM2 encontrado, iniciando aplicação..."
+  
+  if [ -d "/opt/loqquei/print_server_desktop" ]; then
+    cd /opt/loqquei/print_server_desktop || exit
+    
+    # Verificar se já está rodando
+    if pm2 list | grep -q "print_server_desktop"; then
+      log "Aplicação já está em execução, reiniciando..."
+      pm2 restart print_server_desktop || pm2 restart all || true
+    else
+      log "Iniciando nova instância da aplicação..."
+      if [ -f "ecosystem.config.js" ]; then
+        pm2 start ecosystem.config.js
+      else
+        pm2 start bin/www.js --name print_server_desktop
+      fi
+    fi
+    
+    # Salvar para reinicialização automática
+    pm2 save
+    
+  elif [ -d "/opt/print_server/print_server_desktop" ]; then
+    cd /opt/print_server/print_server_desktop || exit
+    
+    # Verificar se já está rodando
+    if pm2 list | grep -q "print_server_desktop"; then
+      log "Aplicação já está em execução, reiniciando..."
+      pm2 restart print_server_desktop || pm2 restart all || true
+    else
+      log "Iniciando nova instância da aplicação..."
+      if [ -f "ecosystem.config.js" ]; then
+        pm2 start ecosystem.config.js
+      else
+        pm2 start bin/www.js --name print_server_desktop
+      fi
+    fi
+    
+    # Salvar para reinicialização automática
+    pm2 save
+  else
+    log "AVISO: Diretório da aplicação não encontrado"
+  fi
+else
+  log "AVISO: PM2 não está instalado"
+  # Tentar instalar PM2
+  if command -v npm >/dev/null 2>&1; then
+    log "Tentando instalar PM2 globalmente..."
+    npm install -g pm2
+    
+    # Tentar novamente após instalar
+    if command -v pm2 >/dev/null 2>&1; then
+      log "PM2 instalado com sucesso, iniciando aplicação..."
+      
+      if [ -d "/opt/loqquei/print_server_desktop" ]; then
+        cd /opt/loqquei/print_server_desktop || exit
+        if [ -f "ecosystem.config.js" ]; then
+          pm2 start ecosystem.config.js
+        else
+          pm2 start bin/www.js --name print_server_desktop
+        fi
+        
+        # Salvar para reinicialização automática
+        pm2 save
+      fi
+    fi
+  fi
+fi
+
+log "=== Inicialização de serviços concluída ==="
+exit 0
+`;
+    const scriptPath = path.join(tempDir, 'start-services.sh');
+    fs.writeFileSync(scriptPath, scriptContent, 'utf8');
+    
+    // Obter caminho WSL
+    const scriptWslPath = await verification.execPromise(
+      `wsl -d Ubuntu wslpath -u "${scriptPath.replace(/\\/g, '/')}"`,
+      10000,
+      true
+    );
+    
+    // Criar diretório de destino se não existir
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop`,
+      5000,
+      true
+    );
+    
+    // Copiar para o WSL
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root cp "${scriptWslPath.trim()}" /opt/loqquei/print_server_desktop/start-services.sh`,
+      10000,
+      true
+    );
+    
+    // Dar permissões de execução
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root chmod +x /opt/loqquei/print_server_desktop/start-services.sh`,
+      5000,
+      true
+    );
+    
+    verification.log('Script de inicialização criado com sucesso', 'success');
+    
+    // 5. Criar script de inicialização para o bashrc
+    verification.log('Configurando método de inicialização alternativo...', 'step');
+    const bashrcContent = `
+# Início: Verificação de serviços do Print Server
+if [ -n "$WSL_DISTRO_NAME" ] && [ -f "/opt/loqquei/print_server_desktop/start-services.sh" ]; then
+  # Verificar se serviços estão rodando, caso contrário iniciar
+  if ! systemctl is-active --quiet print-server.service; then
+    echo "Serviço print-server não está ativo, executando script de inicialização..."
+    sudo /opt/loqquei/print_server_desktop/start-services.sh
+  fi
+fi
+# Fim: Verificação de serviços do Print Server
+`;
+    const bashrcPath = path.join(tempDir, 'bashrc_append.sh');
+    fs.writeFileSync(bashrcPath, bashrcContent, 'utf8');
+    
+    // Obter caminho WSL
+    const bashrcWslPath = await verification.execPromise(
+      `wsl -d Ubuntu wslpath -u "${bashrcPath.replace(/\\/g, '/')}"`,
+      10000,
+      true
+    );
+    
+    // Verificar e adicionar ao bashrc do root
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /root/.bashrc; then cat '${bashrcWslPath.trim()}' >> /root/.bashrc; fi"`,
+      10000,
+      true
+    );
+    
+    // Verificar e adicionar ao bashrc do usuário print_user
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /home/print_user/.bashrc; then cat '${bashrcWslPath.trim()}' >> /home/print_user/.bashrc; fi"`,
+      10000,
+      true
+    );
+    
+    verification.log('Script alternativo de inicialização configurado com sucesso', 'success');
+    
+    // 6. Habilitar e iniciar o serviço
+    verification.log('Habilitando e iniciando serviço...', 'step');
+    
+    try {
+      // Recarregar daemon do systemd
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root systemctl daemon-reload`,
+        15000,
+        true
+      );
+      
+      // Habilitar o serviço para iniciar automaticamente
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root systemctl enable print-server.service`,
+        15000,
+        true
+      );
+      
+      // Iniciar o serviço
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root systemctl start print-server.service`,
+        30000,
+        true
+      );
+      
+      // Verificar status
+      const status = await verification.execPromise(
+        `wsl -d Ubuntu -u root systemctl status print-server.service || true`,
+        10000,
+        true
+      );
+      
+      verification.log(`Status do serviço: ${status.includes('active') ? 'Ativo' : 'Inativo'}`, 
+        status.includes('active') ? 'success' : 'warning');
+    } catch (serviceError) {
+      verification.log(`Aviso ao configurar serviço systemd: ${serviceError.message}`, 'warning');
+      verification.log('Continuando com método alternativo...', 'info');
+    }
+    
+    // 7. Reiniciar o WSL para aplicar as alterações
+    verification.log('Reiniciando WSL para aplicar configurações...', 'step');
+    await verification.execPromise('wsl --shutdown', 15000, true);
+    
+    // Aguardar reinicialização
+    await new Promise(resolve => setTimeout(resolve, 10000));
+    
+    verification.log('Configuração de inicialização automática concluída!', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao configurar inicialização automática: ${error.message || JSON.stringify(error)}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
+  }
+}
+
+async function setupWindowsStartup() {
+  verification.log('Configurando inicialização automática no Windows...', 'step');
+  
+  try {
+    // 1. Criar o script de inicialização
+    const scriptContent = `@echo off
+:: Script para iniciar serviços WSL ao iniciar o Windows
+:: Criado pelo instalador do Sistema de Gerenciamento de Impressão
+
+echo Iniciando serviços do Sistema de Gerenciamento de Impressão...
+echo %date% %time% - Iniciando serviços >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
+
+:: Primeiro garantir que o WSL esteja em execução
+wsl --list --running > nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+  echo %date% %time% - WSL não está em execução, iniciando WSL >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
+  :: Tentar iniciar alguma distribuição para ativar o WSL
+  wsl -d Ubuntu -u root echo "Iniciando WSL" > nul 2>&1
+  
+  :: Aguardar um pouco para o WSL inicializar
+  timeout /t 15 /nobreak > nul
+)
+
+:: Executar o script de verificação e inicialização de serviços no WSL
+echo %date% %time% - Executando script de inicialização >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
+wsl -d Ubuntu -u root /opt/loqquei/print_server_desktop/start-services.sh
+
+echo %date% %time% - Serviços iniciados >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
+echo Serviços do Sistema de Gerenciamento de Impressão iniciados com sucesso!
+
+:: Verificar se o serviço de impressão PDF está respondendo
+echo Verificando API do serviço de impressão...
+wsl -d Ubuntu -u root curl -s -o nul -w "%%{http_code}" http://localhost:56258/api > "%TEMP%\\api_status.txt" 2>nul
+
+set /p API_STATUS=<"%TEMP%\\api_status.txt"
+if "%API_STATUS%"=="200" (
+  echo %date% %time% - API respondendo normalmente (200 OK) >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
+  echo API do serviço está respondendo normalmente!
+) else (
+  echo %date% %time% - API não está respondendo corretamente >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
+  echo AVISO: API do serviço pode não estar funcionando corretamente.
+  
+  :: Tentar reiniciar o serviço PM2
+  echo Tentando reiniciar serviço da API...
+  wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart all" > nul 2>&1
+)
+
+exit 0`;
+
+    // Salvar o script no diretório do programa
+    const startupDir = path.join(process.cwd(), 'startup');
+    const scriptPath = path.join(startupDir, 'start-print-services.bat');
+    
+    // Criar diretório se não existir
+    if (!fs.existsSync(startupDir)) {
+      fs.mkdirSync(startupDir, { recursive: true });
+    }
+    
+    // Escrever o script
+    fs.writeFileSync(scriptPath, scriptContent, 'utf8');
+    verification.log(`Script de inicialização salvo em: ${scriptPath}`, 'success');
+    
+    // 2. Adicionar ao Agendador de Tarefas do Windows para iniciar automaticamente
+    verification.log('Configurando tarefa agendada do Windows...', 'step');
+    
+    const taskName = 'PrintServerAutoStart';
+    const taskXml = `<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2023-04-01T00:00:00</Date>
+    <Author>Print Server</Author>
+    <Description>Inicia serviços do Sistema de Gerenciamento de Impressão</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <Duration>PT10M</Duration>
+      <WaitTimeout>PT1H</WaitTimeout>
+      <StopOnIdleEnd>true</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>${scriptPath.replace(/\\/g, '\\\\')}</Command>
+    </Exec>
+  </Actions>
+</Task>`;
+    
+    // Salvar XML da tarefa em um arquivo temporário
+    const tempXmlPath = path.join(os.tmpdir(), 'print_server_task.xml');
+    fs.writeFileSync(tempXmlPath, taskXml, 'utf8');
+    
+    // Registrar a tarefa usando schtasks
+    try {
+      await verification.execPromise(
+        `schtasks /Create /TN "${taskName}" /XML "${tempXmlPath}" /F`,
+        15000,
+        true
+      );
+      verification.log('Tarefa agendada criada com sucesso!', 'success');
+    } catch (taskError) {
+      verification.log(`Erro ao criar tarefa agendada: ${taskError.message}`, 'warning');
+      verification.log('Tentando método alternativo...', 'info');
+      
+      // Método alternativo usando PowerShell
+      try {
+        await verification.execPromise(
+          `powershell -Command "Register-ScheduledTask -TaskName '${taskName}' -Xml ([System.IO.File]::ReadAllText('${tempXmlPath}')) -Force"`,
+          15000,
+          true
+        );
+        verification.log('Tarefa agendada criada com sucesso (via PowerShell)!', 'success');
+      } catch (psError) {
+        verification.log(`Erro ao criar tarefa agendada (via PowerShell): ${psError.message}`, 'error');
+        verification.log('Configuração automática falhou. O usuário precisará executar o script manualmente.', 'warning');
+      }
+    }
+    
+    // 3. Adicionar também ao menu Iniciar para facilitar execução manual
+    verification.log('Adicionando atalho ao menu Iniciar...', 'step');
+    
+    try {
+      const startupFolder = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+      const shortcutPath = path.join(startupFolder, 'PrintServerServices.bat');
+      
+      // Verificar se pasta existe
+      if (fs.existsSync(startupFolder)) {
+        // Criar um link/cópia para o arquivo batch
+        fs.copyFileSync(scriptPath, shortcutPath);
+        verification.log('Atalho adicionado à pasta Inicialização do usuário', 'success');
+      } else {
+        verification.log('Pasta de inicialização não encontrada, pulando criação de atalho', 'warning');
+      }
+    } catch (shortcutError) {
+      verification.log(`Erro ao criar atalho: ${shortcutError.message}`, 'warning');
+    }
+    
+    verification.log('Configuração de inicialização automática concluída!', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Erro ao configurar inicialização automática: ${error.message || JSON.stringify(error)}`, 'error');
+    verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
+    return false;
   }
 }
 
@@ -2502,7 +2796,7 @@ async function setupCupsPrinter() {
     await verification.execPromise('wsl -d Ubuntu -u root sudo chmod -R 0777 /srv/print_server', 10000, true);
     
     // 3. Se já existe uma impressora PDF, apenas garantir que esteja ativa
-    if (printerList.includes('PDF') || printerList.includes('PDF_Printer')) {
+    if (printerList.includes('PDF_Printer')) {
       verification.log('Impressora PDF já existe, garantindo que esteja habilitada...', 'info');
       try {
         // Habilitar e aceitar trabalhos (ignorando erros)
@@ -3418,7 +3712,7 @@ GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA print_management TO postgres_print;
 
 // Configurar usuário padrão - método ultra-simplificado
 async function configureDefaultUser() {
-  verification.log('Configurando usuário padrão com método ultra-simplificado...', 'step');
+  verification.log('Configurando usuário padrão com método simplificado...', 'step');
   verification.logToFile('Iniciando configuração simplificada do usuário padrão');
 
   try {
@@ -4352,6 +4646,10 @@ async function setupPM2() {
 
     // Verificar se o PM2 está instalado
     verification.log('Verificando instalação do PM2...', 'step');
+
+    try {
+      await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && sudo npm install"', 1200000, false);
+    } catch {}
 
     let pm2Installed = false;
     try {
@@ -5705,7 +6003,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await copySoftwareToOpt());
+    console.log(await configureCups());
     process.exit(1)
   })()
 }
