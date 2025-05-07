@@ -20,7 +20,7 @@ AllowNoIcons=yes
 ; Necessário para atualizações e administração do WSL
 PrivilegesRequired=admin
 OutputDir=Output
-OutputBaseFilename=Installer_Gerenciamento_LoQQuei
+OutputBaseFilename=Instalador_Gerenciamento_LoQQuei
 Compression=lzma2/ultra64
 SolidCompression=yes
 LZMAUseSeparateProcess=yes

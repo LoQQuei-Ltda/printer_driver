@@ -3570,28 +3570,67 @@ async function copySoftwareToOpt() {
         const hasNodeModules = fs.existsSync(path.join(serverFiles, 'node_modules'));
         if (hasNodeModules) {
           verification.log('Diretório node_modules encontrado, mas será ignorado (muito grande)', 'info');
-          verification.log('Instalando dependências via npm install...', 'step');
+        } else {
+          verification.log('Diretório node_modules não encontrado, será instalado via npm', 'info');
           
+          // Verificar se o package.json existe no destino - criar um básico se não existir
           try {
+            const packageExists = await verification.execPromise(
+              'wsl -d Ubuntu -u root bash -c "test -f /opt/loqquei/print_server_desktop/package.json && echo exists"',
+              10000,
+              true
+            ).catch(() => "");
+            
+            if (packageExists.trim() !== "exists") {
+              verification.log('Criando package.json básico...', 'info');
+              await verification.execPromise(
+                `wsl -d Ubuntu -u root bash -c "echo '{\\\"name\\\":\\\"print_server_desktop\\\",\\\"version\\\":\\\"1.0.0\\\"}' > /opt/loqquei/print_server_desktop/package.json"`,
+                10000,
+                true
+              );
+            }
+          } catch (e) {
+            verification.log('Erro ao verificar/criar package.json básico, continuando...', 'warning');
+          }
+        }
+
+        // Garantir que exista um diretório node_modules (independente do caso acima)
+        try {
+          await verification.execPromise('wsl -d Ubuntu -u root bash -c "mkdir -p /opt/loqquei/print_server_desktop/node_modules"', 30000, true);
+        } catch (e) {
+          verification.log('Aviso: Não foi possível criar diretório node_modules, continuando...', 'warning');
+        }
+
+        // Sempre executar npm install, independentemente da existência de node_modules na origem
+        verification.log('Instalando dependências via npm install...', 'step');
+        try {
+          // Verificar se o npm está disponível antes de executar
+          const npmAvailable = await verification.execPromise(
+            'wsl -d Ubuntu -u root bash -c "command -v npm || echo not_found"',
+            15000,
+            true
+          ).catch(() => "not_found");
+          
+          if (npmAvailable.includes("not_found")) {
+            verification.log('npm não está disponível, tentando instalar...', 'warning');
             await verification.execPromise(
-              'wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && npm install --only=production"',
-              1200000, // 20 minutos (npm install pode demorar)
+              'wsl -d Ubuntu -u root bash -c "apt-get update && apt-get install -y npm"',
+              300000, // 5 minutos
               true
             );
-            verification.log('Dependências instaladas com sucesso', 'success');
-          } catch (npmError) {
-            verification.log(`Aviso: Erro ao instalar dependências: ${npmError.message || 'Erro desconhecido'}`, 'warning');
-            // Continuar mesmo com erro
           }
-        } else {
-          verification.log('Diretório node_modules não encontrado, criando package.json básico...', 'info');
           
-          // Criar package.json básico se não existir
+          // Executar npm install com timeout maior e flags para evitar erros
           await verification.execPromise(
-            `wsl -d Ubuntu -u root bash -c "if [ ! -f /opt/loqquei/print_server_desktop/package.json ]; then echo '{\\\"name\\\":\\\"print_server_desktop\\\",\\\"version\\\":\\\"1.0.0\\\"}' > /opt/loqquei/print_server_desktop/package.json; fi"`,
-            10000,
+            'wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && npm install --only=production --no-fund --no-audit"',
+            1800000, // 30 minutos (instalação pode demorar em sistemas lentos)
             true
           );
+          verification.log('Dependências instaladas com sucesso', 'success');
+        } catch (npmError) {
+          verification.log(`Aviso: Erro ao instalar dependências: ${npmError.message || 'Erro desconhecido'}`, 'warning');
+          verification.logToFile(`Detalhes do erro npm: ${JSON.stringify(npmError)}`);
+          // Continuar mesmo com erro
         }
 
         // Configurar permissões e instalar dependências
