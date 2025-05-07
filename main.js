@@ -74,6 +74,7 @@ if (setupWSL) {
           buttons: ['OK']
         }).then(() => {
           printersSync();
+          initTask();
           app.exit(0);
         });
       } else {
@@ -1259,6 +1260,7 @@ app.whenReady().then(async () => {
   }
 
   printersSync();
+  initTask();
   await ensureServicesRunning();
   
   // Verificar se o usuário está autenticado
@@ -2208,6 +2210,7 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
         buttons: ['OK']
       });
       printersSync();
+      initTask();
       // Atualizar o status do sistema após a instalação
       try {
         // Enviar evento para a janela principal verificar a instalação
