@@ -749,7 +749,7 @@ class PrintManager {
         `;
 
         const isInstalled = status.wslInstalled && status.wsl2Configured &&
-          status.distroInstalled && status.userConfigured;
+          status.distroInstalled;
 
         this.state.systemCheckPassed = isInstalled;
 
