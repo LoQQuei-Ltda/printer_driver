@@ -313,22 +313,17 @@ async function checkWSLStatusDetailed() {
     let hasWsl2 = false;
     let hasDistro = false;
     
-    // CORREÇÃO 1: Verificação de arquivo antes de executar comandos
     // Verificar se o executável do WSL existe primeiro
     if (!fs.existsSync("C:\\Windows\\System32\\wsl.exe")) {
       log("WSL não encontrado no sistema", "warning");
       return { installed: false, wsl2: false, hasDistro: false, hasUbuntu: false };
     }
     
-    // CORREÇÃO 2: Método mais confiável para detectar se WSL está realmente instalado
-    // Usar comando where para localizar wsl.exe
+    // Método mais confiável para detectar se WSL está realmente instalado
     try {
       const whereOutput = await execPromise("where wsl", 5000, true);
       if (whereOutput && whereOutput.includes("wsl.exe")) {
-        // wsl.exe está no PATH, mas isso não significa que está instalado corretamente
-        // Precisamos verificar se responde a algum comando simples
-        
-        // CORREÇÃO 3: Tratamento especial para mensagem de "não está instalado"
+        // Verificar se responde a algum comando simples
         try {
           const versionCheck = await execPromise("wsl --version", 10000, true);
           // Se chegarmos aqui sem erro, WSL está instalado
@@ -348,7 +343,9 @@ async function checkWSLStatusDetailed() {
           
           if (errorOutput.includes("não está instalado") || 
               errorOutput.includes("not installed") ||
-              errorOutput.toLowerCase().includes("wsl") && errorOutput.toLowerCase().includes("install")) {
+              errorOutput.toLowerCase().includes("wsl") && 
+              (errorOutput.toLowerCase().includes("install") || 
+               errorOutput.toLowerCase().includes("instal"))) {
             log("WSL não está instalado (detectado pelo erro específico)", "warning");
             isWslInstalled = false;
           } else {
