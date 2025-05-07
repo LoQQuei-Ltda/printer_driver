@@ -782,143 +782,135 @@ async function installWSLModern() {
   verification.log('Tentando instalar WSL usando o método moderno (wsl --install)...', 'step');
   
   try {
-    // Verificação inicial reforçada para detectar se o WSL já está instalado
-    const wslChecks = [
-      // Método 1: Status
-      async () => {
-        try {
-          const result = await verification.execPromise('wsl --status', 20000, false);
-          return { success: checkWslOutput(result), output: result };
-        } catch (err) {
-          return { success: checkWslOutput(err), output: err.stdout || "" };
-        }
-      },
-      // Método 2: Versão 
-      async () => {
-        try {
-          const result = await verification.execPromise('wsl --version', 20000, false);
-          return { success: true, output: result }; // Se não lançar erro, WSL está instalado
-        } catch (err) {
-          return { success: false, output: err.stdout || "" };
-        }
-      },
-      // Método 3: Lista
-      async () => {
-        try {
-          const result = await verification.execPromise('wsl --list', 20000, false);
-          return { success: true, output: result }; // Se não lançar erro, WSL está instalado
-        } catch (err) {
-          return { success: false, output: err.stdout || "" };
-        }
-      },
-      // Método 4: Verificar registry
-      async () => {
-        try {
-          const result = await verification.execPromise(
-            'powershell -Command "Test-Path HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss"', 
-            15000, 
-            false
-          );
-          return { success: result.trim().toLowerCase() === 'true', output: result };
-        } catch (err) {
-          return { success: false, output: "" };
+    // CORREÇÃO 1: Verificação prévia explícita para saber se WSL NÃO está instalado
+    let wslNotInstalled = true;
+    
+    try {
+      const statusCheck = await verification.execPromise('wsl --status', 10000, true);
+      // Se chegar aqui sem erro, WSL provavelmente está instalado
+      wslNotInstalled = false;
+      verification.log('WSL já parece estar instalado', 'info');
+    } catch (statusError) {
+      // Verificar se o erro específico é de "não está instalado"
+      if (statusError.stderr) {
+        const errorMsg = typeof statusError.stderr === 'string' ? 
+          statusError.stderr : statusError.stderr.toString();
+        
+        // Limpar caracteres nulos
+        const cleanError = errorMsg.replace(/\x00/g, '');
+        
+        if (cleanError.includes("não está instalado") || 
+            cleanError.includes("not installed")) {
+          wslNotInstalled = true;
+          verification.log('WSL não está instalado (confirmado pelo erro)', 'info');
+        } else {
+          // Outro tipo de erro, WSL pode estar instalado mas com problemas
+          wslNotInstalled = false;
+          verification.log('Erro desconhecido ao verificar WSL, tentando instalar mesmo assim', 'warning');
         }
       }
-    ];
+    }
     
-    // Executar verificações preliminares
-    for (const check of wslChecks) {
-      const result = await check();
-      if (result.success) {
-        verification.log('WSL já está instalado (detectado durante verificação preliminar)', 'success');
-        verification.logToFile(`Método de detecção bem-sucedido: ${result.output}`);
+    // Se não temos certeza que WSL não está instalado, fazer verificações adicionais
+    if (!wslNotInstalled) {
+      // Verificações adicionais para confirmar se WSL realmente está instalado
+      try {
+        const result = await verification.execPromise('wsl --list', 10000, true);
+        verification.log('WSL já está instalado (confirmado por --list)', 'success');
         installState.wslInstalled = true;
         saveInstallState();
         return true;
+      } catch (listError) {
+        // Verificar o erro específico
+        if (listError.stderr) {
+          const errorMsg = typeof listError.stderr === 'string' ? 
+            listError.stderr : listError.stderr.toString();
+          
+          // Limpar caracteres nulos
+          const cleanError = errorMsg.replace(/\x00/g, '');
+          
+          if (cleanError.includes("não está instalado") || 
+              cleanError.includes("not installed")) {
+            wslNotInstalled = true;
+            verification.log('WSL não está instalado (confirmado pelo erro em --list)', 'info');
+          }
+        }
       }
     }
 
     verification.log('WSL não está instalado, iniciando instalação...', 'step');
-    verification.log('Verificando permissões e preparando instalação...', 'step');
     
-    // Método de instalação moderno com melhor tratamento de erros
-    // Usar um método mais flexível que funcione tanto no Windows 10 quanto no 11
-    // Com opções adicionais para melhorar a compatibilidade
-    const installOptions = [
-      // Opção 1: Instalação completa (Windows 11 ou Win10 mais recente)
-      {
-        cmd: 'wsl --install --no-distribution --web-download --no-launch',
-        timeout: 900000  // 15 minutos
-      },
-      // Opção 2: Instalação simples (Windows 10)
-      { 
-        cmd: 'wsl --install', 
-        timeout: 900000
-      },
-      // Opção 3: Habilitar recurso (versões mais antigas do Windows 10)
-      {
-        cmd: 'powershell -Command "Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart"',
-        timeout: 300000  // 5 minutos
-      }
-    ];
-    
+    // CORREÇÃO 2: Sequência de instalação mais clara e robusta
+    // Usar um método mais simples e direto para instalar o WSL
     let installSuccess = false;
-    let installedWithMethod = "";
+    let installOutput = "";
     
-    // Tentar cada método de instalação até um funcionar
-    for (const { cmd, timeout } of installOptions) {
+    try {
+      // Comando principal de instalação, sem distro para evitar problemas
+      verification.log('Executando: wsl --install --no-distribution', 'step');
+      installOutput = await verification.execPromise('wsl --install --no-distribution', 600000, true);
+      installSuccess = true;
+      verification.log('Comando de instalação executado com sucesso', 'success');
+    } catch (mainError) {
+      // Se falhar, verificar se o erro é porque já está instalado
+      if (mainError.stderr && (
+          mainError.stderr.includes("já está instalado") ||
+          mainError.stderr.includes("already installed") ||
+          checkWslOutput(mainError.stderr)
+      )) {
+        verification.log('WSL já está instalado (detectado através do erro)', 'success');
+        installState.wslInstalled = true;
+        saveInstallState();
+        return true;
+      }
+      
+      // Se for outro erro, tentar método alternativo
+      verification.log('Primeiro método falhou, tentando método alternativo...', 'warning');
+      
       try {
-        verification.log(`Tentando instalação com método: ${cmd}`, 'info');
-        const installResult = await verification.execPromise(cmd, timeout, true);
-        
-        // Verificar saída para detecção de já instalado
-        if (installResult && 
-            (installResult.includes('já está instalado') || 
-             installResult.includes('already installed'))) {
-          verification.log('WSL já está instalado (confirmado durante tentativa de instalação)', 'success');
-          installState.wslInstalled = true;
-          saveInstallState();
-          return true;
-        }
-        
-        verification.log(`Comando de instalação executado: ${cmd}`, 'success');
-        installedWithMethod = cmd;
+        // Método alternativo mais simples
+        verification.log('Executando: wsl --install', 'step');
+        installOutput = await verification.execPromise('wsl --install', 600000, true);
         installSuccess = true;
-        break;
-      } catch (installError) {
-        // Verificar se o erro indica que já está instalado
-        if (installError.stdout && 
-            (installError.stdout.includes('já está instalado') ||
-             installError.stdout.includes('already installed') ||
-             checkWslOutput(installError.stdout))) {
-          verification.log('WSL já está instalado (detectado por mensagem de erro)', 'success');
+        verification.log('Comando alternativo de instalação executado com sucesso', 'success');
+      } catch (altError) {
+        // Se falhar novamente, verificar erro similar
+        if (altError.stderr && (
+            altError.stderr.includes("já está instalado") ||
+            altError.stderr.includes("already installed") ||
+            checkWslOutput(altError.stderr)
+        )) {
+          verification.log('WSL já está instalado (detectado através do erro no método alternativo)', 'success');
           installState.wslInstalled = true;
           saveInstallState();
           return true;
         }
         
-        verification.log(`Método de instalação falhou: ${cmd}`, 'warning');
-        verification.logToFile(`Detalhes do erro: ${JSON.stringify(installError)}`);
-        // Continuar para o próximo método
+        // Método final: habilitar recurso diretamente via PowerShell
+        verification.log('Métodos anteriores falharam, tentando habilitar recurso via PowerShell...', 'warning');
+        
+        try {
+          verification.log('Habilitando recurso WSL via PowerShell...', 'step');
+          await verification.execPromise(
+            'powershell -Command "Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart"', 
+            300000, 
+            true
+          );
+          installSuccess = true;
+          verification.log('Recurso WSL habilitado via PowerShell', 'success');
+        } catch (psError) {
+          // Último recurso falhou
+          verification.log('Todos os métodos de instalação falharam', 'error');
+          return false;
+        }
       }
     }
     
-    // Se nenhum método funcionou
-    if (!installSuccess) {
-      verification.log('Todos os métodos automáticos de instalação falharam', 'error');
-      // Oferecer instruções para instalação manual
-      verification.log('Instruções para instalação manual do WSL:', 'info');
-      verification.log('1. Abra o PowerShell como administrador', 'info');
-      verification.log('2. Execute o comando: wsl --install', 'info');
-      verification.log('3. Reinicie o computador após a instalação', 'info');
-      return false;
-    }
-   
     // Aguardar o sistema processar (tempo aumentado para maior segurança)
     verification.log('Aguardando o sistema processar a instalação...', 'info');
     await new Promise(resolve => setTimeout(resolve, 15000)); // 15 segundos de espera
-   
-    // Série reforçada de verificações para confirmar a instalação
+    
+    // CORREÇÃO 3: Verificações pós-instalação mais robustas
     verification.log('Realizando verificações pós-instalação...', 'step');
     
     // Lista de verificações pós-instalação
@@ -942,50 +934,20 @@ async function installWSLModern() {
           return false;
         }
       },
-      // Verificação 3: Listar distribuições
+      // Verificação 3: Tentar listar distribuições (mesmo que retorne lista vazia)
       async () => {
         try {
           await verification.execPromise('wsl --list', 15000, false);
           return true; // Se executar sem erro, wsl está instalado
         } catch (err) {
+          // Verificar se o erro é sobre "não tem distribuições", o que também confirma que está instalado
+          if (err.stderr && (
+            err.stderr.includes("não tem distribuições") ||
+            err.stderr.includes("no distributions")
+          )) {
+            return true;
+          }
           return false;
-        }
-      },
-      // Verificação 4: Verificar recurso Windows
-      async () => {
-        try {
-          const result = await verification.execPromise(
-            'powershell -Command "Get-WindowsOptionalFeature -Online | Where-Object {$_.FeatureName -eq \'Microsoft-Windows-Subsystem-Linux\'} | Select-Object -ExpandProperty State"', 
-            20000, 
-            false
-          );
-          return result && result.includes("Enabled");
-        } catch (err) {
-          return false;
-        }
-      },
-      // Verificação 5: Verificar via registro
-      async () => {
-        try {
-          const result = await verification.execPromise(
-            'powershell -Command "Test-Path HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Lxss"', 
-            15000, 
-            false
-          );
-          return result.trim().toLowerCase() === 'true';
-        } catch (err) {
-          return false;
-        }
-      },
-      // Verificação 6: Verificar kernel via update
-      async () => {
-        try {
-          const result = await verification.execPromise('wsl --update', 20000, false);
-          return checkWslOutput(result) || result.includes("update") || result.includes("atualiza");
-        } catch (err) {
-          // Mesmo com erro, um código de saída não-zero não significa que WSL não está instalado
-          return checkWslOutput(err) || 
-                 (err.stdout && (err.stdout.includes("update") || err.stdout.includes("atualiza")));
         }
       }
     ];
@@ -1004,19 +966,6 @@ async function installWSLModern() {
         // Continuar com próxima verificação mesmo se essa falhar
         verification.logToFile(`Erro em verificação: ${JSON.stringify(checkError)}`);
       }
-    }
-    
-    // Verificação final de comandos disponíveis
-    try {
-      const cmdCheck = await verification.execPromise('wsl --help', 15000, false);
-      if (cmdCheck && cmdCheck.includes('Usage') || cmdCheck.includes('Uso')) {
-        verification.log('WSL parece estar disponível (comandos funcionando)', 'success');
-        installState.wslInstalled = true;
-        saveInstallState();
-        return true;
-      }
-    } catch (helpError) {
-      verification.logToFile(`Erro no check final: ${JSON.stringify(helpError)}`);
     }
     
     // Mesmo se as verificações falharem, se instalamos com sucesso, considerar como instalado
@@ -1058,17 +1007,39 @@ async function configureWSL2() {
   verification.log('Configurando WSL 2 como versão padrão...', 'step');
   
   try {
-    // Verificar primeiro se WSL está instalado
-    const wslCheck = await verification.execPromise('wsl --status', 15000, false)
-      .catch(() => "wsl-not-found");
-      
-    if (wslCheck === "wsl-not-found" || wslCheck.includes("não está instalado") || 
-        wslCheck.includes("not installed")) {
+    // CORREÇÃO 1: Verificação mais robusta se o WSL está realmente instalado
+    let wslInstalled = false;
+    
+    try {
+      const wslCheck = await verification.execPromise('wsl --list', 15000, false);
+      wslInstalled = true;
+    } catch (listError) {
+      // Verificar se o erro específico é de "não está instalado"
+      if (listError.stderr) {
+        const errorMsg = typeof listError.stderr === 'string' ? 
+          listError.stderr : listError.stderr.toString();
+        
+        // Limpar caracteres nulos
+        const cleanError = errorMsg.replace(/\x00/g, '');
+        
+        if (cleanError.includes("não está instalado") || 
+            cleanError.includes("not installed")) {
+          verification.log('WSL não está instalado, não é possível configurar WSL 2', 'error');
+          return false;
+        } else {
+          // Outro tipo de erro, WSL pode estar instalado mas com problemas
+          wslInstalled = true;
+          verification.log('Erro desconhecido ao verificar WSL, mas tentando configurar mesmo assim', 'warning');
+        }
+      }
+    }
+    
+    if (!wslInstalled) {
       verification.log('WSL não está instalado, não é possível configurar WSL 2', 'error');
       return false;
     }
     
-    // Verificar se WSL 2 já está configurado como padrão
+    // CORREÇÃO 2: Verificar se WSL 2 já está configurado como padrão
     try {
       const defaultVersion = await verification.execPromise('wsl --get-default-version', 15000, false);
       if (defaultVersion.trim() === '2') {
@@ -1082,17 +1053,39 @@ async function configureWSL2() {
       // Continuar e tentar configurar de qualquer forma
     }
     
-    // Verificar se o kernel do WSL 2 está instalado
+    // CORREÇÃO 3: Atualizar o kernel do WSL 2 se disponível
     try {
       // No Windows 11 e Windows 10 mais recentes, este comando atualiza o kernel
-      const kernelCheck = await verification.execPromise('wsl --update', 30000, false);
+      verification.log('Tentando atualizar o kernel do WSL...', 'step');
+      const kernelCheck = await verification.execPromise('wsl --update', 60000, false);
       verification.log('Kernel do WSL atualizado/verificado', 'info');
     } catch (kernelError) {
       // Ignorar erros, pois o comando pode não existir em versões mais antigas
-      verification.log('Comando de atualização do kernel não disponível', 'info');
+      verification.log('Comando de atualização do kernel não disponível ou falhou', 'info');
+      
+      // CORREÇÃO 4: Verificar se precisa instalar o kernel do WSL 2
+      if (kernelError.stderr) {
+        const errorMsg = typeof kernelError.stderr === 'string' ? 
+          kernelError.stderr : kernelError.stderr.toString();
+        
+        if (errorMsg.includes('kernel') || errorMsg.includes('Kernel')) {
+          // Pode precisar baixar e instalar o kernel manualmente
+          verification.log('Pode ser necessário instalar o kernel do WSL 2 manualmente', 'warning');
+          try {
+            const kernelUpdated = await updateWSL2Kernel();
+            if (kernelUpdated) {
+              verification.log('Kernel do WSL 2 instalado com sucesso', 'success');
+            }
+          } catch (updateError) {
+            verification.log('Erro ao atualizar kernel do WSL 2, continuando mesmo assim', 'warning');
+          }
+        }
+      }
     }
     
-    // Tentar configurar com múltiplas tentativas
+    // CORREÇÃO 5: Configurar WSL 2 como padrão com melhor tratamento de erros
+    verification.log('Configurando WSL 2 como versão padrão...', 'step');
+    
     let success = false;
     let attempts = 0;
     const maxAttempts = 3;
@@ -1187,25 +1180,92 @@ async function configureWSL2() {
       }
     }
     
-    // Verificação final para confirmar que WSL 2 está configurado
-    if (success) {
-      try {
-        const finalCheck = await verification.execPromise('wsl --get-default-version', 15000, false);
-        if (finalCheck.trim() === '2') {
-          verification.log('Configuração do WSL 2 confirmada', 'success');
-        } else {
-          verification.log(`Aviso: Versão padrão atual é ${finalCheck.trim()}, não 2`, 'warning');
-        }
-      } catch (finalCheckError) {
-        verification.log('Não foi possível verificar configuração final do WSL 2', 'warning');
-      }
-    }
-    
     return success;
   } catch (error) {
     verification.log(`Erro ao configurar WSL 2: ${error.message || JSON.stringify(error)}`, 'error');
     return false;
   }
+}
+
+async function verifyWSLInstallation() {
+  verification.log('Verificando se WSL foi instalado corretamente...', 'step');
+  
+  // Lista de métodos de verificação em ordem de confiabilidade
+  const checkMethods = [
+    // Método 1: Verificar se o comando list funciona
+    async () => {
+      try {
+        const listResult = await verification.execPromise('wsl --list', 15000, true);
+        // Qualquer saída sem erro indica que o WSL está instalado
+        return { success: true, message: 'WSL instalado (verificado via --list)' };
+      } catch (listError) {
+        // Verificar se o erro é específico de "não tem distribuições"
+        if (listError.stderr) {
+          const errorMsg = typeof listError.stderr === 'string' ? 
+            listError.stderr : listError.stderr.toString();
+          
+          // Se não contém "não está instalado" mas contém "não tem distribuições",
+          // isso confirma que o WSL está instalado, mas sem distribuições
+          if (!errorMsg.includes("não está instalado") && 
+              !errorMsg.includes("not installed") &&
+              (errorMsg.includes("não tem distribuições") || 
+               errorMsg.includes("no distributions"))) {
+            return { success: true, message: 'WSL instalado, sem distribuições' };
+          }
+        }
+        return { success: false };
+      }
+    },
+    
+    // Método 2: Verificar versão
+    async () => {
+      try {
+        const versionResult = await verification.execPromise('wsl --version', 15000, true);
+        return { success: true, message: 'WSL instalado (verificado via --version)' };
+      } catch (versionError) {
+        return { success: false };
+      }
+    },
+    
+    // Método 3: Verificar status
+    async () => {
+      try {
+        const statusResult = await verification.execPromise('wsl --status', 15000, true);
+        return { success: true, message: 'WSL instalado (verificado via --status)' };
+      } catch (statusError) {
+        return { success: false };
+      }
+    },
+    
+    // Método 4: Verificar se o executável wsl.exe está disponível e responde
+    async () => {
+      try {
+        const whereResult = await verification.execPromise('where wsl', 10000, true);
+        if (whereResult && whereResult.includes('wsl.exe')) {
+          return { success: true, message: 'Executável wsl.exe encontrado' };
+        }
+        return { success: false };
+      } catch (whereError) {
+        return { success: false };
+      }
+    }
+  ];
+  
+  // Executar todos os métodos em sequência
+  for (const method of checkMethods) {
+    try {
+      const result = await method();
+      if (result.success) {
+        verification.log(result.message, 'success');
+        return true;
+      }
+    } catch (error) {
+      // Ignorar erros e continuar com o próximo método
+    }
+  }
+  
+  verification.log('Não foi possível verificar a instalação do WSL com nenhum método', 'error');
+  return false;
 }
 
 // Função para atualizar o kernel do WSL 2 quando necessário
