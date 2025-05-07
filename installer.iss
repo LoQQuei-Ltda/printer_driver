@@ -10,6 +10,7 @@ AppId={{8A8AA8A8-8888-4444-AAAA-444444444444}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
+AppContact=programadores@loqquei.com.br
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
@@ -20,7 +21,7 @@ AllowNoIcons=yes
 ; Necessário para atualizações e administração do WSL
 PrivilegesRequired=admin
 OutputDir=Output
-OutputBaseFilename=Instalador_Gerenciamento_LoQQuei
+OutputBaseFilename=Instalador_Gerenciamento_LoQQuei_V{#MyAppVersion}
 Compression=lzma2/ultra64
 SolidCompression=yes
 LZMAUseSeparateProcess=yes

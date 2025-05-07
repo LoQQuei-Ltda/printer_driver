@@ -1905,11 +1905,39 @@ async function configureDefaultUser() {
   }
 }
 
+async function cleanAptLocks() {
+  verification.log('Limpando locks do APT...', 'step');
+
+  try {
+    // Primeiro tentar terminar processos apt-get pendentes
+    try {
+      await verification.execPromise('wsl -d Ubuntu -u root bash -c "killall apt-get apt dpkg 2>/dev/null || true"', 15000, true);
+    } catch (killError) {
+      // Ignorar erros, pois pode não haver processos para matar
+      verification.logToFile(`Aviso na tentativa de encerrar processos: ${JSON.stringify(killError)}`);
+    }
+
+    // Remover arquivos de lock
+    await verification.execPromise('wsl -d Ubuntu -u root bash -c "rm /var/lib/apt/lists/lock /var/cache/apt/archives/lock /var/lib/dpkg/lock* -f 2>/dev/null || true"', 15000, true);
+    await verification.execPromise('wsl -d Ubuntu -u root bash -c "dpkg --configure -a"', 30000, true);
+    
+    verification.log('Locks do APT removidos com sucesso', 'success');
+    return true;
+  } catch (error) {
+    verification.log(`Aviso ao limpar locks do APT: ${error.message || JSON.stringify(error)}`, 'warning');
+    // Continuar mesmo com erro
+    return false;
+  }
+}
+
 // Instalação dos pacotes necessários no WSL com melhor tratamento de erros
 async function installRequiredPackages() {
   verification.log('Instalando pacotes necessários...', 'header');
 
   try {
+    // Limpar locks do APT antes de começar
+    await cleanAptLocks();
+
     // Lista de pacotes necessários
     const requiredPackages = [
       'nano', 'samba', 'cups', 'printer-driver-cups-pdf', 'postgresql', 'postgresql-contrib',
@@ -1917,18 +1945,36 @@ async function installRequiredPackages() {
       'avahi-discover', 'hplip', 'hplip-gui', 'printer-driver-all'
     ];
 
-    // Atualizando repositórios primeiro - aumentar timeout para 5 minutos
+    // Atualizando repositórios primeiro - aumentar timeout para 10 minutos
     verification.log('Atualizando repositórios...', 'step');
     try {
-      await verification.execPromise('wsl -d Ubuntu -u root apt-get update', 300000, true);
+      // Limpar cache do apt primeiro
+      await verification.execPromise('wsl -d Ubuntu -u root apt-get clean', 120000, true);
+      
+      // Atualizar com timeout aumentado
+      await verification.execPromise('wsl -d Ubuntu -u root apt-get update', 1200000, true);
     } catch (updateError) {
       verification.log(`Erro ao atualizar repositórios: ${updateError.message || 'Erro desconhecido'}`, 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(updateError)}`);
 
-      // Tente resolver problemas comuns
+      // Tentar resolver problemas comuns e limpar locks novamente
       verification.log('Tentando corrigir problemas do apt...', 'step');
-      await verification.execPromise('wsl -d Ubuntu -u root apt-get --fix-broken install -y', 120000, true);
-      await verification.execPromise('wsl -d Ubuntu -u root apt-get update', 300000, true);
+      await cleanAptLocks();
+      
+      try {
+        await verification.execPromise('wsl -d Ubuntu -u root apt-get --fix-broken install -y', 180000, true);
+        await verification.execPromise('wsl -d Ubuntu -u root apt-get update', 600000, true);
+      } catch (secondUpdateError) {
+        verification.log('Segunda tentativa de atualizar falhou, tentando método alternativo...', 'warning');
+        
+        // Tentar com método alternativo (usando apt em vez de apt-get)
+        try {
+          await verification.execPromise('wsl -d Ubuntu -u root apt clean', 60000, true);
+          await verification.execPromise('wsl -d Ubuntu -u root apt update', 600000, true);
+        } catch (altUpdateError) {
+          verification.log('Todos os métodos de atualização falharam, tentando continuar...', 'warning');
+        }
+      }
     }
 
     // Dividir a instalação em grupos menores e mais críticos primeiro
@@ -1953,18 +1999,24 @@ async function installRequiredPackages() {
       verification.log(`Instalando grupo ${i + 1}/${packetGroups.length}: ${group.join(', ')}`, 'step');
 
       try {
+        // Limpar locks antes de cada grupo para prevenir problemas
+        await cleanAptLocks();
+        
         // Usar timeout de 10 minutos para cada grupo
-        await verification.execPromise(`wsl -d Ubuntu -u root apt-get install -y ${group.join(' ')}`, 600000, true);
+        await verification.execPromise(`wsl -d Ubuntu -u root apt-get install -y --no-install-recommends ${group.join(' ')}`, 600000, true);
         verification.log(`Grupo ${i + 1} instalado com sucesso`, 'success');
       } catch (groupError) {
         verification.log(`Erro ao instalar grupo ${i + 1}: ${groupError.message || 'Erro desconhecido'}`, 'warning');
         verification.logToFile(`Detalhes do erro: ${JSON.stringify(groupError)}`);
 
+        // Tentar limpar locks e reinstalar
+        await cleanAptLocks();
+        
         // Tentar instalar um por um se o grupo falhar
         for (const pkg of group) {
           try {
             verification.log(`Tentando instalar ${pkg} individualmente...`, 'step');
-            await verification.execPromise(`wsl -d Ubuntu -u root apt-get install -y ${pkg}`, 300000, true);
+            await verification.execPromise(`wsl -d Ubuntu -u root apt-get install -y --no-install-recommends ${pkg}`, 300000, true);
             verification.log(`Pacote ${pkg} instalado com sucesso`, 'success');
           } catch (pkgError) {
             verification.log(`Erro ao instalar ${pkg}: ${pkgError.message || 'Erro desconhecido'}`, 'warning');
@@ -1973,16 +2025,51 @@ async function installRequiredPackages() {
       }
 
       // Pausa breve entre grupos para dar folga ao sistema
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise(resolve => setTimeout(resolve, 3000));
     }
 
-    verification.log('Instalação de pacotes concluída com sucesso!', 'success');
-
+    // Garantir que o systemd esteja habilitado no WSL
     try {
-      verification.log('Configurando inicialização automática de serviços no WSL...', 'step');
+      verification.log('Verificando configuração do systemd no WSL...', 'step');
+      
+      // Verificar se wsl.conf existe e se systemd está habilitado
+      const wslConfCheck = await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "if [ -f /etc/wsl.conf ] && grep -q systemd=true /etc/wsl.conf; then echo enabled; else echo disabled; fi"',
+        10000,
+        true
+      );
+      
+      if (wslConfCheck.trim() !== 'enabled') {
+        verification.log('Systemd não está habilitado, configurando...', 'step');
+        
+        // Configurar wsl.conf para habilitar systemd
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root bash -c "mkdir -p /etc && echo -e \'[boot]\\nsystemd=true\' > /etc/wsl.conf"',
+          10000,
+          true
+        );
+        
+        verification.log('Systemd configurado, será necessário reiniciar o WSL', 'warning');
+        
+        // Reiniciar WSL
+        try {
+          await verification.execPromise('wsl --shutdown', 15000, true);
+          await new Promise(resolve => setTimeout(resolve, 8000)); // Aguardar reinicialização
+          verification.log('WSL reiniciado para habilitar systemd', 'success');
+        } catch (shutdownError) {
+          verification.log('Erro ao reiniciar WSL, mas continuando...', 'warning');
+        }
+      } else {
+        verification.log('Systemd já está habilitado no WSL', 'success');
+      }
+    } catch (systemdError) {
+      verification.log('Erro ao verificar/configurar systemd, continuando...', 'warning');
+    }
+
+    verification.log('Configurando inicialização automática de serviços no WSL...', 'step');
     
-      // CORREÇÃO: Formatação adequada do script com quebras de linha e verificações melhores
-      const startupScriptContent = `# Início: Serviços customizados no WSL
+    // CORREÇÃO: Formatação adequada do script com quebras de linha e verificações melhores
+    const startupScriptContent = `# Início: Serviços customizados no WSL
 # Verifica se estamos no WSL
 if [ -z "\$WSL_DISTRO_NAME" ]; then
   return
@@ -2036,43 +2123,20 @@ fi
 # Fim: Serviços customizados no WSL
 `;
 
-      // CORREÇÃO: Método mais robusto para copiar o arquivo para o WSL
-      // 1. Criar arquivo temporário
-      const tempDir = path.join(os.tmpdir(), 'wsl-setup');
-      if (!fs.existsSync(tempDir)) {
-        fs.mkdirSync(tempDir, { recursive: true });
-      }
-      const tempFilePath = path.join(tempDir, 'wsl_startup_append.sh');
-      fs.writeFileSync(tempFilePath, startupScriptContent);
-
-      // 2. Obter o caminho WSL para o arquivo
-      verification.log('Copiando script de inicialização para o WSL...', 'step');
-      const wslPath = await verification.execPromise(
-        `wsl -d Ubuntu wslpath -u "${tempFilePath.replace(/\\/g, '/')}"`, 
-        10000, 
-        true
-      ).catch(() => null);
+    try {
+      // Usar método alternativo: criar arquivo SQL temporário no WSL
+      verification.log('Atualizando script de inicialização de serviços...', 'step');
       
-      if (wslPath) {
-        // 3. Copiar para o WSL usando o caminho correto
-        await verification.execPromise(
-          `wsl -d Ubuntu -u root cp "${wslPath}" /tmp/wsl_startup_append.sh`,
-          10000,
-          true
-        );
-      } else {
-        // Método alternativo se o primeiro falhar
-        verification.log('Usando método alternativo para copiar arquivo...', 'warning');
-        await verification.execPromise(
-          `wsl -d Ubuntu -u root bash -c "cat > /tmp/wsl_startup_append.sh" << 'EOFMARKER'
+      // Escrever o script em um arquivo temporário no WSL
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "cat > /tmp/wsl_startup_append.sh" << 'EOFMARKER'
 ${startupScriptContent}
 EOFMARKER`,
-          10000,
-          true
-        ).catch(e => verification.log(`Erro no método alternativo: ${e.message}`, 'warning'));
-      }
-
-      // 4. Adicionar ao .bashrc de forma mais robusta
+        10000,
+        true
+      );
+      
+      // Verificar e adicionar ao .bashrc de forma mais robusta
       verification.log('Configurando inicialização automática no .bashrc...', 'step');
       
       // Verificar e adicionar ao .bashrc do root
@@ -2089,27 +2153,7 @@ EOFMARKER`,
         true
       );
       
-      // 5. Configurar sistema para iniciar no boot do Windows
-      try {
-        // Adicionar script ao registro do Windows para iniciar automaticamente
-        const startupCmd = `@echo off
-wsl -d Ubuntu -u root bash -c "source /root/.bashrc"`;
-        
-        const startupFile = path.join(tempDir, 'start-wsl-services.bat');
-        fs.writeFileSync(startupFile, startupCmd);
-        
-        // Copiar para pasta de inicialização do Windows
-        const startupFolder = path.join(os.homedir(), 'AppData', 'Roaming', 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
-        if (fs.existsSync(startupFolder)) {
-          const destFile = path.join(startupFolder, 'start-wsl-services.bat');
-          fs.copyFileSync(startupFile, destFile);
-          verification.log('Script de inicialização adicionado à pasta de inicialização do Windows', 'success');
-        }
-      } catch (startupError) {
-        verification.log('Não foi possível adicionar script à pasta de inicialização, mas serviços ainda iniciarão com o WSL', 'warning');
-      }
-
-      // 6. Limpar arquivos temporários
+      // Limpar arquivos temporários
       await verification.execPromise(
         `wsl -d Ubuntu -u root rm -f /tmp/wsl_startup_append.sh`,
         5000,
@@ -2120,6 +2164,31 @@ wsl -d Ubuntu -u root bash -c "source /root/.bashrc"`;
     } catch (bashrcError) {
       verification.log(`Erro ao configurar inicialização automática: ${JSON.stringify(bashrcError) || 'Erro desconhecido'}`, 'warning');
       verification.logToFile(`Detalhes: ${JSON.stringify(bashrcError)}`);
+    }
+
+    // Iniciar os serviços manualmente após a instalação
+    try {
+      verification.log('Iniciando serviços essenciais...', 'step');
+      
+      const serviceCommands = [
+        // Tentar com systemctl primeiro
+        "systemctl restart cups || service cups restart || /etc/init.d/cups restart || true",
+        "systemctl restart smbd || service smbd restart || /etc/init.d/smbd restart || true",
+        "systemctl restart postgresql || service postgresql restart || /etc/init.d/postgresql restart || true"
+      ];
+      
+      for (const cmd of serviceCommands) {
+        try {
+          await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cmd}"`, 30000, true);
+        } catch (svcError) {
+          // Ignorar erros individuais e continuar com o próximo serviço
+          verification.logToFile(`Erro ao iniciar serviço com: ${cmd} - ${JSON.stringify(svcError)}`);
+        }
+      }
+      
+      verification.log('Serviços inicializados', 'success');
+    } catch (startError) {
+      verification.log('Aviso: Alguns serviços podem não ter iniciado corretamente', 'warning');
     }
 
     return true;
@@ -2138,49 +2207,75 @@ async function restartServices() {
   verification.log('Reiniciando serviços essenciais...', 'step');
   
   try {
-    // Lista de serviços para reiniciar
-    const services = ['postgresql', 'cups', 'smbd', 'ufw'];
-    
-    // Iterar por cada serviço e reiniciar individualmente
-    for (const service of services) {
-      try {
-        verification.log(`Reiniciando serviço ${service}...`, 'info');
-        
-        // Usar método alternativo para systemctl que é mais compatível com WSL
-        try {
-          // Método 1: systemctl se disponível
-          await verification.execPromise(`wsl -d Ubuntu -u root systemctl restart ${service}`, 20000, true);
-        } catch (systemctlError) {
-          // Método 2: service
-          try {
-            await verification.execPromise(`wsl -d Ubuntu -u root service ${service} restart`, 20000, true);
-          } catch (serviceError) {
-            // Método 3: método direto para PostgreSQL
-            if (service === 'postgresql') {
-              try {
-                // Determinar versão do PostgreSQL
-                const pgVersionCmd = "wsl -d Ubuntu -u root bash -c \"ls -d /etc/postgresql/*/ | cut -d'/' -f4 | head -n 1 || echo '14'\"";
-                const pgVersion = await verification.execPromise(pgVersionCmd, 10000, true).catch(() => "14");
-                const version = pgVersion.trim() || "14";
-                
-                // Reiniciar usando pg_ctl
-                await verification.execPromise(
-                  `wsl -d Ubuntu -u root bash -c "su - postgres -c '/usr/lib/postgresql/${version}/bin/pg_ctl -D /var/lib/postgresql/${version}/main restart'"`,
-                  30000,
-                  true
-                );
-              } catch (pgCtlError) {
-                verification.log(`Não foi possível reiniciar PostgreSQL, continuando...`, 'warning');
-              }
-            }
-          }
-        }
-      } catch (error) {
-        verification.log(`Erro ao reiniciar ${service}, continuando com os próximos...`, 'warning');
+    // Lista de serviços e comandos para reiniciar
+    const serviceCommands = [
+      {
+        name: 'PostgreSQL', 
+        commands: [
+          "systemctl restart postgresql",
+          "service postgresql restart",
+          "/etc/init.d/postgresql restart",
+          // Método alternativo específico para PostgreSQL
+          "pg_version=$(ls -d /etc/postgresql/*/ 2>/dev/null | cut -d'/' -f4 | head -n 1 || echo '14') && su - postgres -c \"/usr/lib/postgresql/${pg_version}/bin/pg_ctl -D /var/lib/postgresql/${pg_version}/main restart\""
+        ]
+      },
+      {
+        name: 'CUPS', 
+        commands: [
+          "systemctl restart cups",
+          "service cups restart",
+          "/etc/init.d/cups restart",
+          "killall -HUP cupsd || true",
+          "cupsd -c /etc/cups/cupsd.conf"
+        ]
+      },
+      {
+        name: 'Samba', 
+        commands: [
+          "systemctl restart smbd",
+          "service smbd restart",
+          "/etc/init.d/smbd restart",
+          "smbd"
+        ]
+      },
+      {
+        name: 'Firewall', 
+        commands: [
+          "systemctl restart ufw",
+          "service ufw restart",
+          "/etc/init.d/ufw restart",
+          "ufw --force enable"
+        ]
       }
+    ];
+    
+    // Tentar reiniciar cada serviço com vários métodos
+    for (const service of serviceCommands) {
+      verification.log(`Reiniciando ${service.name}...`, 'info');
+      
+      let serviceRestarted = false;
+      
+      for (const cmd of service.commands) {
+        try {
+          await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cmd}"`, 30000, true);
+          verification.log(`${service.name} reiniciado com sucesso`, 'success');
+          serviceRestarted = true;
+          break;
+        } catch (cmdError) {
+          // Continuar para o próximo comando
+          verification.logToFile(`Erro ao reiniciar ${service.name} com comando: ${cmd}`);
+        }
+      }
+      
+      if (!serviceRestarted) {
+        verification.log(`Aviso: Não foi possível reiniciar ${service.name}`, 'warning');
+      }
+      
+      // Aguardar um pouco entre serviços
+      await new Promise(resolve => setTimeout(resolve, 2000));
     }
     
-    verification.log('Reinicialização de serviços concluída', 'success');
+    verification.log('Tentativa de reinicialização de serviços concluída', 'success');
     return true;
   } catch (error) {
     verification.log(`Erro ao reiniciar serviços: ${error.message || 'Erro desconhecido'}`, 'warning');
@@ -2193,6 +2288,41 @@ async function configureSamba() {
   verification.log('Configurando Samba...', 'step');
 
   try {
+    try {
+      verification.log('Verificando instalação do Samba...', 'step');
+      
+      const sambaCheck = await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "dpkg -s samba 2>/dev/null || echo not_installed"',
+        15000,
+        true
+      );
+      
+      if (sambaCheck.includes('not_installed') || sambaCheck.includes('no packages found')) {
+        verification.log('Samba não está instalado, instalando agora...', 'warning');
+        
+        // Limpar locks do APT e instalar Samba
+        await cleanAptLocks();
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root apt-get install -y samba',
+          300000, // 5 minutos
+          true
+        );
+      }
+    } catch (checkError) {
+      verification.log('Erro ao verificar instalação do Samba, tentando instalar de qualquer forma...', 'warning');
+      
+      try {
+        await cleanAptLocks();
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root apt-get install -y samba',
+          300000, // 5 minutos
+          true
+        );
+      } catch (installError) {
+        verification.log('Erro ao instalar Samba, tentando continuar mesmo assim...', 'error');
+      }
+    }
+
     // Verificar se existe o arquivo de configuração personalizado
     const configExists = `if [ -f "/opt/loqquei/print_server_desktop/config/smb.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
     const configStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${configExists}"`, 10000, true);
@@ -2258,6 +2388,41 @@ async function configureCups() {
   verification.log('Configurando CUPS...', 'step');
 
   try {
+    try {
+      verification.log('Verificando instalação do CUPS...', 'step');
+      
+      const cupsCheck = await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "dpkg -s cups 2>/dev/null || echo not_installed"',
+        15000,
+        true
+      );
+      
+      if (cupsCheck.includes('not_installed') || cupsCheck.includes('no packages found')) {
+        verification.log('CUPS não está instalado, instalando agora...', 'warning');
+        
+        // Limpar locks do APT e instalar CUPS com timeout mais longo
+        await cleanAptLocks();
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root apt-get install -y cups printer-driver-cups-pdf',
+          300000,
+          true
+        );
+      }
+    } catch (checkError) {
+      verification.log('Erro ao verificar instalação do CUPS, tentando instalar de qualquer forma...', 'warning');
+      
+      try {
+        await cleanAptLocks();
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root apt-get install -y cups printer-driver-cups-pdf',
+          300000,
+          true
+        );
+      } catch (installError) {
+        verification.log('Erro ao instalar CUPS, tentando continuar mesmo assim...', 'error');
+      }
+    }
+
     // Verificar se existe o arquivo de configuração cupsd.conf personalizado
     const cupsConfigExists = `if [ -f "/opt/loqquei/print_server_desktop/config/cupsd.conf" ]; then echo "exists"; else echo "not_exists"; fi`;
     const cupsConfigStatus = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${cupsConfigExists}"`, 10000, true);
@@ -2526,6 +2691,41 @@ async function setupDatabase() {
   verification.log('Configurando banco de dados PostgreSQL...', 'header');
 
   try {
+    try {
+      verification.log('Verificando instalação do PostgreSQL...', 'step');
+      
+      const pgCheck = await verification.execPromise(
+        'wsl -d Ubuntu -u root bash -c "dpkg -s postgresql 2>/dev/null || echo not_installed"',
+        15000,
+        true
+      );
+      
+      if (pgCheck.includes('not_installed') || pgCheck.includes('no packages found')) {
+        verification.log('PostgreSQL não está instalado, instalando agora...', 'warning');
+        
+        // Limpar locks do APT e instalar PostgreSQL
+        await cleanAptLocks();
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root apt-get install -y postgresql postgresql-contrib',
+          300000, // 5 minutos
+          true
+        );
+      }
+    } catch (checkError) {
+      verification.log('Erro ao verificar instalação do PostgreSQL, tentando instalar de qualquer forma...', 'warning');
+      
+      try {
+        await cleanAptLocks();
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root apt-get install -y postgresql postgresql-contrib',
+          300000, // 5 minutos
+          true
+        );
+      } catch (installError) {
+        verification.log('Erro ao instalar PostgreSQL, tentando continuar mesmo assim...', 'error');
+      }
+    }
+
     // 1. Verificar e iniciar PostgreSQL com múltiplas abordagens
     verification.log('Verificando status do PostgreSQL...', 'step');
     
@@ -3403,51 +3603,40 @@ async function copySoftwareToOpt() {
     const versionDate = new Date().toISOString().split('T')[0]; // Formato YYYY-MM-DD
     
     try {
-      // Escape correto para json dentro de bash
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c "echo '{\\\"install_date\\\": \\\"${versionDate}\\\", \\\"version\\\": \\\"1.0.0\\\"}' > /opt/loqquei/print_server_desktop/version.json"`,
-        15000,
+      // Método alternativo mais simples - criar arquivo JSON no Windows e copiá-lo para o WSL
+      const os = require('os');
+      const path = require('path');
+      const fs = require('fs');
+      
+      const tempDir = path.join(os.tmpdir(), 'wsl-setup');
+      if (!fs.existsSync(tempDir)) {
+        fs.mkdirSync(tempDir, { recursive: true });
+      }
+      
+      const tempVersionPath = path.join(tempDir, 'version.json');
+      fs.writeFileSync(tempVersionPath, JSON.stringify({
+        install_date: versionDate,
+        version: "1.0.0"
+      }), 'utf8');
+      
+      // Obter caminho WSL
+      const wslVersionPath = await verification.execPromise(
+        `wsl -d Ubuntu wslpath -u "${tempVersionPath.replace(/\\/g, '/')}"`,
+        10000,
         true
       );
+      
+      // Copiar
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root cp "${wslVersionPath.trim()}" /opt/loqquei/print_server_desktop/version.json`,
+        10000,
+        true
+      );
+      
       verification.log('Arquivo de versão criado com sucesso', 'success');
     } catch (versionError) {
-      // Método alternativo mais simples
-      try {
-        // Criar arquivo JSON no Windows e copiá-lo para o WSL
-        const os = require('os');
-        const path = require('path');
-        const fs = require('fs');
-        
-        const tempDir = path.join(os.tmpdir(), 'wsl-setup');
-        if (!fs.existsSync(tempDir)) {
-          fs.mkdirSync(tempDir, { recursive: true });
-        }
-        
-        const tempVersionPath = path.join(tempDir, 'version.json');
-        fs.writeFileSync(tempVersionPath, JSON.stringify({
-          install_date: versionDate,
-          version: "1.0.0"
-        }), 'utf8');
-        
-        // Obter caminho WSL
-        const wslVersionPath = await verification.execPromise(
-          `wsl -d Ubuntu wslpath -u "${tempVersionPath.replace(/\\/g, '/')}"`,
-          10000,
-          true
-        );
-        
-        // Copiar
-        await verification.execPromise(
-          `wsl -d Ubuntu -u root cp "${wslVersionPath.trim()}" /opt/loqquei/print_server_desktop/version.json`,
-          10000,
-          true
-        );
-        
-        verification.log('Arquivo de versão criado com método alternativo', 'success');
-      } catch (altVersionError) {
-        verification.log(`Erro ao criar arquivo de versão: ${altVersionError.message || 'Erro desconhecido'}`, 'warning');
-        // Continuar mesmo com erro
-      }
+      verification.log(`Erro ao criar arquivo de versão: ${versionError.message || 'Erro desconhecido'}`, 'warning');
+      // Continuar mesmo com erro
     }
 
     // Criar arquivo de atualizações executadas
@@ -3566,53 +3755,36 @@ async function copySoftwareToOpt() {
 
         verification.log('Arquivos básicos copiados com sucesso', 'success');
 
-        // Verificar se existe node_modules e instalar dependências
+        // ===== INÍCIO DO TRECHO NOVO/MODIFICADO =====
+        // Verificar se existe node_modules (informativo apenas)
         const hasNodeModules = fs.existsSync(path.join(serverFiles, 'node_modules'));
         if (hasNodeModules) {
-          verification.log('Diretório node_modules encontrado, mas será ignorado (muito grande)', 'info');
-        } else {
-          verification.log('Diretório node_modules não encontrado, será instalado via npm', 'info');
-          
-          // Verificar se o package.json existe no destino - criar um básico se não existir
-          try {
-            const packageExists = await verification.execPromise(
-              'wsl -d Ubuntu -u root bash -c "test -f /opt/loqquei/print_server_desktop/package.json && echo exists"',
-              10000,
-              true
-            ).catch(() => "");
-            
-            if (packageExists.trim() !== "exists") {
-              verification.log('Criando package.json básico...', 'info');
-              await verification.execPromise(
-                `wsl -d Ubuntu -u root bash -c "echo '{\\\"name\\\":\\\"print_server_desktop\\\",\\\"version\\\":\\\"1.0.0\\\"}' > /opt/loqquei/print_server_desktop/package.json"`,
-                10000,
-                true
-              );
-            }
-          } catch (e) {
-            verification.log('Erro ao verificar/criar package.json básico, continuando...', 'warning');
-          }
+          verification.log('Diretório node_modules encontrado na origem, mas será ignorado (muito grande)', 'info');
         }
 
-        // Garantir que exista um diretório node_modules (independente do caso acima)
+        // Garantir que exista um diretório node_modules com permissões adequadas
         try {
-          await verification.execPromise('wsl -d Ubuntu -u root bash -c "mkdir -p /opt/loqquei/print_server_desktop/node_modules"', 30000, true);
+          await verification.execPromise(
+            'wsl -d Ubuntu -u root bash -c "mkdir -p /opt/loqquei/print_server_desktop/node_modules && chmod 777 /opt/loqquei/print_server_desktop/node_modules"', 
+            30000, 
+            true
+          );
         } catch (e) {
           verification.log('Aviso: Não foi possível criar diretório node_modules, continuando...', 'warning');
         }
 
-        // Sempre executar npm install, independentemente da existência de node_modules na origem
-        verification.log('Instalando dependências via npm install...', 'step');
+        // Instalar dependências usando npm DENTRO do WSL
+        verification.log('Instalando dependências via npm dentro do WSL...', 'step');
         try {
-          // Verificar se o npm está disponível antes de executar
-          const npmAvailable = await verification.execPromise(
-            'wsl -d Ubuntu -u root bash -c "command -v npm || echo not_found"',
+          // Verificar se o npm está instalado no WSL (não no Windows)
+          const npmInstalledInWSL = await verification.execPromise(
+            'wsl -d Ubuntu -u root -e bash -c "which npm || echo not_found"',
             15000,
             true
-          ).catch(() => "not_found");
+          );
           
-          if (npmAvailable.includes("not_found")) {
-            verification.log('npm não está disponível, tentando instalar...', 'warning');
+          if (npmInstalledInWSL.includes("not_found")) {
+            verification.log('npm não está instalado no WSL, instalando...', 'step');
             await verification.execPromise(
               'wsl -d Ubuntu -u root bash -c "apt-get update && apt-get install -y npm"',
               300000, // 5 minutos
@@ -3620,20 +3792,54 @@ async function copySoftwareToOpt() {
             );
           }
           
-          // Executar npm install com timeout maior e flags para evitar erros
+          // Executar npm install DENTRO do WSL
+          // A flag -e é crucial para garantir que o comando seja executado no ambiente WSL
           await verification.execPromise(
-            'wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && npm install --only=production --no-fund --no-audit"',
-            1800000, // 30 minutos (instalação pode demorar em sistemas lentos)
+            'wsl -d Ubuntu -u root -e bash -c "cd /opt/loqquei/print_server_desktop && npm install --omit=dev"',
+            1800000, // 30 minutos
             true
           );
+          
           verification.log('Dependências instaladas com sucesso', 'success');
         } catch (npmError) {
-          verification.log(`Aviso: Erro ao instalar dependências: ${npmError.message || 'Erro desconhecido'}`, 'warning');
+          verification.log(`Erro ao instalar dependências. Tentando método alternativo...`, 'warning');
           verification.logToFile(`Detalhes do erro npm: ${JSON.stringify(npmError)}`);
-          // Continuar mesmo com erro
+          
+          // MÉTODO ALTERNATIVO: Instalar pacotes individuais
+          try {
+            // Garantir permissões
+            await verification.execPromise(
+              'wsl -d Ubuntu -u root bash -c "chmod -R 777 /opt/loqquei/print_server_desktop/node_modules"',
+              30000,
+              true
+            );
+            
+            // Instalar módulos específicos necessários
+            verification.log('Tentando instalar módulos necessários individualmente...', 'step');
+            
+            // Lista de módulos básicos que podem ser necessários
+            const basicModules = ['express', 'body-parser', 'cors', 'dotenv', 'pg'];
+            
+            for (const module of basicModules) {
+              try {
+                await verification.execPromise(
+                  `wsl -d Ubuntu -u root -e bash -c "cd /opt/loqquei/print_server_desktop && npm install --save ${module}"`,
+                  300000, // 5 minutos por módulo
+                  true
+                );
+                verification.log(`Módulo ${module} instalado`, 'success');
+              } catch (moduleError) {
+                verification.log(`Não foi possível instalar ${module}, continuando...`, 'warning');
+              }
+            }
+          } catch (altError) {
+            verification.log('Todos os métodos de instalação falharam. Continuando sem dependências.', 'warning');
+            verification.logToFile(`Erro no método alternativo: ${JSON.stringify(altError)}`);
+          }
         }
+        // ===== FIM DO TRECHO NOVO/MODIFICADO =====
 
-        // Configurar permissões e instalar dependências
+        // Configurar permissões
         verification.log('Configurando permissões...', 'step');
         await verification.execPromise(
           'wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && chmod -R 755 ."',
@@ -3641,6 +3847,7 @@ async function copySoftwareToOpt() {
           true
         );
 
+        // ===== INÍCIO NOVO TRECHO PARA ecosystem.config.js =====
         // Verificar se ecosystem.config.js existe, senão criar
         try {
           const ecosystemExists = await verification.execPromise(
@@ -3650,8 +3857,9 @@ async function copySoftwareToOpt() {
           ).catch(() => "");
           
           if (ecosystemExists !== "exists") {
-            verification.log('Criando ecosystem.config.js básico...', 'info');
+            verification.log('Criando ecosystem.config.js...', 'info');
             
+            // Método 1: Criar arquivo temporário no Windows e copiá-lo para o WSL
             const ecosystemContent = `
 module.exports = {
   apps: [{
@@ -3664,18 +3872,43 @@ module.exports = {
   }]
 };`;
             
-            // Escapar conteúdo para bash com heredoc
-            await verification.execPromise(
-              `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/ecosystem.config.js" << 'EOFMARKER'
-${ecosystemContent}
-EOFMARKER`,
+            const ecosystemPath = path.join(tempDir, 'ecosystem.config.js');
+            fs.writeFileSync(ecosystemPath, ecosystemContent);
+            
+            // Copiar para o WSL usando o path do WSL
+            const wslPath = await verification.execPromise(
+              `wsl -d Ubuntu wslpath -u "${ecosystemPath.replace(/\\/g, '/')}"`,
               10000,
               true
             );
+            
+            await verification.execPromise(
+              `wsl -d Ubuntu -u root cp "${wslPath.trim()}" /opt/loqquei/print_server_desktop/ecosystem.config.js`,
+              15000,
+              true
+            );
+            
+            verification.log('ecosystem.config.js criado com sucesso', 'success');
+          } else {
+            verification.log('ecosystem.config.js já existe', 'success');
           }
-        } catch (ecoError) {
-          verification.log(`Aviso ao verificar/criar ecosystem.config.js: ${ecoError.message || 'Erro desconhecido'}`, 'warning');
+        } catch (ecosystemError) {
+          verification.log('Erro ao verificar/criar ecosystem.config.js, tentando método mais simples...', 'warning');
+          verification.logToFile(`Erro no ecosystem: ${JSON.stringify(ecosystemError)}`);
+          
+          // Método mais simples com echo para criar um arquivo básico
+          try {
+            await verification.execPromise(
+              'wsl -d Ubuntu -u root bash -c "echo \'module.exports = { apps: [{ name: \\"print_server_desktop\\", script: \\"./bin/www.js\\", env: { NODE_ENV: \\"production\\", PORT: 56258 } }] };\' > /opt/loqquei/print_server_desktop/ecosystem.config.js"',
+              10000,
+              true
+            );
+            verification.log('ecosystem.config.js criado com método simplificado', 'success');
+          } catch (simpleError) {
+            verification.log('Não foi possível criar ecosystem.config.js', 'error');
+          }
         }
+        // ===== FIM NOVO TRECHO PARA ecosystem.config.js =====
 
         verification.log('Software copiado para /opt/ com sucesso', 'success');
         return true;
@@ -3687,32 +3920,47 @@ EOFMARKER`,
         verification.log('Tentando método de emergência: criar estrutura mínima...', 'warning');
         
         try {
-          // Usar heredoc para evitar problemas de escape
-          await verification.execPromise(
-            `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/package.json" << 'EOFMARKER'
-{
-  "name": "print_server_desktop",
-  "version": "1.0.0",
-  "description": "Print Server Desktop",
-  "main": "bin/www.js"
-}
-EOFMARKER`,
+          // Criar diretórios
+          await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop', 10000, true);
+          
+          // Criar package.json
+          const pkgJson = {
+            name: "print_server_desktop",
+            version: "1.0.0",
+            description: "Print Server Desktop",
+            main: "bin/www.js"
+          };
+          
+          // Escrever arquivo package.json
+          const tempPkgPath = path.join(tempDir, 'package.json');
+          fs.writeFileSync(tempPkgPath, JSON.stringify(pkgJson, null, 2));
+          
+          // Obter caminho WSL
+          const wslPkgPath = await verification.execPromise(
+            `wsl -d Ubuntu wslpath -u "${tempPkgPath.replace(/\\/g, '/')}"`,
             10000,
             true
           );
           
+          // Copiar para o WSL
           await verification.execPromise(
-            `wsl -d Ubuntu -u root bash -c "echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env"`,
-            10000, 
+            `wsl -d Ubuntu -u root cp "${wslPkgPath.trim()}" /opt/loqquei/print_server_desktop/package.json`,
+            10000,
             true
           );
           
-          // Criar diretório bin e arquivo www.js básico
+          // Criar .env básico
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root bash -c "echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env"`,
+            10000,
+            true
+          );
+          
+          // Criar diretório bin
           await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/bin', 10000, true);
           
-          await verification.execPromise(
-            `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/bin/www.js" << 'EOFMARKER'
-#!/usr/bin/env node
+          // Criar arquivo www.js básico
+          const wwwContent = `#!/usr/bin/env node
 console.log('Servidor básico iniciado');
 const http = require('http');
 const server = http.createServer((req, res) => {
@@ -3721,16 +3969,35 @@ const server = http.createServer((req, res) => {
 });
 server.listen(56258, '0.0.0.0', () => {
   console.log('Servidor básico ouvindo na porta 56258');
-});
-EOFMARKER`,
+});`;
+          
+          // Escrever arquivo www.js
+          const tempWwwPath = path.join(tempDir, 'www.js');
+          fs.writeFileSync(tempWwwPath, wwwContent);
+          
+          // Obter caminho WSL
+          const wslWwwPath = await verification.execPromise(
+            `wsl -d Ubuntu wslpath -u "${tempWwwPath.replace(/\\/g, '/')}"`,
             10000,
             true
           );
           
-          // Criar ecosystem.config.js básico
+          // Copiar para o WSL
           await verification.execPromise(
-            `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/ecosystem.config.js" << 'EOFMARKER'
-module.exports = {
+            `wsl -d Ubuntu -u root cp "${wslWwwPath.trim()}" /opt/loqquei/print_server_desktop/bin/www.js`,
+            10000,
+            true
+          );
+          
+          // Tornar executável
+          await verification.execPromise(
+            'wsl -d Ubuntu -u root chmod +x /opt/loqquei/print_server_desktop/bin/www.js',
+            10000,
+            true
+          );
+          
+          // Criar ecosystem.config.js
+          const ecoContent = `module.exports = {
   apps: [{
     name: 'print_server_desktop',
     script: './bin/www.js',
@@ -3739,8 +4006,22 @@ module.exports = {
       PORT: 56258
     }
   }]
-};
-EOFMARKER`,
+};`;
+          
+          // Escrever arquivo ecosystem.config.js
+          const tempEcoPath = path.join(tempDir, 'ecosystem.config.js');
+          fs.writeFileSync(tempEcoPath, ecoContent);
+          
+          // Obter caminho WSL
+          const wslEcoPath = await verification.execPromise(
+            `wsl -d Ubuntu wslpath -u "${tempEcoPath.replace(/\\/g, '/')}"`,
+            10000,
+            true
+          );
+          
+          // Copiar para o WSL
+          await verification.execPromise(
+            `wsl -d Ubuntu -u root cp "${wslEcoPath.trim()}" /opt/loqquei/print_server_desktop/ecosystem.config.js`,
             10000,
             true
           );
@@ -3761,42 +4042,133 @@ EOFMARKER`,
       verification.log('Criando estrutura básica...', 'step');
       
       try {
-        // Usar heredoc para evitar problemas de escape
-        await verification.execPromise(
-          `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/package.json" << 'EOFMARKER'
-{
-  "name": "print_server_desktop",
-  "version": "1.0.0",
-  "description": "Print Server Desktop",
-  "main": "bin/www.js"
-}
-EOFMARKER`,
+        // Criar diretório principal
+        await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop', 10000, true);
+        
+        // Criar arquivo package.json
+        const pkgJson = {
+          name: "print_server_desktop",
+          version: "1.0.0",
+          description: "Print Server Desktop",
+          main: "bin/www.js"
+        };
+        
+        // Escrever arquivo package.json
+        const tempPkgPath = path.join(os.tmpdir(), 'package.json');
+        fs.writeFileSync(tempPkgPath, JSON.stringify(pkgJson, null, 2));
+        
+        // Obter caminho WSL
+        const wslPkgPath = await verification.execPromise(
+          `wsl -d Ubuntu wslpath -u "${tempPkgPath.replace(/\\/g, '/')}"`,
           10000,
           true
         );
         
+        // Copiar para o WSL
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root cp "${wslPkgPath.trim()}" /opt/loqquei/print_server_desktop/package.json`,
+          10000,
+          true
+        );
+        
+        // Configurações básicas
         await verification.execPromise(
           `wsl -d Ubuntu -u root bash -c "echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env"`,
-          10000, 
+          10000,
           true
         );
         
         // Criar diretório bin e arquivo www.js básico
         await verification.execPromise('wsl -d Ubuntu -u root mkdir -p /opt/loqquei/print_server_desktop/bin', 10000, true);
         
+        // Criar arquivo www.js básico
+        const wwwContent = `#!/usr/bin/env node
+
+// Importações
+var app = require('../app');
+var http = require('http');
+
+// Configurações de porta
+var port = normalizePort('56258');
+app.set('port', port);
+
+// Criação do servidor
+var server = http.createServer(app);
+
+// Escuta o servidor
+server.listen(port);
+server.on('error', onError);
+server.on('listening', onListening);
+
+// Normaliza a porta
+function normalizePort(val) {
+  var port = parseInt(val, 10);
+
+  if (isNaN(port)) {
+    return val;
+  }
+
+  if (port >= 0) {
+    return port;
+  }
+
+  return false;
+}
+
+// Tratamento de erros
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  var bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+    switch (error.code) {
+      case 'EACCES':
+        console.error(bind + ' requires elevated privileges');
+        process.exit(1);
+        break;
+      case 'EADDRINUSE':
+        console.error(bind + ' is already in use');
+        process.exit(1);
+        break;
+      default:
+        throw error;
+    }
+}
+
+// Tratamento de conexão
+function onListening() {
+  var addr = server.address();
+  var bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+  console.log('Listening on ' + bind);
+}`;
+        
+        // Escrever arquivo www.js
+        const tempWwwPath = path.join(os.tmpdir(), 'www.js');
+        fs.writeFileSync(tempWwwPath, wwwContent);
+        
+        // Obter caminho WSL
+        const wslWwwPath = await verification.execPromise(
+          `wsl -d Ubuntu wslpath -u "${tempWwwPath.replace(/\\/g, '/')}"`,
+          10000,
+          true
+        );
+        
+        // Copiar para o WSL
         await verification.execPromise(
-          `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/bin/www.js" << 'EOFMARKER'
-#!/usr/bin/env node
-console.log('Servidor básico iniciado');
-const http = require('http');
-const server = http.createServer((req, res) => {
-  res.writeHead(200, {'Content-Type': 'text/plain'});
-  res.end('Servidor de impressão em execução\\n');
-});
-server.listen(56258, '0.0.0.0', () => {
-  console.log('Servidor básico ouvindo na porta 56258');
-});
-EOFMARKER`,
+          `wsl -d Ubuntu -u root cp "${wslWwwPath.trim()}" /opt/loqquei/print_server_desktop/bin/www.js`,
+          10000,
+          true
+        );
+        
+        // Tornar executável
+        await verification.execPromise(
+          'wsl -d Ubuntu -u root chmod +x /opt/loqquei/print_server_desktop/bin/www.js',
           10000,
           true
         );
@@ -3815,24 +4187,37 @@ EOFMARKER`,
 
     // Tentar criar pelo menos uma estrutura mínima antes de retornar
     try {
-      // Usar heredoc para evitar problemas de escape
+      // Criar estrutura mínima de emergência
       await verification.execPromise(
         `wsl -d Ubuntu -u root bash -c "mkdir -p /opt/loqquei/print_server_desktop"`,
         10000,
         true
       );
       
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root bash -c "cat > /opt/loqquei/print_server_desktop/package.json" << 'EOFMARKER'
-{
-  "name": "print_server_desktop",
-  "version": "1.0.0"
-}
-EOFMARKER`,
+      // Usar método com arquivo temporário para package.json
+      const packageJson = {
+        name: "print_server_desktop",
+        version: "1.0.0"
+      };
+      
+      const tempJsonPath = path.join(os.tmpdir(), 'emergency-package.json');
+      fs.writeFileSync(tempJsonPath, JSON.stringify(packageJson, null, 2));
+      
+      // Obter caminho WSL
+      const wslJsonPath = await verification.execPromise(
+        `wsl -d Ubuntu wslpath -u "${tempJsonPath.replace(/\\/g, '/')}"`,
         10000,
         true
       );
       
+      // Copiar para o WSL
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root cp "${wslJsonPath.trim()}" /opt/loqquei/print_server_desktop/package.json`,
+        10000,
+        true
+      );
+      
+      // Criar .env básico
       await verification.execPromise(
         `wsl -d Ubuntu -u root bash -c "echo 'PORT=56258' > /opt/loqquei/print_server_desktop/.env"`,
         10000,

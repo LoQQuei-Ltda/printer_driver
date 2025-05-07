@@ -73,7 +73,7 @@ if (setupWSL) {
           detail: 'O sistema está pronto para uso, caso algo não funcione, volte a aba de sistema e faça uma verificação completa do sistema, e se necessário, reinstale.',
           buttons: ['OK']
         }).then(() => {
-          printSync();
+          printersSync();
           app.exit(0);
         });
       } else {
@@ -1258,6 +1258,7 @@ app.whenReady().then(async () => {
     console.error('Erro durante a configuração do ambiente:', error);
   }
 
+  printersSync();
   await ensureServicesRunning();
   
   // Verificar se o usuário está autenticado
@@ -2206,7 +2207,7 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
         detail: 'O sistema está pronto para uso, caso algo não funcione, volte a aba de sistema e faça uma verificação completa do sistema, e se necessário, reinstale.',
         buttons: ['OK']
       });
-      printSync();
+      printersSync();
       // Atualizar o status do sistema após a instalação
       try {
         // Enviar evento para a janela principal verificar a instalação
