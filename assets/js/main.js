@@ -966,12 +966,28 @@ class PrintManager {
   // Mostrar modal de impressão
   showPrintModal(fileId) {
     // Verificar se o sistema está pronto
-    if (!this.state.systemCheckPassed) {
-      alert('O sistema precisa estar completamente instalado antes de imprimir.');
+    const essentialsReady = () => {
+      if (this.state.systemCheckPassed) return true;
+
+      const status = lastSystemStatus || window.lastSystemStatus;
+      
+      if (status) {
+        return (
+          status.wslStatus && 
+          status.wslStatus.installed && 
+          status.wslStatus.wsl2 && 
+          status.wslStatus.hasDistro
+        );
+      }
+      return true;
+    };
+  
+    if (!essentialsReady()) {
+      alert('O sistema precisa ter WSL e Ubuntu instalados antes de imprimir.');
       this.switchTab('system');
       return;
     }
-
+    
     this.state.selectedFileId = fileId;
 
     // Encontrar arquivo
