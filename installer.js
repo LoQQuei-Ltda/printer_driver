@@ -1241,6 +1241,10 @@ async function installWSLModern() {
       try {
         await verification.execPromise('powershell -Command "wsl --install"', 1200000, true);
         await verification.execPromise('powershell -Command "wsl --update --web-download"', 1200000, true);
+
+        await promptForRestart('WSL instalado com sucesso via PowerShell, precisa reiniciar para que as alterações tenham efeito');
+
+        await new Promise(resolve => setTimeout(resolve, 12000));
       } catch (error) {
         verification.log('Falha ao instalar WSL via PowerShell', 'error');
         verification.logToFile(`Falha ao instalar WSL: ${JSON.stringify(error)}`);
@@ -1888,6 +1892,10 @@ async function installUbuntu(attemptCount = 0) {
         await verification.execPromiseWsl('wsl --install', 600000, true);
         verification.log('Reinstalação base do WSL executada', 'success');
         
+        await promptForRestart('Wsl instalado, o sistema precisa ser reiniciado para que as alterações tenham efeito.');
+
+        await new Promise(resolve => setTimeout(resolve, 12000));
+
         // Aguardar mais tempo para o WSL inicializar
         verification.log('Aguardando inicialização do WSL...', 'info');
         await new Promise(resolve => setTimeout(resolve, 15000));
@@ -1985,7 +1993,7 @@ async function installUbuntu(attemptCount = 0) {
     
     // Executar o comando de instalação
     verification.log('Executando: wsl --install -d Ubuntu', 'info');
-    await verification.execPromise('wsl --install -d Ubuntu', 1800000, true); // 20 minutos de timeout
+    await verification.execPromise('wsl --install -d Ubuntu', 600000, true); // 10 minutos de timeout
     
     // Se chegamos aqui, o comando não lançou erro - marcar como tentativa executada
     installationAttempted = true;
@@ -2015,26 +2023,7 @@ async function installUbuntu(attemptCount = 0) {
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(listError)}`);
     }
     
-    // Método 2: Verificar com PowerShell (mais confiável com locales diferentes)
-    if (!ubuntuDetected) {
-      try {
-        const psCheckResult = await verification.execPromiseWsl(
-          'powershell -Command "Get-ChildItem HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Lxss\\* -ErrorAction SilentlyContinue | ForEach-Object { $_.GetValue(\'DistributionName\') } | Where-Object { $_ -like \'*Ubuntu*\' } | Measure-Object | Select-Object -ExpandProperty Count"',
-          15000,
-          false
-        );
-        
-        if (psCheckResult && psCheckResult.trim() !== "0") {
-          verification.log('Ubuntu detectado via registro do Windows após instalação!', 'success');
-          ubuntuDetected = true;
-        }
-      } catch (psError) {
-        verification.log('Erro na segunda verificação pós-instalação', 'warning');
-        verification.logToFile(`Detalhes do erro PS: ${JSON.stringify(psError)}`);
-      }
-    }
-    
-    // Método 3: Tentar acessar o Ubuntu diretamente
+    // Método 2: Tentar acessar o Ubuntu diretamente
     if (!ubuntuDetected) {
       try {
         await verification.execPromiseWsl('wsl -d Ubuntu -u root echo "Teste de acesso"', 30000, false);
@@ -2121,7 +2110,7 @@ async function installUbuntu(attemptCount = 0) {
 
     try {
       await verification.execPromise('wsl --install -d Ubuntu', 
-        1800000, // 3 minutos
+        600000, // 10 minutos
         true);
     } catch (error) {
       verification.logToFile('erro4: ', JSON.stringify(error));
