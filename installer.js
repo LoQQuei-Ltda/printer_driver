@@ -28,6 +28,34 @@ const allSteps = [
   'Finalizando instalação'
 ];
 
+async function promptForRestart(message) {
+  verification.log(message, 'warning');
+  verification.log('Verificando se o sistema precisa ser reiniciado...', 'step');
+  
+  try {
+    const command = `powershell -Command "Add-Type -AssemblyName Microsoft.VisualBasic; if ([Microsoft.VisualBasic.Interaction]::MsgBox('${message} Deseja reiniciar o sistema agora?', 'YesNo,Question', 'Confirmação de Reinício') -eq 'Yes') { Write-Output 'REBOOT_CONFIRMED'; shutdown /r /t 10 /c 'O sistema será reiniciado em 10 segundos.' } else { Write-Output 'REBOOT_CANCELLED' }"`;
+
+    // Executar o script PowerShell - observe o uso correto das aspas e da formatação
+    const result = await verification.execPromise(command, 60000, false);
+    
+    // Verificar a resposta do usuário
+    if (result.includes("REBOOT_CONFIRMED")) {
+      verification.log('Reiniciando o sistema em 10 segundos...', 'success');
+      verification.log('Feche todos os programas e salve seu trabalho!', 'warning');
+      await new Promise(resolve => setTimeout(resolve, 15000));
+
+      return true; // Reinicialização confirmada
+    } else {
+      verification.log('Reinicialização cancelada pelo usuário. A instalação não poderá continuar até que o sistema seja reiniciado.', 'warning');
+      return false; // Reinicialização cancelada
+    }
+  } catch (error) {
+    verification.log('Erro ao solicitar reinicialização: ' + error.message, 'error');
+    verification.log('Por favor, reinicie seu computador manualmente antes de continuar com a instalação.', 'warning');
+    return false;
+  }
+}
+
 function setCustomAskQuestion(callback) {
   customAskQuestion = callback;
 }
@@ -407,7 +435,10 @@ async function installWSLDirectly() {
       
       if (pendingReboot.trim() === 'True') {
         verification.log('É altamente recomendado reiniciar o sistema antes de continuar com a instalação do WSL', 'warning');
-        verification.log('Você deve reiniciar o computador e executar o instalador novamente', 'warning');
+        
+        // Perguntar se o usuário deseja reiniciar agora
+        await promptForRestart('Os componentes do WSL foram instalados e o sistema precisa ser reiniciado.');
+
         
         // Atualizar estado para continuar após reinicialização
         installState.wslInstalled = true;
@@ -418,6 +449,7 @@ async function installWSLDirectly() {
       }
     } catch (rebootCheckError) {
       verification.log('Erro ao verificar necessidade de reinicialização. Por precaução, recomendamos reiniciar', 'warning');
+
       installState.needsReboot = true;
       saveInstallState();
       return { success: true, needsReboot: true };
@@ -563,7 +595,7 @@ async function installComponent(component, status) {
     switch (component) {
       case 'wsl':
         if (status.wslStatus && status.wslStatus.installed) {
-          log('WSL já está instalado, pulando instalação', 'info');
+          verification.log('WSL já está instalado, pulando instalação', 'info');
           return true;
         }
         // Tentar o método moderno primeiro, se falhar usar o legado
@@ -571,82 +603,94 @@ async function installComponent(component, status) {
         if (modernResult) {
           return true;
         }
-        log('Método moderno falhou, tentando método legado', 'warning');
+        verification.log('Método moderno falhou, tentando método legado', 'warning');
         return await installWSLLegacy();
 
       case 'wsl2':
         // AQUI ESTÁ A CORREÇÃO:
         // Primeiro, verificar explicitamente se o WSL está instalado
-        log('Verificando se o WSL base está instalado antes de configurar WSL 2...', 'step');
+        verification.log('Verificando se o WSL base está instalado antes de configurar WSL 2...', 'step');
         
         // Usar execPromiseWsl para lidar melhor com erros em português
         try {
           const wslCheck = await verification.execPromiseWsl('wsl --version', 10000, true);
-          log('WSL base detectado, prosseguindo com configuração WSL 2', 'success');
+          verification.log('WSL base detectado, prosseguindo com configuração WSL 2', 'success');
         } catch (wslCheckError) {
           // Analisar o erro para verificar se é "WSL não instalado"
-          if (wslCheckError.isWslError && wslCheckError.errorType === 'wsl_not_installed') {
-            log('WSL não está instalado. Instalando WSL primeiro...', 'warning');
+          try {
+            const result = await verification.execPromiseWsl('wsl.exe --install', 1200000, true);
+            verification.log('wsl.exe --install', result);
+          } catch (error) { }
+          
+          try {
+            const result = await verification.execPromiseWsl('wsl.exe --update', 1200000, true);
+            verification.log('wsl.exe --update', result);
+          } catch (error) { }
+
+          if (wslCheckError.isWslError) {
+            verification.log('WSL não está instalado. Instalando WSL primeiro...', 'warning');
             
             // Tentar instalar o WSL base primeiro
             const wslResult = await installComponent('wsl', status);
             
             if (!wslResult) {
-              log('Não foi possível instalar o WSL base, impossível configurar WSL 2', 'error');
+              verification.log('Não foi possível instalar o WSL base, impossível configurar WSL 2', 'error');
               return false;
             }
             
             // Se instalou o WSL, verificar se é necessário reiniciar
-            log('WSL base instalado, verificando se é necessário reiniciar...', 'step');
+            verification.log('WSL base instalado, verificando se é necessário reiniciar...', 'step');
             
             // Verificar se reboot é necessário
             const needsReboot = await verification.execPromiseWsl(
-              'powershell -Command "$global:RestartRequired = $true; $global:RestartRequired"',
+              `powershell -Command "if ((Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -ErrorAction SilentlyContinue).PendingFileRenameOperations)) { Write-Output 'true' } else { Write-Output 'false' }"`,
               10000,
               true
-            ).catch(() => "True");
+            ).catch(() => "True");            
             
             if (needsReboot.trim() === "True") {
               log('É necessário reiniciar o sistema antes de configurar o WSL 2', 'warning');
-              return { success: false, needsReboot: true };
-            }
+              
+              // Verificar se estamos executando no Electron
+              await promptForRestart('O kernel do WSL 2 foi instalado e o sistema precisa ser reiniciado.');
+            }            
           } else {
-            log('Erro desconhecido ao verificar WSL', 'error');
+            verification.log('Erro desconhecido ao verificar WSL', 'error');
             return false;
           }
         }
         
         // Agora que sabemos que o WSL está instalado, configurar WSL 2
         if (status.wslStatus && status.wslStatus.wsl2) {
-          log('WSL 2 já está configurado como padrão', 'success');
+          verification.log('WSL 2 já está configurado como padrão', 'success');
           return true;
         }
         
         // Baixar e instalar o kernel do WSL 2 se necessário
         const kernelResult = await updateWSL2Kernel();
         if (!kernelResult) {
-          log('Falha ao atualizar o kernel do WSL 2', 'error');
+          verification.log('Falha ao atualizar o kernel do WSL 2', 'error');
           return false;
         }
         
         // Configurar WSL 2 como padrão
-        log('Definindo WSL 2 como versão padrão...', 'step');
+        verification.log('Definindo WSL 2 como versão padrão...', 'step');
         try {
           await verification.execPromiseWsl('wsl --set-default-version 2', 30000, true);
-          log('WSL 2 definido como versão padrão', 'success');
+          verification.log('WSL 2 definido como versão padrão', 'success');
           return true;
         } catch (defaultError) {
-          log('Erro ao definir WSL 2 como versão padrão, tentando método alternativo...', 'warning');
+          verification.log('Erro ao definir WSL 2 como versão padrão, tentando método alternativo...', 'warning');
           
           // Tentar outro comando ou aguardar e tentar novamente
           await new Promise(resolve => setTimeout(resolve, 5000));
           
           try {
             await verification.execPromiseWsl('wsl --set-default-version 2', 30000, true);
-            log('WSL 2 configurado como padrão na segunda tentativa', 'success');
+            verification.log('WSL 2 configurado como padrão na segunda tentativa', 'success');
             return true;
           } catch (retryError) {
-            log('Todas as tentativas de configurar WSL 2 falharam', 'error');
+            verification.log('Todas as tentativas de configurar WSL 2 falharam', 'error');
             return false;
           }
         }
@@ -1449,7 +1493,10 @@ async function updateWSL2Kernel() {
     verification.log('Instalando pacote do kernel (silencioso)...', 'step');
     await verification.execPromiseWsl(`msiexec /i "${kernelPath}" /qn`, 180000, true);
     verification.log('Instalação do kernel concluída com sucesso', 'success');
-    return true;
+    verification.log('IMPORTANTE: É necessário reiniciar o sistema após instalar o kernel do WSL 2', 'warning');
+    
+    // Perguntar se deseja reiniciar agora
+    await promptForRestart('O kernel do WSL 2 foi instalado e o sistema precisa ser reiniciado.');
   } catch (installError) {
     verification.log('Erro ao instalar via msiexec /qn, tentando método alternativo...', 'warning');
     
@@ -1463,7 +1510,11 @@ async function updateWSL2Kernel() {
       verification.log('Aguardando 15 segundos para a instalação completar...', 'info');
       await new Promise(resolve => setTimeout(resolve, 15000));
       
-      return true;
+      verification.log('IMPORTANTE: É necessário reiniciar o sistema após instalar o kernel do WSL 2', 'warning');
+    
+      // Perguntar se deseja reiniciar agora
+      await promptForRestart('O kernel do WSL 2 foi instalado e o sistema precisa ser reiniciado.');
+
     } catch (startError) {
       // Método 3: msiexec com interface (último recurso)
       try {
@@ -1476,7 +1527,11 @@ async function updateWSL2Kernel() {
         verification.log('Aguardando 60 segundos para instalação manual...', 'info');
         await new Promise(resolve => setTimeout(resolve, 60000));
         
-        return true;
+        verification.log('IMPORTANTE: É necessário reiniciar o sistema após instalar o kernel do WSL 2', 'warning');
+    
+        // Perguntar se deseja reiniciar agora
+        await promptForRestart('O kernel do WSL 2 foi instalado e o sistema precisa ser reiniciado.');
+
       } catch (guiError) {
         verification.log('Todos os métodos de instalação falharam', 'error');
         verification.log(`Por favor, instale manualmente o arquivo: ${kernelPath}`, 'warning');
