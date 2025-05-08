@@ -1993,7 +1993,7 @@ async function installUbuntu(attemptCount = 0) {
     
     // Executar o comando de instalação
     verification.log('Executando: wsl --install -d Ubuntu', 'info');
-    await verification.execPromise('wsl --install -d Ubuntu', 600000, true); // 10 minutos de timeout
+    await verification.execPromise('wsl --install -d Ubuntu', 1200000, true); // 20 minutos de timeout
     
     // Se chegamos aqui, o comando não lançou erro - marcar como tentativa executada
     installationAttempted = true;
@@ -2110,7 +2110,7 @@ async function installUbuntu(attemptCount = 0) {
 
     try {
       await verification.execPromise('wsl --install -d Ubuntu', 
-        600000, // 10 minutos
+        1200000, // 20 minutos
         true);
     } catch (error) {
       verification.logToFile('erro4: ', JSON.stringify(error));
@@ -2172,67 +2172,6 @@ async function installUbuntu(attemptCount = 0) {
     } catch (storeError) {
       verification.log('Erro ao instalar via Microsoft Store', 'warning');
       verification.logToFile(`Detalhes do erro: ${JSON.stringify(storeError)}`);
-    }
-  }
-  
-  // MÉTODO 3: Tentar com download direto (novo método)
-  if (!installationSuccessful) {
-    verification.log('Tentando método de download direto...', 'step');
-    
-    try {
-      // Baixar o Appx diretamente e instalar
-      verification.log('Baixando pacote Ubuntu do servidor Microsoft...', 'info');
-      
-      const tempPath = path.join(os.tmpdir(), 'Ubuntu.appx');
-      
-      // Tentar baixar o arquivo
-      await verification.execPromiseWsl(
-        `powershell -Command "Invoke-WebRequest -Uri 'https://aka.ms/wslubuntu2004' -OutFile '${tempPath}' -UseBasicParsing"`,
-        600000, // 10 minutos
-        true
-      );
-      
-      verification.log('Arquivo baixado, tentando instalar...', 'info');
-      
-      // Instalar o pacote
-      await verification.execPromiseWsl(
-        `powershell -Command "Add-AppxPackage '${tempPath}'"`,
-        300000, // 5 minutos
-        true
-      );
-      
-      verification.log('Pacote instalado, aguardando inicialização...', 'info');
-      await new Promise(resolve => setTimeout(resolve, 30000)); // 30 segundos
-      
-      // Tentar inicializar o Ubuntu
-      await verification.execPromiseWsl(
-        'powershell -Command "Start-Process ubuntu"',
-        15000,
-        true
-      );
-      
-      // Aguardar a inicialização
-      verification.log('Aguardando inicialização do Ubuntu...', 'info');
-      await new Promise(resolve => setTimeout(resolve, 45000)); // 45 segundos
-      
-      // Verificar se o Ubuntu foi instalado
-      try {
-        const appxCheck = await verification.execPromiseWsl('wsl --list', 15000, false);
-        if (appxCheck && typeof appxCheck === 'string' && 
-            // eslint-disable-next-line no-control-regex
-            appxCheck.replace(/\u0000/g, '').toLowerCase().includes('ubuntu')) {
-          verification.log('Ubuntu instalado com sucesso via pacote direto!', 'success');
-          installationSuccessful = true;
-          installState.ubuntuInstalled = true;
-          saveInstallState();
-          return true;
-        }
-      } catch {
-        verification.log('Ubuntu ainda não detectado após instalação via pacote direto', 'warning');
-      }
-    } catch (directError) {
-      verification.log('Erro no método de download direto', 'warning');
-      verification.logToFile(`Detalhes do erro: ${JSON.stringify(directError)}`);
     }
   }
   
