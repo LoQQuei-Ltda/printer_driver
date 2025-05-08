@@ -56,60 +56,6 @@ async function promptForRestart(message) {
   }
 }
 
-function setCustomAskQuestion(callback) {
-  customAskQuestion = callback;
-}
-
-function interpretarMensagemLog(message, type) {
-  const lowerMessage = message.toLowerCase();
-
-  // Mapear mensagens para estados de componentes
-  if (lowerMessage.includes('analisando componentes necessários')) {
-    // Verificação completa, analisando componentes
-    return {
-      type: 'component-analysis',
-      step: 0,
-      state: 'completed',
-      progress: 20
-    };
-  }
-  else if (lowerMessage.includes('instalando aplicação') ||
-    lowerMessage.includes('instalando/configurando packages')) {
-    // Instalando aplicação (ambiente de sistema)
-    return {
-      type: 'component-install',
-      step: 5,  // Etapa "Configurando ambiente de sistema"
-      state: 'in-progress',
-      progress: 80
-    };
-  }
-  else if (lowerMessage.includes('instalando componente')) {
-    // Determinar qual componente está sendo instalado
-    let step = 5; // Ambiente por padrão
-
-    if (lowerMessage.includes('packages')) {
-      step = 5; // Ambiente
-    }
-    else if (lowerMessage.includes('cups') ||
-      lowerMessage.includes('samba') ||
-      lowerMessage.includes('firewall') ||
-      lowerMessage.includes('database') ||
-      lowerMessage.includes('service')) {
-      step = 6; // Serviços
-    }
-
-    return {
-      type: 'component-install',
-      step: step,
-      state: 'in-progress',
-      progress: step === 5 ? 80 : 90
-    };
-  }
-
-  // Sem interpretação especial para outras mensagens
-  return null;
-}
-
 function askQuestion(question) {
   // Se uma função de pergunta personalizada foi definida (para Electron)
   if (customAskQuestion) {
@@ -386,7 +332,7 @@ async function installWSLDirectly() {
         true
       );
       verification.log('Recurso WSL habilitado via dism.exe', 'success');
-    } catch (dismError) {
+    } catch {
       verification.log('Erro ao habilitar WSL via dism, tentando método PowerShell...', 'warning');
       try {
         await verification.execPromiseWsl(
@@ -395,7 +341,7 @@ async function installWSLDirectly() {
           true
         );
         verification.log('Recurso WSL habilitado via PowerShell', 'success');
-      } catch (psError) {
+      } catch {
         verification.log('Todos os métodos de habilitação do WSL falharam', 'error');
         return false;
       }
@@ -410,7 +356,7 @@ async function installWSLDirectly() {
         true
       );
       verification.log('Recurso VirtualMachinePlatform habilitado via dism.exe', 'success');
-    } catch (dismVmError) {
+    } catch {
       verification.log('Erro ao habilitar VirtualMachinePlatform via dism, tentando método PowerShell...', 'warning');
       try {
         await verification.execPromiseWsl(
@@ -419,7 +365,7 @@ async function installWSLDirectly() {
           true
         );
         verification.log('Recurso VirtualMachinePlatform habilitado via PowerShell', 'success');
-      } catch (psVmError) {
+      } catch {
         verification.log('Não foi possível habilitar VirtualMachinePlatform, mas continuando...', 'warning');
       }
     }
@@ -447,7 +393,7 @@ async function installWSLDirectly() {
         
         return { success: true, needsReboot: true };
       }
-    } catch (rebootCheckError) {
+    } catch {
       verification.log('Erro ao verificar necessidade de reinicialização. Por precaução, recomendamos reiniciar', 'warning');
 
       installState.needsReboot = true;
@@ -476,7 +422,7 @@ async function installWSLDirectly() {
           true
         );
         verification.log('Pacote baixado via bitsadmin com sucesso', 'success');
-      } catch (bitsError) {
+      } catch {
         verification.log('Download via bitsadmin falhou, tentando PowerShell...', 'warning');
         
         try {
@@ -487,7 +433,7 @@ async function installWSLDirectly() {
             true
           );
           verification.log('Pacote baixado via PowerShell WebClient com sucesso', 'success');
-        } catch (psError) {
+        } catch {
           verification.log('Download via PowerShell WebClient falhou, tentando curl...', 'warning');
           
           try {
@@ -498,7 +444,7 @@ async function installWSLDirectly() {
               true
             );
             verification.log('Pacote baixado via curl com sucesso', 'success');
-          } catch (curlError) {
+          } catch {
             verification.log('Todos os métodos de download falharam', 'error');
             verification.log('Por favor, baixe e instale manualmente: https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 'warning');
             
@@ -506,7 +452,7 @@ async function installWSLDirectly() {
               // Abrir página de download para facilitar para o usuário
               await verification.execPromiseWsl('start https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 5000, true);
               verification.log('Página de download aberta no navegador', 'info');
-            } catch (e) { /* ignorar erro ao abrir navegador */ }
+            } catch { /* ignorar erro ao abrir navegador */ }
             
             return false;
           }
@@ -526,7 +472,7 @@ async function installWSLDirectly() {
         // Método 1: msiexec silencioso
         await verification.execPromiseWsl(`msiexec /i "${kernelPath}" /qn`, 180000, true);
         verification.log('Kernel instalado com sucesso (modo silencioso)', 'success');
-      } catch (msiError) {
+      } catch {
         verification.log('Instalação silenciosa falhou, tentando método alternativo...', 'warning');
         
         try {
@@ -536,7 +482,7 @@ async function installWSLDirectly() {
           
           // Aguardar um pouco para instalação concluir
           await new Promise(resolve => setTimeout(resolve, 15000));
-        } catch (startError) {
+        } catch {
           verification.log('Método alternativo também falhou, tentando com interface...', 'warning');
           
           try {
@@ -546,7 +492,7 @@ async function installWSLDirectly() {
             
             // Aguardar mais tempo para instalação manual
             await new Promise(resolve => setTimeout(resolve, 30000));
-          } catch (guiError) {
+          } catch {
             verification.log('Todos os métodos de instalação falharam', 'error');
             verification.log(`Por favor, instale manualmente o arquivo: ${kernelPath}`, 'warning');
             return false;
@@ -563,7 +509,7 @@ async function installWSLDirectly() {
     try {
       await verification.execPromiseWsl('wsl --set-default-version 2', 30000, true);
       verification.log('WSL 2 configurado como versão padrão', 'success');
-    } catch (defaultError) {
+    } catch {
       verification.log('Erro ao definir WSL 2 como padrão. Tentaremos novamente mais tarde', 'warning');
     }
     
@@ -599,6 +545,7 @@ async function installComponent(component, status) {
           return true;
         }
         // Tentar o método moderno primeiro, se falhar usar o legado
+        // eslint-disable-next-line no-case-declarations
         const modernResult = await installWSLModern();
         if (modernResult) {
           return true;
@@ -613,19 +560,19 @@ async function installComponent(component, status) {
         
         // Usar execPromiseWsl para lidar melhor com erros em português
         try {
-          const wslCheck = await verification.execPromiseWsl('wsl --version', 10000, true);
+          await verification.execPromiseWsl('wsl --version', 10000, true);
           verification.log('WSL base detectado, prosseguindo com configuração WSL 2', 'success');
         } catch (wslCheckError) {
           // Analisar o erro para verificar se é "WSL não instalado"
           try {
             const result = await verification.execPromiseWsl('wsl.exe --install', 1200000, true);
             verification.log('wsl.exe --install', result);
-          } catch (error) { }
+          } catch { /* ignorar erro */ }
           
           try {
             const result = await verification.execPromiseWsl('wsl.exe --update', 1200000, true);
             verification.log('wsl.exe --update', result);
-          } catch (error) { }
+          } catch { /* ignorar erro */ }
 
           if (wslCheckError.isWslError) {
             verification.log('WSL não está instalado. Instalando WSL primeiro...', 'warning');
@@ -643,6 +590,7 @@ async function installComponent(component, status) {
             
             // Verificar se reboot é necessário
             const needsReboot = await verification.execPromiseWsl(
+              // eslint-disable-next-line no-useless-escape
               `powershell -Command "if ((Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') -or (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -ErrorAction SilentlyContinue).PendingFileRenameOperations)) { Write-Output 'true' } else { Write-Output 'false' }"`,
               10000,
               true
@@ -667,6 +615,7 @@ async function installComponent(component, status) {
         }
         
         // Baixar e instalar o kernel do WSL 2 se necessário
+        // eslint-disable-next-line no-case-declarations
         const kernelResult = await updateWSL2Kernel();
         if (!kernelResult) {
           verification.log('Falha ao atualizar o kernel do WSL 2', 'error');
@@ -679,7 +628,7 @@ async function installComponent(component, status) {
           await verification.execPromiseWsl('wsl --set-default-version 2', 30000, true);
           verification.log('WSL 2 definido como versão padrão', 'success');
           return true;
-        } catch (defaultError) {
+        } catch {
           verification.log('Erro ao definir WSL 2 como versão padrão, tentando método alternativo...', 'warning');
           
           // Tentar outro comando ou aguardar e tentar novamente
@@ -689,7 +638,7 @@ async function installComponent(component, status) {
             await verification.execPromiseWsl('wsl --set-default-version 2', 30000, true);
             verification.log('WSL 2 configurado como padrão na segunda tentativa', 'success');
             return true;
-          } catch (retryError) {
+          } catch {
             verification.log('Todas as tentativas de configurar WSL 2 falharam', 'error');
             return false;
           }
@@ -821,7 +770,7 @@ async function installComponent(component, status) {
                   break;
                 }
               }
-            } catch (pathError) {
+            } catch {
               // Ignorar erros individuais e continuar verificando
             }
           }
@@ -837,7 +786,7 @@ async function installComponent(component, status) {
             await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${restartCmd}"`, 60000, true);
             log('API reiniciada com sucesso', 'success');
             return true;
-          } catch (pmError) {
+          } catch {
             log('Erro ao reiniciar com PM2, tentando método alternativo...', 'warning');
             
             // Método alternativo: iniciar diretamente com node
@@ -1035,6 +984,7 @@ async function installWSLModern() {
   
   try {
     // CORREÇÃO CRÍTICA: Não detectar "wsl não está instalado" como um sinal de que já está instalado
+    // eslint-disable-next-line no-unused-vars
     const checkWslOutput = (output) => {
       if (!output || typeof output !== 'string') {
         return false;
@@ -1042,6 +992,7 @@ async function installWSLModern() {
       
       // Padronizar a string para busca mais confiável
       const normalizedOutput = output.toLowerCase()
+        // eslint-disable-next-line no-control-regex
         .replace(/\x00/g, '')
         .replace(/[^\x20-\x7E\xA0-\xFF\s]/g, '');
       
@@ -1076,6 +1027,7 @@ async function installWSLModern() {
     } catch (error) {
       // Limpar a mensagem de erro para verificar se realmente não está instalado
       const errorMsg = error?.stderr ? (typeof error.stderr === 'string' ? 
+        // eslint-disable-next-line no-control-regex
         error.stderr : error.stderr.toString()).replace(/\x00/g, '') : "";
       
       // Se a mensagem contém "não está instalado", então WSL realmente não está instalado
@@ -1100,13 +1052,13 @@ async function installWSLModern() {
       try {
         await verification.execPromise('dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart', 180000, true);
         verification.log('Recurso WSL habilitado com sucesso via DISM', 'success');
-      } catch (dismError) {
+      } catch {
         // Tentar método alternativo via PowerShell
         try {
           verification.log('Tentando método alternativo via PowerShell...', 'warning');
           await verification.execPromise('powershell -Command "Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart"', 180000, true);
           verification.log('Recurso WSL habilitado via PowerShell', 'success');
-        } catch (powershellError) {
+        } catch {
           verification.log('Falha em todos os métodos de habilitação do WSL', 'error');
           return false;
         }
@@ -1117,12 +1069,12 @@ async function installWSLModern() {
       try {
         await verification.execPromise('dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart', 180000, true);
         verification.log('Recurso VirtualMachinePlatform habilitado com sucesso', 'success');
-      } catch (vmError) {
+      } catch {
         try {
           verification.log('Tentando habilitar VirtualMachinePlatform via PowerShell...', 'warning');
           await verification.execPromise('powershell -Command "Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart"', 180000, true);
           verification.log('Recurso VirtualMachinePlatform habilitado via PowerShell', 'success');
-        } catch (vmPsError) {
+        } catch {
           verification.log('Aviso: Não foi possível habilitar a plataforma de máquina virtual', 'warning');
           // Continuar mesmo assim
         }
@@ -1146,7 +1098,7 @@ async function installWSLModern() {
           
           return { needsReboot: true };
         }
-      } catch (rebootCheckError) {
+      } catch {
         verification.log('Não foi possível verificar se é necessário reiniciar', 'warning');
       }
 
@@ -1175,7 +1127,7 @@ async function installWSLModern() {
             true
           );
           verification.log('Download do pacote concluído com sucesso', 'success');
-        } catch (downloadError) {
+        } catch {
           // Tentar método alternativo (bitsadmin)
           try {
             verification.log('Tentando método alternativo de download...', 'warning');
@@ -1185,7 +1137,7 @@ async function installWSLModern() {
               true
             );
             verification.log('Download alternativo concluído com sucesso', 'success');
-          } catch (bitsError) {
+          } catch {
             verification.log('Todos os métodos de download falharam, abrindo página para download manual', 'error');
             await verification.execPromise('start https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 5000, true);
             
@@ -1203,13 +1155,13 @@ async function installWSLModern() {
         try {
           await verification.execPromise(`msiexec /i "${kernelUpdatePath}" /qn`, 120000, true);
           verification.log('Instalação do pacote concluída com sucesso', 'success');
-        } catch (installError) {
+        } catch {
           // Tentar método alternativo
           try {
             verification.log('Tentando método alternativo de instalação...', 'warning');
             await verification.execPromise(`msiexec /i "${kernelUpdatePath}"`, 120000, true);
             verification.log('Instalação alternativa concluída, pode ser necessário completar manualmente', 'warning');
-          } catch (msiError) {
+          } catch {
             verification.log('Não foi possível instalar automaticamente o pacote de atualização do kernel', 'error');
             verification.log('Por favor, localize o arquivo baixado e instale-o manualmente:', 'warning');
             verification.log(kernelUpdatePath, 'warning');
@@ -1221,7 +1173,7 @@ async function installWSLModern() {
             return { needsReboot: true };
           }
         }
-      } catch (updateError) {
+      } catch {
         verification.log('Erro ao baixar ou instalar o pacote de atualização do kernel', 'error');
         verification.log('Por favor, baixe e instale manualmente: https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 'warning');
         
@@ -1246,7 +1198,7 @@ async function installWSLModern() {
         verification.log('WSL 2 configurado como versão padrão', 'success');
         installState.wslConfigured = true;
         saveInstallState();
-      } catch (defaultError) {
+      } catch {
         verification.log('Não foi possível configurar WSL 2 como versão padrão agora', 'warning');
         verification.log('Isso será feito automaticamente mais tarde', 'info');
       }
@@ -1284,6 +1236,7 @@ async function configureWSL2() {
         } catch (listError) {
           // Verificar se o erro é "não está instalado" vs "não tem distribuições"
           const errorMsg = listError?.stderr ? (typeof listError.stderr === 'string' ? 
+            // eslint-disable-next-line no-control-regex
             listError.stderr : listError.stderr.toString()).replace(/\x00/g, '') : "";
           
           if (errorMsg.includes("não tem distribuições") || 
@@ -1302,7 +1255,7 @@ async function configureWSL2() {
       } else {
         wslInstalled = false;
       }
-    } catch (whereError) {
+    } catch {
       wslInstalled = false;
     }
     
@@ -1320,7 +1273,7 @@ async function configureWSL2() {
         saveInstallState();
         return true;
       }
-    } catch (versionError) {
+    } catch {
       verification.log('Não foi possível verificar a versão padrão atual, tentando configurar mesmo assim', 'warning');
     }
     
@@ -1330,7 +1283,7 @@ async function configureWSL2() {
       verification.log('Tentando atualizar o kernel do WSL...', 'step');
       await verification.execPromise('wsl --update', 60000, false);
       verification.log('Kernel do WSL atualizado com sucesso', 'success');
-    } catch (updateError) {
+    } catch {
       // Verificar se precisamos instalar o kernel manualmente
       verification.log('Comando de atualização não disponível, verificando kernel...');
       
@@ -1342,7 +1295,7 @@ async function configureWSL2() {
         } else {
           verification.log('Não foi possível atualizar o kernel do WSL 2, continuando mesmo assim', 'warning');
         }
-      } catch (kernelError) {
+      } catch {
         verification.log('Erro ao atualizar kernel do WSL 2, continuando mesmo assim', 'warning');
       }
     }
@@ -1358,7 +1311,7 @@ async function configureWSL2() {
       attempts++;
       try {
         verification.log(`Tentativa ${attempts} de configurar WSL 2 como padrão...`, 'info');
-        const setResult = await verification.execPromise('wsl --set-default-version 2', 60000, true);
+        await verification.execPromise('wsl --set-default-version 2', 60000, true);
         
         // Verificar a saída para identificar sucesso
         // SIMPLIFICADO: se não houve erro, considerar sucesso
@@ -1369,6 +1322,7 @@ async function configureWSL2() {
         break;
       } catch (setVersionError) {
         const errorMsg = setVersionError?.stderr ? (typeof setVersionError.stderr === 'string' ? 
+          // eslint-disable-next-line no-control-regex
           setVersionError.stderr : setVersionError.stderr.toString()).replace(/\x00/g, '') : "";
         
         // Se o erro indica que já está configurado, considerar sucesso
@@ -1393,7 +1347,7 @@ async function configureWSL2() {
               await new Promise(resolve => setTimeout(resolve, 10000));
               continue; // Tentar novamente
             }
-          } catch (kernelError) {
+          } catch {
             // Continuar com a próxima tentativa
           }
         }
@@ -1435,7 +1389,7 @@ async function updateWSL2Kernel() {
       true
     );
     verification.log('Download do pacote completo via bitsadmin', 'success');
-  } catch (bitsError) {
+  } catch {
     // Alternativa 1: PowerShell WebClient (mais moderno)
     try {
       verification.log('Tentando download via PowerShell WebClient...', 'info');
@@ -1445,7 +1399,7 @@ async function updateWSL2Kernel() {
         true
       );
       verification.log('Download do pacote completo via PowerShell WebClient', 'success');
-    } catch (psError) {
+    } catch {
       // Alternativa 2: PowerShell Invoke-WebRequest (mais compatível)
       try {
         verification.log('Tentando download via PowerShell Invoke-WebRequest...', 'info');
@@ -1455,7 +1409,7 @@ async function updateWSL2Kernel() {
           true
         );
         verification.log('Download do pacote completo via PowerShell Invoke-WebRequest', 'success');
-      } catch (iwrError) {
+      } catch {
         // Alternativa 3: curl
         try {
           verification.log('Tentando download via curl...', 'info');
@@ -1465,7 +1419,7 @@ async function updateWSL2Kernel() {
             true
           );
           verification.log('Download do pacote completo via curl', 'success');
-        } catch (curlError) {
+        } catch {
           verification.log('Falha em todos os métodos de download do kernel', 'error');
           verification.log('Por favor, baixe e instale manualmente: https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 'warning');
           
@@ -1473,7 +1427,7 @@ async function updateWSL2Kernel() {
           try {
             await verification.execPromiseWsl('start https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 5000, true);
             verification.log('Página de download aberta no navegador', 'info');
-          } catch (e) {}
+          } catch { /* ignorar erro */ }
           
           return false;
         }
@@ -1497,7 +1451,7 @@ async function updateWSL2Kernel() {
     
     // Perguntar se deseja reiniciar agora
     await promptForRestart('O kernel do WSL 2 foi instalado e o sistema precisa ser reiniciado.');
-  } catch (installError) {
+  } catch {
     verification.log('Erro ao instalar via msiexec /qn, tentando método alternativo...', 'warning');
     
     // Método 2: msiexec com start /wait
@@ -1515,7 +1469,7 @@ async function updateWSL2Kernel() {
       // Perguntar se deseja reiniciar agora
       await promptForRestart('O kernel do WSL 2 foi instalado e o sistema precisa ser reiniciado.');
 
-    } catch (startError) {
+    } catch {
       // Método 3: msiexec com interface (último recurso)
       try {
         verification.log('Instalando pacote do kernel (com interface)...', 'step');
@@ -1532,7 +1486,7 @@ async function updateWSL2Kernel() {
         // Perguntar se deseja reiniciar agora
         await promptForRestart('O kernel do WSL 2 foi instalado e o sistema precisa ser reiniciado.');
 
-      } catch (guiError) {
+      } catch {
         verification.log('Todos os métodos de instalação falharam', 'error');
         verification.log(`Por favor, instale manualmente o arquivo: ${kernelPath}`, 'warning');
         return false;
@@ -1727,7 +1681,7 @@ async function installUbuntu(attemptCount = 0) {
       saveInstallState();
       return true;
     }
-  } catch (listError) {
+  } catch {
     verification.log('Erro ao verificar com wsl --list, tentando método alternativo', 'warning');
   }
   
@@ -1747,7 +1701,7 @@ async function installUbuntu(attemptCount = 0) {
         saveInstallState();
         return true;
       }
-    } catch (psError) {
+    } catch {
       verification.log('Erro na verificação alternativa, continuando com instalação', 'warning');
     }
   }
@@ -1793,7 +1747,7 @@ async function installUbuntu(attemptCount = 0) {
         verification.log('Ubuntu detectado na lista de distribuições após instalação!', 'success');
         ubuntuDetected = true;
       }
-    } catch (verifyError1) {
+    } catch {
       verification.log('Erro na primeira verificação pós-instalação, tentando método alternativo', 'warning');
     }
     
@@ -1810,7 +1764,7 @@ async function installUbuntu(attemptCount = 0) {
           verification.log('Ubuntu detectado via registro do Windows após instalação!', 'success');
           ubuntuDetected = true;
         }
-      } catch (verifyError2) {
+      } catch {
         verification.log('Erro na segunda verificação pós-instalação', 'warning');
       }
     }
@@ -1821,7 +1775,7 @@ async function installUbuntu(attemptCount = 0) {
         await verification.execPromise('wsl -d Ubuntu echo "Teste de acesso"', 30000, false);
         verification.log('Ubuntu responde a comandos diretos após instalação!', 'success');
         ubuntuDetected = true;
-      } catch (verifyError3) {
+      } catch {
         verification.log('Erro na terceira verificação pós-instalação', 'warning');
       }
     }
@@ -1874,9 +1828,7 @@ async function installUbuntu(attemptCount = 0) {
           saveInstallState();
           return true;
         }
-      } catch (quickCheckError) {
-        // Ignorar erros
-      }
+      } catch { /* ignorar erros */ }
       
       // Tentar novamente com contador incrementado
       verification.log('Iniciando nova tentativa de instalação...', 'step');
@@ -1899,7 +1851,7 @@ async function installUbuntu(attemptCount = 0) {
       saveInstallState();
       return true;
     }
-  } catch (finalCheckError) {
+  } catch {
     verification.log('Erro na verificação final', 'warning');
   }
   
@@ -1970,13 +1922,6 @@ async function installRequiredPackages() {
     // Limpar locks do APT antes de começar
     await cleanAptLocks();
 
-    // Lista de pacotes necessários
-    const requiredPackages = [
-      'nano', 'samba', 'cups', 'printer-driver-cups-pdf', 'postgresql', 'postgresql-contrib',
-      'ufw', 'npm', 'jq', 'net-tools', 'avahi-daemon', 'avahi-utils',
-      'avahi-discover', 'hplip', 'hplip-gui', 'printer-driver-all'
-    ];
-
     // Atualizando repositórios primeiro - aumentar timeout para 10 minutos
     verification.log('Atualizando repositórios...', 'step');
     try {
@@ -1996,14 +1941,14 @@ async function installRequiredPackages() {
       try {
         await verification.execPromise('wsl -d Ubuntu -u root apt-get --fix-broken install -y', 180000, true);
         await verification.execPromise('wsl -d Ubuntu -u root apt-get update', 600000, true);
-      } catch (secondUpdateError) {
+      } catch {
         verification.log('Segunda tentativa de atualizar falhou, tentando método alternativo...', 'warning');
         
         // Tentar com método alternativo (usando apt em vez de apt-get)
         try {
           await verification.execPromise('wsl -d Ubuntu -u root apt clean', 60000, true);
           await verification.execPromise('wsl -d Ubuntu -u root apt update', 600000, true);
-        } catch (altUpdateError) {
+        } catch {
           verification.log('Todos os métodos de atualização falharam, tentando continuar...', 'warning');
         }
       }
@@ -2088,13 +2033,13 @@ async function installRequiredPackages() {
           await verification.execPromise('wsl --shutdown', 15000, true);
           await new Promise(resolve => setTimeout(resolve, 8000)); // Aguardar reinicialização
           verification.log('WSL reiniciado para habilitar systemd', 'success');
-        } catch (shutdownError) {
+        } catch {
           verification.log('Erro ao reiniciar WSL, mas continuando...', 'warning');
         }
       } else {
         verification.log('Systemd já está habilitado no WSL', 'success');
       }
-    } catch (systemdError) {
+    } catch {
       verification.log('Erro ao verificar/configurar systemd, continuando...', 'warning');
     }
 
@@ -2124,7 +2069,7 @@ async function installRequiredPackages() {
       }
       
       verification.log('Serviços inicializados', 'success');
-    } catch (startError) {
+    } catch {
       verification.log('Aviso: Alguns serviços podem não ter iniciado corretamente', 'warning');
     }
 
@@ -2821,7 +2766,7 @@ async function restartServices() {
           verification.log(`${service.name} reiniciado com sucesso`, 'success');
           serviceRestarted = true;
           break;
-        } catch (cmdError) {
+        } catch {
           // Continuar para o próximo comando
           verification.logToFile(`Erro ao reiniciar ${service.name} com comando: ${cmd}`);
         }
@@ -2868,7 +2813,7 @@ async function configureSamba() {
           true
         );
       }
-    } catch (checkError) {
+    } catch {
       verification.log('Erro ao verificar instalação do Samba, tentando instalar de qualquer forma...', 'warning');
       
       try {
@@ -2878,7 +2823,7 @@ async function configureSamba() {
           300000, // 5 minutos
           true
         );
-      } catch (installError) {
+      } catch {
         verification.log('Erro ao instalar Samba, tentando continuar mesmo assim...', 'error');
       }
     }
@@ -2968,7 +2913,7 @@ async function configureCups() {
           true
         );
       }
-    } catch (checkError) {
+    } catch {
       verification.log('Erro ao verificar instalação do CUPS, tentando instalar de qualquer forma...', 'warning');
       
       try {
@@ -2978,7 +2923,7 @@ async function configureCups() {
           300000,
           true
         );
-      } catch (installError) {
+      } catch {
         verification.log('Erro ao instalar CUPS, tentando continuar mesmo assim...', 'error');
       }
     }
@@ -3070,7 +3015,7 @@ async function setupCupsPrinter() {
         await verification.execPromise('wsl -d Ubuntu -u root cupsaccept PDF 2>/dev/null || cupsaccept PDF_Printer 2>/dev/null || true', 10000, true);
         verification.log('Impressora PDF está pronta para uso', 'success');
         return true;
-      } catch (enableError) {
+      } catch {
         verification.log('Aviso ao habilitar impressora existente, tentando criar nova...', 'warning');
       }
     }
@@ -3083,7 +3028,7 @@ async function setupCupsPrinter() {
       await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -E -v cups-pdf:/ -m everywhere', 12000, true);
       verification.log('Impressora PDF_Printer criada com sucesso (método moderno)', 'success');
       return true;
-    } catch (m1Error) {
+    } catch {
       verification.log('Método moderno falhou, tentando alternativa...', 'warning');
     }
 
@@ -3093,7 +3038,7 @@ async function setupCupsPrinter() {
       await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -E -v cups-pdf:/ -m lsb/usr/cups-pdf/CUPS-PDF_opt.ppd', 12000, true);
       verification.log('Impressora PDF_Printer criada com sucesso (método moderno)', 'success');
       return true;
-    } catch (m1Error) {
+    } catch {
       verification.log('Método moderno falhou, tentando alternativa...', 'warning');
     }
     
@@ -3112,7 +3057,7 @@ async function setupCupsPrinter() {
         verification.log('Impressora PDF_Printer criada com sucesso (PPD encontrado)', 'success');
         return true;
       }
-    } catch (m2Error) {
+    } catch {
       verification.log('Método de PPD disponível falhou, tentando próxima alternativa...', 'warning');
     }
     
@@ -3122,7 +3067,7 @@ async function setupCupsPrinter() {
       await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -E -v cups-pdf:/ -m raw', 12000, true);
       verification.log('Impressora PDF_Printer criada com driver genérico', 'success');
       return true;
-    } catch (m3Error) {
+    } catch {
       verification.log('Método de driver genérico falhou, tentando método básico...', 'warning');
     }
     
@@ -3132,7 +3077,7 @@ async function setupCupsPrinter() {
       await verification.execPromise('wsl -d Ubuntu -u root lpadmin -p PDF_Printer -E -v cups-pdf:/', 12000, true);
       verification.log('Impressora PDF_Printer criada com configuração mínima', 'success');
       return true;
-    } catch (m4Error) {
+    } catch {
       verification.log('Todos os métodos automáticos falharam', 'error');
     }
     
@@ -3164,7 +3109,7 @@ echo "Impressora criada"
         verification.log('Impressora PDF criada com sucesso via script', 'success');
         return true;
       }
-    } catch (scriptError) {
+    } catch {
       verification.log('Método de script falhou', 'error');
     }
     
@@ -3210,7 +3155,7 @@ async function configureFirewall() {
       await verification.execPromise(`wsl -d Ubuntu -u root systemctl start ufw`, 15000, true);
       await verification.execPromise(`wsl -d Ubuntu -u root ufw --force enable`, 15000, true);
       verification.log('UFW iniciado e habilitado', 'success');
-    } catch (ufwError) {
+    } catch {
       verification.log('Aviso: Erro ao iniciar UFW, mas tentaremos continuar...', 'warning');
     }
 
@@ -3223,7 +3168,7 @@ async function configureFirewall() {
         await verification.execPromise(`wsl -d Ubuntu -u root ufw allow ${port}/${protocol}`, 10000, true);
         verification.log(`Regra para ${port}/${protocol} adicionada com sucesso`, 'success');
         successCount++;
-      } catch (ruleError) {
+      } catch {
         verification.log(`Aviso: Falha ao adicionar regra para ${port}/${protocol}, continuando...`, 'warning');
         failureCount++;
       }
@@ -3271,7 +3216,7 @@ async function setupDatabase() {
           true
         );
       }
-    } catch (checkError) {
+    } catch {
       verification.log('Erro ao verificar instalação do PostgreSQL, tentando instalar de qualquer forma...', 'warning');
       
       try {
@@ -3281,7 +3226,7 @@ async function setupDatabase() {
           300000, // 5 minutos
           true
         );
-      } catch (installError) {
+      } catch {
         verification.log('Erro ao instalar PostgreSQL, tentando continuar mesmo assim...', 'error');
       }
     }
@@ -3294,7 +3239,7 @@ async function setupDatabase() {
       const statusCheck = await verification.execPromise('wsl -d Ubuntu -u root systemctl is-active postgresql', 20000, true)
         .catch(() => "inactive");
       postgresRunning = statusCheck.trim() === 'active';
-    } catch (e) {
+    } catch {
       postgresRunning = false;
     }
     
@@ -3433,6 +3378,7 @@ async function setupDatabase() {
       // Tentar com comando alternativo
       try {
         await verification.execPromise(
+          // eslint-disable-next-line no-useless-escape
           `wsl -d Ubuntu -u root bash -c "su - postgres -c \\\"psql -c \\\\\\\"CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';\\\\\\\"\\\"" || su - postgres -c "createuser -s postgres_print"`,
           20000,
           true
@@ -3447,7 +3393,7 @@ async function setupDatabase() {
             15000,
             true
           );
-        } catch (pwError) {
+        } catch {
           verification.log('Aviso: Não foi possível definir senha para postgres_print', 'warning');
         }
       } catch (altUserError) {
@@ -3482,6 +3428,7 @@ async function setupDatabase() {
       try {
         // Comando mais simplificado
         await verification.execPromise(
+          // eslint-disable-next-line no-useless-escape
           `wsl -d Ubuntu -u root bash -c "su - postgres -c \\\"psql -d print_management -c \\\\\\\"CREATE SCHEMA IF NOT EXISTS print_management; GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;\\\\\\\"\\\")"`,
           20000,
           true
@@ -3520,9 +3467,7 @@ async function setupDatabase() {
             envPath = path;
             break;
           }
-        } catch (e) {
-          // Continuar verificando próximo path
-        }
+        } catch { /* ignorar erros */ }
       }
       
       if (envPath) {
@@ -3613,7 +3558,7 @@ async function setupMigrations() {
           verification.log(`Script de migração encontrado em: ${path}`, 'info');
           break;
         }
-      } catch (e) {}
+      } catch { /* ignorar erros */ }
     }
     
     // 3. Tentar executar script de migração se existir
@@ -3659,7 +3604,7 @@ async function setupMigrations() {
     try {
       verification.log('Tentando método direto após erro...', 'step');
       return await createTablesDirectly();
-    } catch (fallbackError) {
+    } catch {
       verification.log('Todos os métodos falharam', 'error');
       return false;
     }
@@ -3860,9 +3805,6 @@ EOFMARKER`,
       ];
       
       // Executar cada comando SQL
-      let successCount = 0;
-      let errorCount = 0;
-      
       for (const command of sqlCommands) {
         verification.log(`Executando SQL: ${command.description}...`, 'step');
         
@@ -3876,15 +3818,12 @@ EOFMARKER`,
           );
           
           verification.log(`${command.description} - Concluído com sucesso`, 'success');
-          successCount++;
         } catch (sqlError) {
           if (command.ignoreError) {
             verification.log(`${command.description} - Aviso: Comando falhou, mas era esperado (objeto pode já existir)`, 'warning');
-            successCount++; // Contamos como sucesso se o erro for ignorável
           } else {
             verification.log(`${command.description} - ERRO: ${sqlError.message || JSON.stringify(sqlError)}`, 'error');
             verification.logToFile(`Detalhes do erro: ${JSON.stringify(sqlError)}`);
-            errorCount++;
           }
           
           // Verificar se o erro é de "já existe" para tipos ENUM
@@ -3919,9 +3858,7 @@ EOFMARKER`,
           verification.log('Algumas tabelas foram criadas, mas verificação completa falhou', 'warning');
           return true;
         }
-      } catch (finalCheckError) {
-        // Ignorar erro na verificação final
-      }
+      } catch { /* ignorar erro */ }
       
       // Último método - extremamente simplificado
       verification.log('Tentando último método usando arquivo SQL direto...', 'warning');
@@ -3987,7 +3924,7 @@ async function configureDefaultUser() {
       await verification.execPromise('wsl --shutdown', 10000, true);
       // Esperar o WSL desligar
       await new Promise(resolve => setTimeout(resolve, 5000));
-    } catch (e) {}
+    } catch { /* ignorar erro */ }
     
     // 2. Criar usuário
     try {
@@ -3995,10 +3932,10 @@ async function configureDefaultUser() {
         'wsl -d Ubuntu -u root useradd -m -s /bin/bash -G sudo print_user',
         15000,
         true
-      ).catch(e => {});
+      ).catch(() => { /* ignorar erro */ });
       
       verification.log('Usuário print_user criado ou já existe', 'success');
-    } catch (e) {}
+    } catch { /* ignorar erro */ }
     
     // 3. Definir senha
     try {
@@ -4008,7 +3945,7 @@ async function configureDefaultUser() {
         true
       );
       verification.log('Senha configurada', 'success');
-    } catch (e) {}
+    } catch { /* ignorar erro */ }
     
     // 4. Configurar sudo
     try {
@@ -4018,7 +3955,7 @@ async function configureDefaultUser() {
         true
       );
       verification.log('Acesso sudo configurado', 'success');
-    } catch (e) {}
+    } catch { /* ignorar erro */ }
     
     // 5. Criar wsl.conf LINHA POR LINHA
     try {
@@ -4067,7 +4004,7 @@ async function configureDefaultUser() {
       );
       
       verification.log(`Conteúdo de wsl.conf: ${wslConfContent}`, 'info');
-    } catch (e) {}
+    } catch { /* ignorar erro */ }
     
     // 6. Reiniciar WSL para aplicar configuração
     try {
@@ -4076,7 +4013,7 @@ async function configureDefaultUser() {
       
       // Esperar reinicialização
       await new Promise(resolve => setTimeout(resolve, 10000));
-    } catch (e) {}
+    } catch { /* ignorar erro */ }
     
     // Atualizar estado
     installState.defaultUserCreated = true;
@@ -4145,7 +4082,7 @@ async function copySoftwareToOpt() {
         verification.log('Diretório /opt/loqquei/print_server_desktop já existe', 'info');
         dirExists = true;
       }
-    } catch (checkError) {
+    } catch {
       verification.log('Diretório /opt/loqquei/print_server_desktop não existe, será criado', 'info');
       dirExists = false;
     }
@@ -4329,7 +4266,7 @@ async function copySoftwareToOpt() {
             30000, 
             true
           );
-        } catch (e) {
+        } catch {
           verification.log('Aviso: Não foi possível criar diretório node_modules, continuando...', 'warning');
         }
 
@@ -4388,7 +4325,7 @@ async function copySoftwareToOpt() {
                   true
                 );
                 verification.log(`Módulo ${module} instalado`, 'success');
-              } catch (moduleError) {
+              } catch {
                 verification.log(`Não foi possível instalar ${module}, continuando...`, 'warning');
               }
             }
@@ -4464,7 +4401,7 @@ module.exports = {
               true
             );
             verification.log('ecosystem.config.js criado com método simplificado', 'success');
-          } catch (simpleError) {
+          } catch {
             verification.log('Não foi possível criar ecosystem.config.js', 'error');
           }
         }
@@ -4785,7 +4722,7 @@ function onListening() {
       );
       
       verification.log('Estrutura mínima de emergência criada', 'warning');
-    } catch (emergencyError) {
+    } catch {
       verification.log('Falha até na criação da estrutura mínima', 'error');
     }
 
@@ -4877,7 +4814,7 @@ async function setupPM2() {
     try {
       const nodeVersion = await verification.execPromise('wsl -d Ubuntu -u root node --version', 20000, false);
       verification.log(`Node.js detectado: ${nodeVersion.trim()}`, 'success');
-    } catch (nodeError) {
+    } catch {
       verification.log('Node.js não encontrado ou não está no PATH, tentando instalar...', 'warning');
 
       // Instalar Node.js
@@ -4892,7 +4829,7 @@ async function setupPM2() {
         
         await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${setupCommands}"`, 300000, true);
         verification.log('Node.js instalado com sucesso (versão LTS)', 'success');
-      } catch (nodeInstallError) {
+      } catch {
         verification.log('Falha ao instalar Node.js via método preferido, tentando alternativa...', 'warning');
         
         try {
@@ -4915,14 +4852,12 @@ async function setupPM2() {
 
     try {
       await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && sudo npm install"', 1200000, false);
-    } catch {}
+    } catch { /* ignorar erro */ }
 
-    let pm2Installed = false;
     try {
       const pm2Version = await verification.execPromise('wsl -d Ubuntu -u root sudo pm2 --version', 15000, false);
       verification.log(`PM2 já instalado: ${pm2Version.trim()}`, 'success');
-      pm2Installed = true;
-    } catch (pm2Error) {
+    } catch {
       verification.log('PM2 não encontrado, instalando...', 'info');
 
       // Instalar PM2 globalmente com maior timeout e forma mais robusta
@@ -4932,8 +4867,7 @@ async function setupPM2() {
         // Verificar se a instalação foi bem-sucedida
         const pm2Check = await verification.execPromise('wsl -d Ubuntu -u root sudo pm2 --version', 15000, false);
         verification.log(`PM2 instalado: ${pm2Check.trim()}`, 'success');
-        pm2Installed = true;
-      } catch (pm2InstallError) {
+      } catch {
         verification.log('Erro ao instalar PM2 via npm, tentando método alternativo...', 'warning');
         
         try {
@@ -4941,7 +4875,6 @@ async function setupPM2() {
           await verification.execPromise('wsl -d Ubuntu -u root npm install -g npx', 120000, true);
           await verification.execPromise('wsl -d Ubuntu -u root npx pm2 --version', 15000, true);
           verification.log('PM2 disponível via npx', 'success');
-          pm2Installed = true;
         } catch (npxError) {
           verification.log('Todos os métodos de instalação do PM2 falharam', 'error');
           verification.logToFile(`Erro de instalação do PM2: ${JSON.stringify(npxError)}`);
@@ -4980,7 +4913,7 @@ async function setupPM2() {
             verification.log(`Diretório ${path} existe mas não parece ser uma aplicação válida`, 'info');
           }
         }
-      } catch (error) {
+      } catch {
         verification.log(`Erro ao verificar diretório ${path}, continuando...`, 'warning');
       }
     }
@@ -5056,7 +4989,7 @@ module.exports = {
     try {
       await verification.execPromise(`wsl -d Ubuntu -u root chmod -R 755 ${appDir}`, 20000, true);
       verification.log('Permissões ajustadas', 'success');
-    } catch (permError) {
+    } catch {
       verification.log('Erro ao ajustar permissões, continuando...', 'warning');
     }
 
@@ -5095,7 +5028,7 @@ module.exports = {
             true
           );
           verification.log('Inicialização automática configurada', 'success');
-        } catch (startupError) {
+        } catch {
           verification.log('Erro ao configurar inicialização automática, continuando...', 'warning');
         }
         
@@ -5124,7 +5057,7 @@ module.exports = {
         } else {
           verification.log('Porta 56258 não detectada, mas continuando mesmo assim', 'warning');
         }
-      } catch (netstatError) {
+      } catch {
         verification.log('Erro ao verificar porta, continuando mesmo assim', 'warning');
       }
       
@@ -5411,7 +5344,7 @@ async function installWindowsPrinter() {
       await verification.execPromise('rundll32 printui.dll,PrintUIEntry /dl /n "Impressora LoQQuei" /q', 8000, true);
       // Tempo de espera mais curto
       await new Promise(resolve => setTimeout(resolve, 1000));
-    } catch (e) {
+    } catch {
       verification.log('Nota: Nenhuma impressora anterior encontrada', 'info');
     }
 
@@ -5710,7 +5643,7 @@ async function installSystem() {
           verification.log('Distribuição Ubuntu reiniciada para aplicar configurações de usuário', 'success');
           // Aguardar um pouco para a distribuição reiniciar
           await new Promise(resolve => setTimeout(resolve, 8000)); // 8 segundos
-        } catch (terminateError) {
+        } catch {
           verification.log('Não foi possível reiniciar a distribuição Ubuntu, continuando mesmo assim...', 'warning');
         }
       }
@@ -5792,7 +5725,7 @@ async function installSystem() {
     } else if (typeof error === 'object' && error !== null) {
       try {
         errorMessage = JSON.stringify(error);
-      } catch (e) {
+      } catch {
         errorMessage = "Erro complexo que não pode ser convertido para string";
       }
     } else if (typeof error === 'string') {
@@ -5998,7 +5931,7 @@ async function verifyAndFixInstallation(iterationCount = 0, maxIterations = 5) {
             10000, true
           );
           log('Método alternativo para configuração de usuário aplicado', 'success');
-        } catch (error) {
+        } catch {
           log('Falha no método alternativo para usuário', 'error');
         }
       }
@@ -6021,7 +5954,7 @@ async function verifyAndFixInstallation(iterationCount = 0, maxIterations = 5) {
           }
           
           log('Método alternativo para configuração do banco aplicado', 'success');
-        } catch (error) {
+        } catch {
           log('Falha no método alternativo para banco de dados', 'error');
         }
       }
@@ -6035,119 +5968,12 @@ async function verifyAndFixInstallation(iterationCount = 0, maxIterations = 5) {
   // Reiniciar serviços após modificação de componentes
   try {
     await restartServices();
-  } catch (error) {
+  } catch {
     log('Erro ao reiniciar serviços, continuando mesmo assim', 'warning');
   }
   
   // Verificar novamente os componentes recursivamente
   return await verifyAndFixInstallation(iterationCount + 1, maxIterations);
-}
-
-// Função para instalar um componente com múltiplas tentativas
-async function installComponentWithRetry(component, maxRetries = 3, currentRetry = 0) {
-  if (currentRetry >= maxRetries) {
-    log(`Atingido o número máximo de tentativas (${maxRetries}) para o componente ${component}`, 'error');
-    return false;
-  }
-  
-  log(`Instalando ${component} (tentativa ${currentRetry + 1}/${maxRetries})...`, 'step');
-  
-  try {
-    // Tratamento especial para componentes críticos
-    let status = null;
-    
-    if (component === 'user') {
-      // Verificação prévia específica para usuário
-      try {
-        const userExists = await verification.execPromise(
-          'wsl -d Ubuntu -u root bash -c "id -u print_user &>/dev/null && echo \'exists\' || echo \'not_exists\'"',
-          10000, true
-        );
-        
-        if (userExists.trim() === 'exists') {
-          log('Usuário print_user já existe, reforçando configurações...', 'info');
-        }
-      } catch (e) {
-        log('Erro ao verificar usuário existente, continuando com criação...', 'warning');
-      }
-    } 
-    else if (component === 'database' || component === 'migrations') {
-      // Verificação prévia específica para banco de dados
-      try {
-        status = await verification.checkDatabaseConfiguration();
-        
-        if (component === 'database' && status.configured) {
-          log('Banco de dados já está configurado corretamente', 'success');
-          return true;
-        }
-        
-        if (component === 'migrations' && !status.needsMigrations && status.tablesExist) {
-          log('Migrações do banco já foram aplicadas', 'success');
-          return true;
-        }
-      } catch (dbError) {
-        log('Erro ao verificar status do banco: ' + (dbError.message || JSON.stringify(dbError)), 'warning');
-      }
-    }
-    
-    // Executar a instalação do componente (passando status se disponível)
-    const result = await installComponent(component, status);
-    
-    if (result) {
-      log(`Componente ${component} instalado com sucesso!`, 'success');
-      
-      // Verificação adicional para componentes críticos
-      if (component === 'user') {
-        try {
-          const userCheck = await verification.checkIfDefaultUserConfigured();
-          if (!userCheck) {
-            log('Usuário configurado, mas a verificação posterior falhou. Continuando mesmo assim...', 'warning');
-          } else {
-            log('Configuração do usuário confirmada', 'success');
-          }
-        } catch (checkError) {
-          log('Erro na verificação final do usuário, continuando...', 'warning');
-        }
-      } 
-      else if (component === 'database' || component === 'migrations') {
-        try {
-          const dbCheck = await verification.checkDatabaseConfiguration();
-          log(`Verificação do banco após instalação: ${dbCheck.configured ? 'OK' : 'Com problemas'}`, 
-              dbCheck.configured ? 'success' : 'warning');
-          
-          if (!dbCheck.configured && currentRetry < maxRetries - 1) {
-            log('Banco de dados ainda não está completamente configurado, tentando novamente...', 'warning');
-            // Pequeno atraso maior para banco de dados
-            await new Promise(resolve => setTimeout(resolve, 8000));
-            return await installComponentWithRetry(component, maxRetries, currentRetry + 1);
-          }
-        } catch (checkError) {
-          log('Erro na verificação final do banco, continuando...', 'warning');
-        }
-      }
-      
-      return true;
-    } else {
-      log(`Falha ao instalar ${component}, tentando novamente...`, 'warning');
-      
-      // Pequeno atraso entre as tentativas (maior para componentes críticos)
-      const delay = (component === 'database' || component === 'user') ? 8000 : 5000;
-      await new Promise(resolve => setTimeout(resolve, delay));
-      
-      // Tentar novamente
-      return await installComponentWithRetry(component, maxRetries, currentRetry + 1);
-    }
-  } catch (error) {
-    log(`Erro ao instalar ${component}: ${error.message || 'Erro desconhecido'}`, 'error');
-    log(`Detalhes do erro: ${JSON.stringify(error)}`, 'error');
-    
-    // Pequeno atraso entre as tentativas (maior para componentes críticos)
-    const delay = (component === 'database' || component === 'user') ? 8000 : 5000;
-    await new Promise(resolve => setTimeout(resolve, delay));
-    
-    // Tentar novamente
-    return await installComponentWithRetry(component, maxRetries, currentRetry + 1);
-  }
 }
 
 // Função para instalar um componente com múltiplas tentativas
@@ -6187,7 +6013,6 @@ async function installComponentWithRetry(component, maxRetries = 3, currentRetry
 
 module.exports = {
   installDrivers,
-  installRequiredPackages,
   installSystem,
   installUbuntu,
   installWSLLegacy,
@@ -6196,7 +6021,6 @@ module.exports = {
   configureDefaultUser,
   configureSamba,
   configureCups,
-  setupDatabase,
   configureFirewall,
   configureSystem,
   copySoftwareToOpt,

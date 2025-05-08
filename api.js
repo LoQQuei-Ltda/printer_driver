@@ -72,7 +72,6 @@ function initAPI(appConfig, mainWindow, createMainWindow, isAuthenticated) {
                                 printerId: autoPrintConfig.printerId
                             });
                         } else {
-                            console.error('Erro ao enviar arquivo para impressão:', error);
                             throw new Error('Erro ao enviar arquivo para impressão');
                         }
                     })

@@ -7,7 +7,6 @@
 const { exec } = require("child_process");
 const fs = require("fs");
 const os = require("os");
-const axios = require("axios");
 
 // Cores para o console
 const colors = {
@@ -96,6 +95,7 @@ function execPromiseWsl(command, timeoutMs = 30000, quiet = false) {
       reject(new Error(`Tempo limite excedido (${timeoutMs / 1000}s): ${command}`));
     }, timeoutMs);
 
+    // eslint-disable-next-line no-unused-vars
     const childProcess = exec(command, { 
       maxBuffer: 1024 * 1024 * 10,
       encoding: 'utf8' // Forçar encoding UTF-8 
@@ -115,6 +115,7 @@ function execPromiseWsl(command, timeoutMs = 30000, quiet = false) {
         let normalizedStderr = "";
         if (stderr) {
           normalizedStderr = stderr
+            // eslint-disable-next-line no-control-regex
             .replace(/\x00/g, '') // Remove caracteres nulos
             .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove acentos
             .toLowerCase(); // Converte para minúsculas
@@ -189,6 +190,7 @@ function execPromise(command, timeoutMs = 30000, quiet = false) {
     }, timeoutMs);
 
     // Executar o comando
+    // eslint-disable-next-line no-unused-vars
     const childProcess = exec(fixedCommand, { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
       clearTimeout(timeout);
 
@@ -252,7 +254,7 @@ async function checkAdminPrivileges() {
       await execPromise("net session >nul 2>&1", 5000, true);
       log("Método alternativo confirma privilégios de administrador", "success");
       return true;
-    } catch (err) {
+    } catch {
       log("Método alternativo confirma que não há privilégios de administrador", "warning");
       return false;
     }
@@ -410,7 +412,7 @@ async function checkWSLStatusDetailed() {
         log("Executável WSL não encontrado no PATH", "warning");
         return { installed: false, wsl2: false, hasDistro: false, hasUbuntu: false };
       }
-    } catch (whereError) {
+    } catch {
       // Não conseguiu localizar wsl.exe
       log("WSL não está no PATH ou não está instalado", "warning");
       return { installed: false, wsl2: false, hasDistro: false, hasUbuntu: false };
@@ -429,7 +431,7 @@ async function checkWSLStatusDetailed() {
         const defaultVersion = await execPromiseWsl(getDefaultCmd, 10000, true);
         hasWsl2 = defaultVersion.trim() === "2";
         log(`Versão padrão do WSL: ${defaultVersion.trim()}`, hasWsl2 ? "success" : "warning");
-      } catch (defaultError) {
+      } catch {
         // Se não conseguir verificar a versão padrão, tentar outro método
         log("Não foi possível verificar a versão padrão do WSL, tentando método alternativo", "warning");
         try {
@@ -438,7 +440,7 @@ async function checkWSLStatusDetailed() {
           // Analisar saída para determinar a versão
           hasWsl2 = statusOutput.includes("2");
           log(`WSL${hasWsl2 ? "2" : ""} detectado via status`, hasWsl2 ? "success" : "warning");
-        } catch (statusError) {
+        } catch {
           // Falha em ambos os métodos, assumir que não é WSL2
           log("Não foi possível verificar o status do WSL, assumindo WSL1", "warning");
           hasWsl2 = false;
@@ -451,6 +453,7 @@ async function checkWSLStatusDetailed() {
         const listOutput = await execPromiseWsl(listCmd, 10000, true);
         
         // Limpar caracteres nulos e espaços extras
+        // eslint-disable-next-line no-control-regex
         const cleanedList = listOutput.replace(/\x00/g, '').trim();
         
         // Verificar se há mais de uma linha (além do cabeçalho)
@@ -516,6 +519,7 @@ async function checkUbuntuInstalled() {
     // Tentar o método detalhado primeiro
     try {
       const distributions = await execPromise("wsl --list --verbose", 10000, true);
+      // eslint-disable-next-line no-control-regex
       const cleanedDistributions = distributions.replace(/\x00/g, "").trim();
       const lines = cleanedDistributions.split("\n").filter(line => line.trim());
       
@@ -543,6 +547,7 @@ async function checkUbuntuInstalled() {
       if (stdout && (
           stdout.includes("não tem distribuições") || 
           stdout.includes("no distributions") ||
+          // eslint-disable-next-line no-control-regex
           stdout.replace(/\x00/g, '').includes("o tem distribui")
       )) {
         log("WSL está instalado, mas sem distribuições", "warning");
@@ -574,6 +579,7 @@ async function checkUbuntuInstalled() {
         if (simpleStdout && (
             simpleStdout.includes("não tem distribuições") || 
             simpleStdout.includes("no distributions") ||
+            // eslint-disable-next-line no-control-regex
             simpleStdout.replace(/\x00/g, '').includes("o tem distribui")
         )) {
           log("Confirmado: WSL não tem distribuições instaladas", "warning");
@@ -614,7 +620,7 @@ async function checkPackageInstalled(packageName) {
     const output = await execPromise(`wsl -d Ubuntu -u root dpkg -l ${packageName}`, 10000, true);
     
     return output.includes('ii');
-  } catch (error) {
+  } catch {
     return false;
   }
 }
@@ -633,7 +639,7 @@ async function checkServiceRunning(serviceName) {
   try {
     const output = await execPromise(`wsl -d Ubuntu -u root systemctl is-active ${serviceName}`, 10000, true);
     return output.trim() === 'active';
-  } catch (error) {
+  } catch {
     return false; // Serviço não está em execução ou erro
   }
 }
@@ -665,7 +671,7 @@ async function checkApiHealth() {
       } else {
         log("Porta 56258 não encontrada, API pode não estar rodando", "warning");
       }
-    } catch (netstatError) {
+    } catch {
       log("Não foi possível verificar portas abertas", "warning");
     }
     
@@ -684,7 +690,7 @@ async function checkApiHealth() {
       } else {
         log(`API respondeu com status ${curlOutput.trim()}, diferente de 200`, "warning");
       }
-    } catch (curlError) {
+    } catch {
       log("Não foi possível acessar API via curl", "warning");
     }
     
@@ -703,7 +709,7 @@ async function checkApiHealth() {
       } else {
         log("Nenhum processo Node encontrado em execução no WSL", "warning");
       }
-    } catch (psError) {
+    } catch {
       log("Erro ao verificar processos Node", "warning");
     }
     
@@ -721,7 +727,7 @@ async function checkApiHealth() {
       } else {
         log("Serviço não encontrado ou não está 'online' no PM2", "warning");
       }
-    } catch (pm2Error) {
+    } catch {
       log("Erro ao verificar PM2", "warning");
     }
     
@@ -798,7 +804,7 @@ async function checkDatabaseConfiguration() {
       ).catch(() => "");
       
       pgInstalled = pgInstallCheck.includes('postgresql');
-    } catch (checkError) {
+    } catch {
       // Tentar método alternativo
       try {
         const altCheck = await execPromise(
@@ -808,7 +814,7 @@ async function checkDatabaseConfiguration() {
         );
         
         pgInstalled = altCheck !== "not_found" && !altCheck.includes("not_found");
-      } catch (altError) {
+      } catch {
         pgInstalled = false;
       }
     }
@@ -860,7 +866,7 @@ async function checkDatabaseConfiguration() {
           postgresRunning = portCheck.length > 0 && portCheck.includes('5432');
         }
       }
-    } catch (statusError) {
+    } catch {
       postgresRunning = false;
     }
     
@@ -880,15 +886,15 @@ async function checkDatabaseConfiguration() {
         try {
           await execPromise('wsl -d Ubuntu -u root systemctl start postgresql', 15000, true);
           postgresRunning = true;
-        } catch (e1) {
+        } catch {
           try {
             await execPromise('wsl -d Ubuntu -u root service postgresql start', 15000, true);
             postgresRunning = true;
-          } catch (e2) {
+          } catch {
             try {
               await execPromise(`wsl -d Ubuntu -u root pg_ctlcluster ${version} main start`, 15000, true);
               postgresRunning = true;
-            } catch (e3) {
+            } catch {
               await execPromise(
                 `wsl -d Ubuntu -u root bash -c "mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql && su - postgres -c 'pg_ctl -D /var/lib/postgresql/${version}/main start'"`,
                 20000,
@@ -996,7 +1002,7 @@ async function checkDatabaseConfiguration() {
       );
       
       schemaExists = schemaCheck.trim().includes('1');
-    } catch (schemaError) {
+    } catch {
       // Método alternativo via namespace
       try {
         const altSchemaCheck = await execPromise(
@@ -1249,7 +1255,7 @@ async function checkOptDirectory() {
       }
     }
     return exists;
-  } catch (error) {
+  } catch {
     return false;
   }
 }
@@ -1258,7 +1264,7 @@ async function checkPM2Status() {
   try {
     const output = await execPromise('wsl -d Ubuntu -u root sudo pm2 list ', 15000, true);
     return output.includes('online') && output.includes('print_server_desktop');
-  } catch (error) {
+  } catch {
     return false;
   }
 }
@@ -1303,7 +1309,7 @@ async function shouldConfigureSystem(installState) {
         
         return true; // Precisamos configurar
       }
-    } catch (error) {
+    } catch {
       log("Erro ao verificar estado do sistema, por segurança vamos configurar", "warning");
       return true;
     }
@@ -1382,7 +1388,7 @@ async function checkIfDefaultUserConfigured() {
 }
 
 // Verificação completa do sistema
-async function checkSystemStatus(installState) {
+async function checkSystemStatus() {
   log("Iniciando verificação completa do sistema...", "header");
 
   // Run all base checks in parallel for better performance
@@ -1505,7 +1511,7 @@ async function checkWindowsPrinterInstalled() {
           correctConfig: correctConfig
         };
       }
-    } catch (wmicError) {
+    } catch {
       log('Erro ao verificar impressora via WMIC', 'warning');
     }
     

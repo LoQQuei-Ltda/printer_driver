@@ -6,7 +6,6 @@
 const installer = require('./installer');
 const verification = require('./verification');
 const readline = require('readline');
-const fs = require('fs');
 const path = require('path');
 
 // Configurar interface de readline

@@ -2,7 +2,7 @@
  * Sistema de Gerenciamento de Impressão - Aplicação Desktop
  */
 
-const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, shell, nativeImage, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, shell, screen } = require('electron');
 const { printersSync } = require('./tasks/printers');
 const { execFile, exec } = require('child_process');
 const installer = require('./installer');
@@ -159,7 +159,7 @@ async function ensureServicesRunning() {
       try {
         const status = await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${service.checkCmd}"`, 15000, true);
         isActive = status.trim() === 'active';
-      } catch (checkError) {
+      } catch {
         console.log(`Serviço ${service.name} está inativo ou não pôde ser verificado`);
         isActive = false;
       }
@@ -185,7 +185,7 @@ async function ensureServicesRunning() {
     try {
       const pm2List = await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 list"', 15000, true);
       apiRunning = pm2List.includes('online') && pm2List.includes('print_server_desktop');
-    } catch (apiCheckError) {
+    } catch {
       console.log('Serviço de API não encontrado ou PM2 não está respondendo');
       apiRunning = false;
     }
@@ -228,7 +228,7 @@ async function ensureServicesRunning() {
                 break;
               }
             }
-          } catch (pathError) {
+          } catch {
             // Ignorar erros individuais e continuar verificando
           }
         }
@@ -238,15 +238,15 @@ async function ensureServicesRunning() {
           try {
             // Método 1: PM2 resurrect (restabelece estado anterior)
             await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cd ${apiPath} && pm2 resurrect"`, 30000, true);
-          } catch (resurError) {
+          } catch {
             try {
               // Método 2: Reiniciar todos
               await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cd ${apiPath} && pm2 restart all"`, 30000, true);
-            } catch (restartError) {
+            } catch {
               try {
                 // Método 3: Iniciar com ecosystem.config.js
                 await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cd ${apiPath} && pm2 start ecosystem.config.js"`, 30000, true);
-              } catch (startError) {
+              } catch {
                 try {
                   // Método 4: Iniciar com bin/www.js diretamente
                   await verification.execPromise(`wsl -d Ubuntu -u root bash -c "cd ${apiPath} && pm2 start bin/www.js --name print_server_desktop"`, 30000, true);
@@ -299,56 +299,6 @@ async function ensureServicesRunning() {
   }
 }
 
-function interpretarMensagemLog(message, type) {
-  const lowerMessage = message.toLowerCase();
-
-  // Mapear mensagens para estados de componentes
-  if (lowerMessage.includes('analisando componentes necessários')) {
-    // Verificação completa, analisando componentes
-    return {
-      type: 'component-analysis',
-      step: 0,
-      state: 'completed',
-      progress: 20
-    };
-  }
-  else if (lowerMessage.includes('instalando aplicação') ||
-    lowerMessage.includes('instalando/configurando packages')) {
-    // Instalando aplicação (ambiente de sistema)
-    return {
-      type: 'component-install',
-      step: 5,  // Etapa "Configurando ambiente de sistema"
-      state: 'in-progress',
-      progress: 80
-    };
-  }
-  else if (lowerMessage.includes('instalando componente')) {
-    // Determinar qual componente está sendo instalado
-    let step = 5; // Ambiente por padrão
-
-    if (lowerMessage.includes('packages')) {
-      step = 5; // Ambiente
-    }
-    else if (lowerMessage.includes('cups') ||
-      lowerMessage.includes('samba') ||
-      lowerMessage.includes('firewall') ||
-      lowerMessage.includes('database') ||
-      lowerMessage.includes('service')) {
-      step = 6; // Serviços
-    }
-
-    return {
-      type: 'component-install',
-      step: step,
-      state: 'in-progress',
-      progress: step === 5 ? 80 : 90
-    };
-  }
-
-  // Sem interpretação especial para outras mensagens
-  return null;
-}
-
 // Função para verificar privilégios de administrador
 async function checkAdminPrivileges() {
   try {
@@ -359,7 +309,7 @@ async function checkAdminPrivileges() {
     // Verificar se estamos rodando como administrador
     return new Promise((resolve) => {
       exec('powershell -Command "([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)"',
-        (error, stdout, stderr) => {
+        (error, stdout) => {
           if (error) {
             console.error('Erro ao verificar privilégios:', error);
             resolve(false);
@@ -513,7 +463,7 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
-  app.on('second-instance', (event, commandLine, workingDirectory) => {
+  app.on('second-instance', () => {
     // Alguém tentou executar uma segunda instância, devemos focar nossa janela
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -571,46 +521,6 @@ function saveUserData(userData) {
   }
 }
 
-function interpretarComponentesInstalacao(message) {
-  const lowerMessage = message.toLowerCase();
-  
-  // Extrair informações sobre componentes a serem instalados
-  if (lowerMessage.includes('componentes que serão instalados:')) {
-    try {
-      const componentesMatch = lowerMessage.match(/instalados:\s*(.+)$/);
-      if (componentesMatch && componentesMatch[1]) {
-        const componentes = componentesMatch[1]
-          .split(',')
-          .map(comp => comp.trim().toLowerCase());
-        
-        console.log('Componentes detectados:', componentes);
-        
-        // Verificar quais etapas podem ser marcadas como concluídas
-        const needsWsl = componentes.includes('wsl');
-        const needsUbuntu = componentes.includes('ubuntu');
-        
-        // Se não precisa de WSL nem Ubuntu, marcar essas etapas como concluídas
-        if (!needsWsl && !needsUbuntu) {
-          if (installationWindow && !installationWindow.isDestroyed()) {
-            // Marcar as primeiras etapas como concluídas
-            for (let i = 0; i < 4; i++) {
-              sendStepUpdateToInstallWindow(i, 'completed', 'Concluído');
-            }
-            
-            // Atualizar progresso
-            sendProgressUpdateToInstallWindow(60);
-          }
-        }
-        
-        return true;
-      }
-    } catch (err) {
-      console.error('Erro ao interpretar componentes:', err);
-    }
-  }
-  
-  return false;
-}
 
 function detectComponentTypeFromMessage(message) {
   const lowerMessage = message.toLowerCase();
@@ -1201,13 +1111,13 @@ function toggleAutoPrintFromTray() {
 }
 
 // Função auxiliar para executar comandos
-function execPromise(command, timeoutMs = 60000, quiet = false) {
+function execPromise(command, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error(`Tempo limite excedido (${timeoutMs / 1000}s): ${command}`));
     }, timeoutMs);
 
-    execFile('cmd.exe', ['/c', command], { maxBuffer: 1024 * 1024 * 10 }, (error, stdout, stderr) => {
+    execFile('cmd.exe', ['/c', command], { maxBuffer: 1024 * 1024 * 10 }, (error, stdout) => {
       clearTimeout(timeout);
 
       if (error) {
@@ -1310,13 +1220,13 @@ app.on('window-all-closed', function (e) {
 // Capturar eventos do processo de renderização
 
 // Eventos de controle da janela
-ipcMain.on('minimize-window', (event) => {
+ipcMain.on('minimize-window', () => {
   if (mainWindow) {
     mainWindow.minimize();
   }
 });
 
-ipcMain.on('hide-window', (event) => {
+ipcMain.on('hide-window', () => {
   if (mainWindow) {
     mainWindow.hide();
   }
@@ -1339,13 +1249,13 @@ ipcMain.on('set-critical-operation', (event, isCritical) => {
   global.criticalOperation = isCritical;
 });
 
-ipcMain.on('check-for-updates', (event) => {
+ipcMain.on('check-for-updates', () => {
   if (updater) {
     updater.checkForUpdates();
   }
 });
 
-ipcMain.on('solicitar-iniciar-instalacao', (event, options) => {
+ipcMain.on('solicitar-iniciar-instalacao', () => {
   console.log('Recebida solicitação para iniciar instalação via interface');
   // Se a janela principal existe mas não está visível, mostrar
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -1355,7 +1265,7 @@ ipcMain.on('solicitar-iniciar-instalacao', (event, options) => {
   }
 });
 
-ipcMain.on('install-update', (event) => {
+ipcMain.on('install-update', () => {
   if (updater && updater.pendingUpdate) {
     updater.installUpdate();
   }
@@ -1494,7 +1404,7 @@ ipcMain.on('get-auto-print-config', (event) => {
   event.reply('auto-print-config', config);
 });
 
-ipcMain.on('show-auto-print-modal', (event) => {
+ipcMain.on('show-auto-print-modal', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('show-auto-print-modal');
   }
@@ -1557,7 +1467,7 @@ ipcMain.on('login', async (event, credentials) => {
 });
 
 // Abrir configurações manuais
-ipcMain.on('open-manual-settings', (event) => {
+ipcMain.on('open-manual-settings', () => {
   dialog.showMessageBox(mainWindow, {
     type: 'info',
     title: 'Configurações manuais',
@@ -2304,7 +2214,7 @@ ipcMain.on('resposta-pergunta', (event, resposta) => {
   }
 });
 
-ipcMain.on('check-system-now', (event) => {
+ipcMain.on('check-system-now', () => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('check-system-now');
   }
@@ -2366,205 +2276,6 @@ ipcMain.on('export-installation-log', (event, logContent) => {
     });
   }
 });
-
-async function installSpecificComponent(component) {
-  try {
-    // Se já está instalando componentes, não continuar
-    if (isInstallingComponents) {
-      return { success: false, message: 'Já existe uma instalação em andamento' };
-    }
-    isInstallingComponents = true;
-
-    console.log(`Instalando componente específico: ${component}`);
-
-    // Criar janela de instalação se não existir
-    if (!installationWindow || installationWindow.isDestroyed()) {
-      createInstallationWindow();
-
-      // Aguardar até que a janela de instalação esteja pronta
-      await new Promise((resolve) => {
-        if (installationWindow) {
-          installationWindow.once('ready-to-show', () => {
-            console.log('Janela de instalação pronta para exibição');
-            resolve();
-          });
-
-          // Timeout como fallback (5 segundos)
-          setTimeout(() => {
-            console.log('Timeout ao aguardar janela de instalação');
-            resolve();
-          }, 5000);
-        } else {
-          console.log('Janela de instalação não foi criada');
-          resolve();
-        }
-      });
-    }
-
-    // Enviar log para a janela de instalação
-    if (installationWindow && !installationWindow.isDestroyed()) {
-      installationWindow.webContents.send('log', {
-        type: 'header',
-        message: `Iniciando instalação do componente: ${component}`
-      });
-    }
-
-    // Configurar a função de log customizada para o installer
-    const originalLog = installer.log;
-    installer.log = function (message, type = 'info') {
-      // Log original
-      originalLog(message, type);
-
-      // Verificar mensagens específicas de instalação de componentes
-      const lowerMessage = message.toLowerCase();
-      if (lowerMessage.includes('instalando aplicação') ||
-        lowerMessage.includes('instalando/configurando packages')) {
-
-        // Forçar atualização da UI para mostrar instalação de ambiente em andamento
-        if (installationWindow && !installationWindow.isDestroyed()) {
-          // Marcar etapas anteriores como concluídas
-          for (let i = 0; i < 5; i++) {
-            installationWindow.webContents.send('step-update', {
-              step: i,
-              state: 'completed',
-              message: 'Concluído'
-            });
-          }
-
-          // Marcar etapa atual (ambiente)
-          installationWindow.webContents.send('step-update', {
-            step: 5,
-            state: 'in-progress',
-            message: 'Em andamento'
-          });
-
-          // Atualizar barra de progresso
-          installationWindow.webContents.send('progress-update', {
-            percentage: 80
-          });
-        }
-      }
-
-      // Enviar log normalmente
-      if (installationWindow && !installationWindow.isDestroyed()) {
-        installationWindow.webContents.send('log', {
-          type: type,
-          message: message
-        });
-      }
-
-      // Enviar para a interface principal também
-      event.reply('installation-log', {
-        type: type,
-        message: message
-      });
-    };
-
-
-    // Configurar a função personalizada de perguntas
-    installer.setCustomAskQuestion(function (question) {
-      return new Promise((resolve) => {
-        installer.log(`Pergunta: ${question}`, 'info');
-
-        if (installationWindow && !installationWindow.isDestroyed()) {
-          // Enviar a pergunta para a interface
-          installationWindow.webContents.send('pergunta', { question });
-
-          // Configurar receptor de resposta via IPC
-          const responseHandler = (responseEvent, resposta) => {
-            ipcMain.removeListener('resposta-pergunta', responseHandler);
-            resolve(resposta);
-          };
-
-          // Escutar pela resposta
-          ipcMain.once('resposta-pergunta', responseHandler);
-        } else {
-          // Fallback: usar dialog
-          dialog.showMessageBox({
-            type: 'question',
-            buttons: ['Sim', 'Não'],
-            defaultId: 0,
-            title: 'Instalador',
-            message: question
-          }).then(result => {
-            const response = result.response === 0 ? 's' : 'n';
-            resolve(response);
-          }).catch(() => {
-            // Em caso de erro, assumir sim
-            resolve('s');
-          });
-        }
-      });
-    });
-
-    // Executar a instalação do componente específico
-    let result = null;
-    switch (component) {
-      case 'wsl':
-        result = await installer.installWSLModern() || await installer.installWSLLegacy();
-        break;
-      case 'wsl2':
-        try {
-          await verification.execPromise('wsl --set-default-version 2', 30000);
-          result = true;
-        } catch (error) {
-          result = false;
-        }
-        break;
-      case 'ubuntu':
-        result = await installer.installUbuntu();
-        break;
-      case 'user':
-        result = await installer.configureDefaultUser();
-        break;
-      case 'packages':
-        result = await installer.installRequiredPackages();
-        break;
-      case 'services':
-        // Reiniciar os serviços básicos
-        try {
-          await verification.execPromise('wsl -d Ubuntu -u root systemctl restart cups smbd postgresql', 30000, true);
-          result = true;
-        } catch (error) {
-          result = false;
-        }
-        break;
-      case 'firewall':
-        result = await installer.configureFirewall();
-        break;
-      case 'database':
-        result = await installer.setupDatabase();
-        break;
-      case 'api':
-        try {
-          await verification.execPromise('wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart ecosystem.config.js"', 30000, true);
-          result = true;
-        } catch (error) {
-          result = false;
-        }
-        break;
-      case 'pm2':
-        result = await installer.setupPM2();
-        break;
-      case 'printer':
-        result = await installer.installWindowsPrinter();
-        break;
-      default:
-        result = false;
-    }
-
-    isInstallingComponents = false;
-
-    return {
-      success: !!result,
-      message: result ? 'Componente instalado com sucesso' : 'Falha na instalação do componente'
-    };
-  } catch (error) {
-    isInstallingComponents = false;
-    console.error(`Erro ao instalar componente ${component}:`, error);
-    return { success: false, message: error.message || 'Erro desconhecido' };
-  }
-}
 
 ipcMain.on('instalar-componente', async (event, { component }) => {
   try {

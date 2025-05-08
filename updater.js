@@ -2,7 +2,7 @@ const { app, dialog } = require('electron');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
-const { exec, spawn } = require('child_process');
+const { spawn } = require('child_process');
 const { compareVersions } = require('compare-versions');
 
 class AppUpdater {

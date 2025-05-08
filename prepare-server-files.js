@@ -9,7 +9,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
 // Configurações
 const TARGET_DIR = path.resolve(__dirname, './resources/print_server_desktop');

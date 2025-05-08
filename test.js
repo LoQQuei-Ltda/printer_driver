@@ -5,7 +5,6 @@
 
 const installer = require('./installer');
 const verification = require('./verification');
-const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 
@@ -252,7 +251,7 @@ async function runStepByStepInstallation() {
       // Obter IP local
       const localIp = (await verification.execPromise('wsl -d Ubuntu hostname -I', 10000, true)).trim().split(' ')[0];
       console.log(`\nAcesse http://${localIp}:56257 em um navegador para utilizar o sistema.\n`);
-    } catch (error) {
+    } catch {
       console.log("\nNão foi possível determinar o endereço IP. Verifique a rede e as configurações.\n");
     }
     

@@ -107,7 +107,7 @@ module.exports = {
             let macIpMapChanged = false;
 
             for (const printer of printersData) {
-                const { id, name, mac_address, ip_address: externalIp } = printer;
+                const { name, mac_address, ip_address: externalIp } = printer;
                 // Usar os valores recebidos da API, com fallbacks para os valores padrão
                 const driver = printer.driver || 'generic';  
                 const protocol = printer.protocol || 'socket';
@@ -481,7 +481,7 @@ async function detectIppEndpoint(protocol, ip, port = 631) {
  * @returns {Promise<boolean>} true se o endpoint estiver respondendo
  */
 function testEndpoint(host, port, path, secure = false) {
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
         const options = {
             hostname: host,
             port: port,
@@ -503,7 +503,7 @@ function testEndpoint(host, port, path, secure = false) {
             }
         });
         
-        req.on('error', (error) => {
+        req.on('error', () => {
             resolve(false);
         });
         
@@ -677,9 +677,7 @@ async function scanNetworkForOpenPort(networkBase, cidr, port, protocol) {
                     try {
                         const isOpen = await testPrinterConnection(ip, testPort);
                         if (isOpen) return ip;
-                    } catch (e) {
-                        // Ignorar erros de conexão
-                    }
+                    } catch { /* ignorar erro */ }
                 }
                 return null;
             })
@@ -851,12 +849,10 @@ function calculateBroadcast(ip, netmask) {
 async function testPrinterConnection(ip, port = 9100) {
     return new Promise((resolve) => {
         const socket = new net.Socket();
-        let connected = false;
         
         socket.setTimeout(CONNECTION_TIMEOUT);
         
         socket.on('connect', () => {
-            connected = true;
             socket.end();
             resolve(true);
         });
