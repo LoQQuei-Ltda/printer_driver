@@ -145,7 +145,7 @@ class InstallationManager {
     console.log('Gerenciador de instalação inicializado');
   }
 
-  processLogForSteps(message, type) {
+  processLogForSteps(message) {
     const lowerMessage = message.toLowerCase();
     console.log('Analisando mensagem para mapeamento de etapas:', lowerMessage);
     
@@ -412,7 +412,7 @@ class InstallationManager {
   }  
 
   // Helper to extract progress info from log messages
-  getProgressInfoFromMessage(message, type) {
+  getProgressInfoFromMessage(message) {
     const lowerMessage = message.toLowerCase();
     let result = { shouldUpdate: false, value: -1 };
   
@@ -722,7 +722,7 @@ class InstallationManager {
   /**
    * Função especializada para detectar padrões de componentes específicos nos logs
    */
-  detectComponentSpecificLogs(message, type) {
+  detectComponentSpecificLogs(message) {
     const lowerMessage = message.toLowerCase();
     
     // Componentes específicos que indicam etapas mais avançadas

@@ -86,7 +86,7 @@ function execPromiseWsl(command, timeoutMs = 30000, quiet = false) {
   if (!quiet) {
     log(`Executando WSL: ${command}`, "step");
   }
-
+  
   logToFile(`Executando comando WSL: ${command} (timeout: ${timeoutMs}ms)`);
   
   return new Promise((resolve, reject) => {
@@ -94,19 +94,30 @@ function execPromiseWsl(command, timeoutMs = 30000, quiet = false) {
       logToFile(`TIMEOUT WSL: Comando excedeu ${timeoutMs / 1000}s: ${command}`);
       reject(new Error(`Tempo limite excedido (${timeoutMs / 1000}s): ${command}`));
     }, timeoutMs);
-
+    
     // eslint-disable-next-line no-unused-vars
-    const childProcess = exec(command, { 
+    const childProcess = exec(command, {
       maxBuffer: 1024 * 1024 * 10,
-      encoding: 'utf8' // Forçar encoding UTF-8 
+      encoding: 'utf8' // Forçar encoding UTF-8
     }, (error, stdout, stderr) => {
       clearTimeout(timeout);
-
+      
       if (!quiet) {
         logToFile(`Saída WSL stdout: ${stdout.trim()}`);
         if (stderr) logToFile(`Saída WSL stderr: ${stderr.trim()}`);
       }
-
+      
+      // Limpar e normalizar a saída padrão
+      let cleanStdout = "";
+      if (stdout) {
+        cleanStdout = stdout
+          // eslint-disable-next-line no-control-regex
+          .replace(/\x00/g, '') // Remove caracteres nulos
+          // eslint-disable-next-line no-control-regex
+          .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove outros caracteres de controle
+          .trim();
+      }
+      
       if (error) {
         logToFile(`Erro ao executar WSL: ${command}`);
         logToFile(`Código de erro WSL: ${error.code}`);
@@ -117,33 +128,65 @@ function execPromiseWsl(command, timeoutMs = 30000, quiet = false) {
           normalizedStderr = stderr
             // eslint-disable-next-line no-control-regex
             .replace(/\x00/g, '') // Remove caracteres nulos
+            // eslint-disable-next-line no-control-regex
+            .replace(/[\x00-\x1F\x7F-\x9F]/g, '') // Remove outros caracteres de controle
             .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // Remove acentos
             .toLowerCase(); // Converte para minúsculas
         }
         
-        // Classificar erros específicos do WSL
+        // Classificar erros específicos do WSL de forma mais abrangente
         let errorType = 'unknown';
+        let errorObj = {
+          error,
+          stderr,
+          stdout: cleanStdout,
+          normalizedStderr,
+          errorType,
+          isWslError: false,
+          isWslDistroError: false,
+          needsReboot: false
+        };
         
         // Detecção de "WSL não está instalado"
-        if (normalizedStderr.includes('nao esta instalado') || 
+        if (normalizedStderr.includes('nao esta instalado') ||
             normalizedStderr.includes('not installed') ||
             normalizedStderr.includes('no est instal')) {
-          errorType = 'wsl_not_installed';
+          errorObj.errorType = 'wsl_not_installed';
+          errorObj.isWslError = true;
           logToFile(`Erro WSL: WSL não está instalado`);
         }
         
-        reject({ 
-          error, 
-          stderr, 
-          stdout, 
-          normalizedStderr,
-          errorType,
-          isWslError: true 
-        });
+        // Detecção de "Distribuição não encontrada" (caso do Ubuntu não instalado)
+        else if (normalizedStderr.includes('nao ha distribuicao') ||
+                normalizedStderr.includes('no such distribution') ||
+                normalizedStderr.includes('wsl_e_distro_not_found')) {
+          errorObj.errorType = 'distro_not_found';
+          errorObj.isWslDistroError = true;
+          logToFile(`Erro WSL: Distribuição não encontrada`);
+        }
+        
+        // Detecção de "Instalação em andamento"
+        else if (normalizedStderr.includes('instalacao ja esta em andamento') ||
+                normalizedStderr.includes('installation is already in progress')) {
+          errorObj.errorType = 'installation_in_progress';
+          logToFile(`Erro WSL: Instalação já está em andamento`);
+        }
+        
+        // Detecção de "Reboot pendente"
+        else if (normalizedStderr.includes('reboot') ||
+                normalizedStderr.includes('reinici') ||
+                normalizedStderr.includes('pending updates')) {
+          errorObj.errorType = 'reboot_needed';
+          errorObj.needsReboot = true;
+          logToFile(`Erro WSL: Reinicialização necessária`);
+        }
+        
+        reject(errorObj);
         return;
       }
       
-      resolve(stdout.trim());
+      // Sucesso - retornar saída limpa
+      resolve(cleanStdout);
     });
   });
 }
@@ -458,7 +501,7 @@ async function checkWSLStatusDetailed() {
         
         // Verificar se há mais de uma linha (além do cabeçalho)
         const lines = cleanedList.split('\n').filter(line => line.trim().length > 0);
-        hasDistro = lines.length > 1;
+        hasDistro = lines.length > 0 && cleanedList.includes('para Linux:') && cleanedList.toLowerCase().includes('ubuntu');
         
         // Verificar se Ubuntu está instalado
         hasUbuntu = lines.some(line => line.toLowerCase().includes('ubuntu'));
@@ -1262,8 +1305,9 @@ async function checkOptDirectory() {
 
 async function checkPM2Status() {
   try {
-    const output = await execPromise('wsl -d Ubuntu -u root sudo pm2 list ', 15000, true);
-    return output.includes('online') && output.includes('print_server_desktop');
+    const output = await execPromise('wsl -d Ubuntu -u root sudo pm2 list', 15000, true);
+    const output2 = await execPromise('wsl -d Ubuntu -u root pm2 list', 15000, true);
+    return output.includes('online') && output.includes('print_server_desktop') || output2.includes('online') && output2.includes('print_server_desktop');
   } catch {
     return false;
   }
@@ -1568,7 +1612,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await checkDatabaseConfiguration());
+    console.log(await checkPM2Status());
     process.exit(1)
   })()
 }

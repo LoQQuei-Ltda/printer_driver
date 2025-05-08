@@ -338,12 +338,14 @@ module.exports = {
                 }
             }
 
+            const sendPrinters = updatedPrinters.filter(printer => printer.ip_address);
+
             // 5. Enviar as impressoras atualizadas para sincronização
             console.log(`Enviando ${updatedPrinters.length} impressoras para sincronização`);
             let printersResult;
             try {
                 printersResult = await axios.post(`${appConfig.apiLocalUrl}/sync/printers`, {
-                    printers: updatedPrinters
+                    printers: sendPrinters
                 }, {
                     headers: {
                         'Content-Type': 'application/json'

@@ -1,6 +1,6 @@
 {
   "name": "print-management-installer",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "Instalador do Sistema de Gerenciamento de Impressão",
   "main": "main.js",
   "updateConfig": {
