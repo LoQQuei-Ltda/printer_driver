@@ -2505,65 +2505,83 @@ async function setupWindowsStartup() {
   verification.log('Configurando inicialização automática no Windows...', 'step');
   
   try {
-    // 1. Criar o script de inicialização
+    // 1. Criar o script de inicialização (batch)
     const scriptContent = `@echo off
 :: Script para iniciar serviços WSL ao iniciar o Windows
 :: Criado pelo instalador do Sistema de Gerenciamento de Impressão
 
-echo Iniciando serviços do Sistema de Gerenciamento de Impressão...
-echo %date% %time% - Iniciando serviços >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
+:: Redirecionar saída para arquivo de log em vez de mostrar na tela
+>> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log" (
+  echo %date% %time% - Iniciando serviços do Sistema de Gerenciamento de Impressão
 
-:: Primeiro garantir que o WSL esteja em execução
-wsl --list --running > nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
-  echo %date% %time% - WSL não está em execução, iniciando WSL >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
-  :: Tentar iniciar alguma distribuição para ativar o WSL
-  wsl -d Ubuntu -u root echo "Iniciando WSL" > nul 2>&1
-  
-  :: Aguardar um pouco para o WSL inicializar
-  timeout /t 15 /nobreak > nul
+  :: Primeiro garantir que o WSL esteja em execução
+  wsl --list --running > nul 2>&1
+  if %ERRORLEVEL% NEQ 0 (
+    echo %date% %time% - WSL não está em execução, iniciando WSL
+    :: Tentar iniciar alguma distribuição para ativar o WSL
+    wsl -d Ubuntu -u root echo "Iniciando WSL" > nul 2>&1
+    
+    :: Aguardar um pouco para o WSL inicializar
+    timeout /t 15 /nobreak > nul
+  )
+
+  :: Executar o script de verificação e inicialização de serviços no WSL
+  echo %date% %time% - Executando script de inicialização
+  wsl -d Ubuntu -u root /opt/loqquei/print_server_desktop/start-services.sh
+
+  echo %date% %time% - Serviços iniciados
+
+  :: Verificar se o serviço de impressão PDF está respondendo
+  echo Verificando API do serviço de impressão...
+  wsl -d Ubuntu -u root curl -s -o nul -w "%%{http_code}" http://localhost:56258/api > "%TEMP%\\api_status.txt" 2>nul
+
+  set /p API_STATUS=<"%TEMP%\\api_status.txt"
+  if "%API_STATUS%"=="200" (
+    echo %date% %time% - API respondendo normalmente (200 OK)
+  ) else (
+    echo %date% %time% - API não está respondendo corretamente
+    
+    :: Tentar reiniciar o serviço PM2
+    echo Tentando reiniciar serviço da API...
+    wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart all" > nul 2>&1
+  )
 )
-
-:: Executar o script de verificação e inicialização de serviços no WSL
-echo %date% %time% - Executando script de inicialização >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
-wsl -d Ubuntu -u root /opt/loqquei/print_server_desktop/start-services.sh
-
-echo %date% %time% - Serviços iniciados >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
-echo Serviços do Sistema de Gerenciamento de Impressão iniciados com sucesso!
-
-:: Verificar se o serviço de impressão PDF está respondendo
-echo Verificando API do serviço de impressão...
-wsl -d Ubuntu -u root curl -s -o nul -w "%%{http_code}" http://localhost:56258/api > "%TEMP%\\api_status.txt" 2>nul
-
-set /p API_STATUS=<"%TEMP%\\api_status.txt"
-if "%API_STATUS%"=="200" (
-  echo %date% %time% - API respondendo normalmente (200 OK) >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
-  echo API do serviço está respondendo normalmente!
-) else (
-  echo %date% %time% - API não está respondendo corretamente >> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log"
-  echo AVISO: API do serviço pode não estar funcionando corretamente.
-  
-  :: Tentar reiniciar o serviço PM2
-  echo Tentando reiniciar serviço da API...
-  wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart all" > nul 2>&1
-)
-
 exit 0`;
 
-    // Salvar o script no diretório do programa
+    // 2. Criar um wrapper VBScript para executar o script batch de forma invisível
+    const vbsContent = `' Script VBScript para executar o batch de inicialização sem mostrar janelas
+Option Explicit
+Dim WshShell, fso, scriptPath
+
+' Definir o caminho do script batch
+Set fso = CreateObject("Scripting.FileSystemObject")
+scriptPath = fso.GetParentFolderName(WScript.ScriptFullName) & "\\start-print-services.bat"
+
+' Executar o script batch sem mostrar a janela
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "cmd /c """ & scriptPath & """", 0, False
+
+Set WshShell = Nothing
+Set fso = Nothing
+`;
+
+    // Salvar os scripts no diretório do programa
     const startupDir = path.join(process.cwd(), 'startup');
     const scriptPath = path.join(startupDir, 'start-print-services.bat');
+    const vbsPath = path.join(startupDir, 'start-print-services-hidden.vbs');
     
     // Criar diretório se não existir
     if (!fs.existsSync(startupDir)) {
       fs.mkdirSync(startupDir, { recursive: true });
     }
     
-    // Escrever o script
+    // Escrever os scripts
     fs.writeFileSync(scriptPath, scriptContent, 'utf8');
-    verification.log(`Script de inicialização salvo em: ${scriptPath}`, 'success');
+    fs.writeFileSync(vbsPath, vbsContent, 'utf8');
     
-    // 2. Adicionar ao Agendador de Tarefas do Windows para iniciar automaticamente
+    verification.log(`Scripts de inicialização salvos em: ${startupDir}`, 'success');
+    
+    // 3. Adicionar ao Agendador de Tarefas do Windows para iniciar automaticamente
     verification.log('Configurando tarefa agendada do Windows...', 'step');
     
     const taskName = 'PrintServerAutoStart';
@@ -2600,7 +2618,7 @@ exit 0`;
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
+    <Hidden>true</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
@@ -2608,7 +2626,8 @@ exit 0`;
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>${scriptPath.replace(/\\/g, '\\\\')}</Command>
+      <Command>wscript.exe</Command>
+      <Arguments>${vbsPath.replace(/\\/g, '\\\\')}</Arguments>
     </Exec>
   </Actions>
 </Task>`;
@@ -2643,17 +2662,18 @@ exit 0`;
       }
     }
     
-    // 3. Adicionar também ao menu Iniciar para facilitar execução manual
+    // 4. Adicionar também ao menu Iniciar para facilitar execução manual
+    // Usar o arquivo VBS em vez do batch direto para evitar janelas
     verification.log('Adicionando atalho ao menu Iniciar...', 'step');
     
     try {
       const startupFolder = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
-      const shortcutPath = path.join(startupFolder, 'PrintServerServices.bat');
+      const shortcutPath = path.join(startupFolder, 'PrintServerServices.vbs');
       
       // Verificar se pasta existe
       if (fs.existsSync(startupFolder)) {
-        // Criar um link/cópia para o arquivo batch
-        fs.copyFileSync(scriptPath, shortcutPath);
+        // Criar um link/cópia para o arquivo VBS
+        fs.copyFileSync(vbsPath, shortcutPath);
         verification.log('Atalho adicionado à pasta Inicialização do usuário', 'success');
       } else {
         verification.log('Pasta de inicialização não encontrada, pulando criação de atalho', 'warning');
@@ -2661,6 +2681,78 @@ exit 0`;
     } catch (shortcutError) {
       verification.log(`Erro ao criar atalho: ${shortcutError.message}`, 'warning');
     }
+    
+    // 5. Criar um arquivo PS1 (PowerShell) como método alternativo
+    const ps1Content = `# Script PowerShell para iniciar serviços de impressão em segundo plano
+$ErrorActionPreference = "SilentlyContinue"
+$logFile = "$env:USERPROFILE\\AppData\\Local\\print-server-startup.log"
+
+function Write-Log {
+    param(
+        [Parameter(Mandatory=$true)]
+        [string]$Message
+    )
+    
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    "$timestamp - $Message" | Out-File -Append -FilePath $logFile
+}
+
+Write-Log "Iniciando serviços do Sistema de Gerenciamento de Impressão via PowerShell"
+
+# Verificar se o WSL está em execução
+$wslRunning = $false
+try {
+    $wslStatus = wsl --list --running
+    if ($wslStatus -match "Ubuntu") {
+        $wslRunning = $true
+        Write-Log "WSL já está em execução"
+    }
+} catch {
+    Write-Log "Erro ao verificar status do WSL: $_"
+}
+
+if (-not $wslRunning) {
+    Write-Log "WSL não está em execução, iniciando WSL"
+    try {
+        wsl -d Ubuntu -u root echo "Iniciando WSL" | Out-Null
+        Start-Sleep -Seconds 10
+        Write-Log "WSL iniciado com sucesso"
+    } catch {
+        Write-Log "Erro ao iniciar WSL: $_"
+    }
+}
+
+# Executar script de inicialização
+Write-Log "Executando script de inicialização de serviços no WSL"
+try {
+    wsl -d Ubuntu -u root /opt/loqquei/print_server_desktop/start-services.sh 2>&1 | Out-Null
+    Write-Log "Script de inicialização executado"
+} catch {
+    Write-Log "Erro ao executar script de inicialização: $_"
+}
+
+# Verificar resposta da API
+Write-Log "Verificando resposta da API"
+try {
+    $apiResponse = wsl -d Ubuntu -u root curl -s -o /dev/null -w "%{http_code}" http://localhost:56258/api
+    if ($apiResponse -eq "200") {
+        Write-Log "API respondendo normalmente (200 OK)"
+    } else {
+        Write-Log "API não está respondendo corretamente (status: $apiResponse)"
+        Write-Log "Tentando reiniciar serviço da API"
+        wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart all" | Out-Null
+    }
+} catch {
+    Write-Log "Erro ao verificar API: $_"
+}
+
+Write-Log "Processo de inicialização concluído"
+`;
+
+    const ps1Path = path.join(startupDir, 'start-print-services.ps1');
+    fs.writeFileSync(ps1Path, ps1Content, 'utf8');
+    
+    verification.log('Script PowerShell alternativo criado', 'success');
     
     verification.log('Configuração de inicialização automática concluída!', 'success');
     return true;
@@ -6148,7 +6240,7 @@ module.exports = {
 
 if (require.main === module) {
   (async () => {
-    console.log(await configureCups());
+    console.log(await setupWindowsStartup());
     process.exit(1)
   })()
 }
