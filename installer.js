@@ -346,58 +346,85 @@ function log(message, type = "info") {
 }
 
 async function installWSLDirectly() {
-  log('Iniciando instalação direta do WSL usando dism.exe...', 'header');
+  verification.log('Iniciando instalação direta do WSL usando dism.exe...', 'header');
   
   try {
     // Passo 1: Habilitar o recurso WSL via dism.exe (método mais confiável)
-    log('Habilitando recurso Microsoft-Windows-Subsystem-Linux...', 'step');
+    verification.log('Habilitando recurso Microsoft-Windows-Subsystem-Linux...', 'step');
     try {
-      await verification.execPromise(
+      await verification.execPromiseWsl(
         'dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart', 
         180000, 
         true
       );
-      log('Recurso WSL habilitado via dism.exe', 'success');
+      verification.log('Recurso WSL habilitado via dism.exe', 'success');
     } catch (dismError) {
-      log('Erro ao habilitar WSL via dism, tentando método PowerShell...', 'warning');
+      verification.log('Erro ao habilitar WSL via dism, tentando método PowerShell...', 'warning');
       try {
-        await verification.execPromise(
+        await verification.execPromiseWsl(
           'powershell -Command "Enable-WindowsOptionalFeature -Online -FeatureName Microsoft-Windows-Subsystem-Linux -All -NoRestart"', 
           180000, 
           true
         );
-        log('Recurso WSL habilitado via PowerShell', 'success');
+        verification.log('Recurso WSL habilitado via PowerShell', 'success');
       } catch (psError) {
-        log('Todos os métodos de habilitação do WSL falharam', 'error');
+        verification.log('Todos os métodos de habilitação do WSL falharam', 'error');
         return false;
       }
     }
     
     // Passo 2: Habilitar recurso VirtualMachinePlatform (necessário para WSL 2)
-    log('Habilitando recurso VirtualMachinePlatform...', 'step');
+    verification.log('Habilitando recurso VirtualMachinePlatform...', 'step');
     try {
-      await verification.execPromise(
+      await verification.execPromiseWsl(
         'dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart', 
         180000, 
         true
       );
-      log('Recurso VirtualMachinePlatform habilitado via dism.exe', 'success');
+      verification.log('Recurso VirtualMachinePlatform habilitado via dism.exe', 'success');
     } catch (dismVmError) {
-      log('Erro ao habilitar VirtualMachinePlatform via dism, tentando método PowerShell...', 'warning');
+      verification.log('Erro ao habilitar VirtualMachinePlatform via dism, tentando método PowerShell...', 'warning');
       try {
-        await verification.execPromise(
+        await verification.execPromiseWsl(
           'powershell -Command "Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart"', 
           180000, 
           true
         );
-        log('Recurso VirtualMachinePlatform habilitado via PowerShell', 'success');
+        verification.log('Recurso VirtualMachinePlatform habilitado via PowerShell', 'success');
       } catch (psVmError) {
-        log('Não foi possível habilitar VirtualMachinePlatform, mas continuando...', 'warning');
+        verification.log('Não foi possível habilitar VirtualMachinePlatform, mas continuando...', 'warning');
       }
     }
     
-    // Passo 3: Baixar e instalar pacote de atualização do kernel WSL 2
-    log('Baixando e instalando pacote de atualização do kernel WSL 2...', 'step');
+    // Verificar explicitamente se reinicialização é necessária
+    verification.log('Verificando se é necessário reiniciar o sistema...', 'step');
+    try {
+      const pendingReboot = await verification.execPromiseWsl(
+        'powershell -Command "$global:RestartRequired = $false; if ((Get-WmiObject -Class Win32_OperatingSystem).PendingSystemReboot -or (Get-ItemProperty -Path \'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\' -Name PendingFileRenameOperations -ErrorAction SilentlyContinue)) { $global:RestartRequired = $true; } else { $LastBootTime = Get-WmiObject -Class Win32_OperatingSystem | Select-Object -ExpandProperty LastBootUpTime; $LastBootTime = [System.Management.ManagementDateTimeConverter]::ToDateTime($LastBootTime); $CurrentDate = Get-Date; $TimeDiff = $CurrentDate - $LastBootTime; if ($TimeDiff.Days -eq 0 -and $TimeDiff.Hours -lt 1) { $global:RestartRequired = $false; } else { $global:RestartRequired = $true; } }; $global:RestartRequired"',
+        30000,
+        true
+      );
+      
+      if (pendingReboot.trim() === 'True') {
+        verification.log('É altamente recomendado reiniciar o sistema antes de continuar com a instalação do WSL', 'warning');
+        verification.log('Você deve reiniciar o computador e executar o instalador novamente', 'warning');
+        
+        // Atualizar estado para continuar após reinicialização
+        installState.wslInstalled = true;
+        installState.needsReboot = true;
+        saveInstallState();
+        
+        return { success: true, needsReboot: true };
+      }
+    } catch (rebootCheckError) {
+      verification.log('Erro ao verificar necessidade de reinicialização. Por precaução, recomendamos reiniciar', 'warning');
+      installState.needsReboot = true;
+      saveInstallState();
+      return { success: true, needsReboot: true };
+    }
+    
+    // Passo 3: Baixar e instalar o kernel do WSL 2
+    verification.log('Baixando e instalando pacote de atualização do kernel WSL 2...', 'step');
     const tempDir = path.join(os.tmpdir(), 'wsl-installer');
     if (!fs.existsSync(tempDir)) {
       fs.mkdirSync(tempDir, { recursive: true });
@@ -405,66 +432,120 @@ async function installWSLDirectly() {
     
     const kernelPath = path.join(tempDir, 'wsl_update_x64.msi');
     
-    // Baixar o pacote
     try {
-      await verification.execPromise(
-        `powershell -Command "Invoke-WebRequest -Uri 'https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -OutFile '${kernelPath}'" -UseBasicParsing`, 
-        180000, 
-        true
-      );
-      log('Pacote de atualização baixado com sucesso', 'success');
-    } catch (downloadError) {
-      log('Erro ao baixar pacote, tentando método alternativo...', 'warning');
+      // Tentar métodos múltiplos de download
+      verification.log('Baixando pacote do kernel...', 'step');
+      
       try {
-        await verification.execPromise(
+        // Método 1: bitsadmin (mais confiável para arquivos grandes)
+        await verification.execPromiseWsl(
           `bitsadmin /transfer WSLKernelDownload /download /priority high https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi "${kernelPath}"`, 
-          180000, 
+          300000, // 5 minutos 
           true
         );
-        log('Pacote baixado via bitsadmin', 'success');
+        verification.log('Pacote baixado via bitsadmin com sucesso', 'success');
       } catch (bitsError) {
-        log('Não foi possível baixar o pacote de atualização do kernel', 'error');
-        log('Por favor, baixe e instale manualmente: https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 'warning');
+        verification.log('Download via bitsadmin falhou, tentando PowerShell...', 'warning');
+        
+        try {
+          // Método 2: PowerShell WebClient (método alternativo)
+          await verification.execPromiseWsl(
+            `powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', '${kernelPath}')"`, 
+            300000, 
+            true
+          );
+          verification.log('Pacote baixado via PowerShell WebClient com sucesso', 'success');
+        } catch (psError) {
+          verification.log('Download via PowerShell WebClient falhou, tentando curl...', 'warning');
+          
+          try {
+            // Método 3: curl caso esteja disponível
+            await verification.execPromiseWsl(
+              `curl -L -o "${kernelPath}" https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi`, 
+              300000, 
+              true
+            );
+            verification.log('Pacote baixado via curl com sucesso', 'success');
+          } catch (curlError) {
+            verification.log('Todos os métodos de download falharam', 'error');
+            verification.log('Por favor, baixe e instale manualmente: https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 'warning');
+            
+            try {
+              // Abrir página de download para facilitar para o usuário
+              await verification.execPromiseWsl('start https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 5000, true);
+              verification.log('Página de download aberta no navegador', 'info');
+            } catch (e) { /* ignorar erro ao abrir navegador */ }
+            
+            return false;
+          }
+        }
+      }
+      
+      // Verificar se o arquivo existe após o download
+      if (!fs.existsSync(kernelPath)) {
+        verification.log('Arquivo de kernel não encontrado após download', 'error');
         return false;
       }
-    }
-    
-    // Instalar o pacote
-    try {
-      await verification.execPromise(`msiexec /i "${kernelPath}" /qn`, 120000, true);
-      log('Pacote de atualização instalado com sucesso', 'success');
-    } catch (installError) {
-      log('Erro na instalação silenciosa, tentando instalação normal...', 'warning');
+      
+      // Instalar o pacote - tentar métodos múltiplos
+      verification.log('Instalando pacote do kernel...', 'step');
+      
       try {
-        await verification.execPromise(`msiexec /i "${kernelPath}"`, 120000, true);
-        log('Instalação iniciada, pode ser necessário completar manualmente', 'warning');
+        // Método 1: msiexec silencioso
+        await verification.execPromiseWsl(`msiexec /i "${kernelPath}" /qn`, 180000, true);
+        verification.log('Kernel instalado com sucesso (modo silencioso)', 'success');
       } catch (msiError) {
-        log('Não foi possível instalar o pacote de atualização do kernel', 'error');
-        log(`Por favor, instale manualmente o arquivo: ${kernelPath}`, 'warning');
-        return false;
+        verification.log('Instalação silenciosa falhou, tentando método alternativo...', 'warning');
+        
+        try {
+          // Método 2: start /wait (alternativo)
+          await verification.execPromiseWsl(`start /wait msiexec /i "${kernelPath}" /qn`, 180000, true);
+          verification.log('Kernel instalado com sucesso (com start /wait)', 'success');
+          
+          // Aguardar um pouco para instalação concluir
+          await new Promise(resolve => setTimeout(resolve, 15000));
+        } catch (startError) {
+          verification.log('Método alternativo também falhou, tentando com interface...', 'warning');
+          
+          try {
+            // Método 3: msiexec com interface do usuário
+            await verification.execPromiseWsl(`msiexec /i "${kernelPath}"`, 60000, true);
+            verification.log('Instalação iniciada com interface. Por favor, complete manualmente se solicitado', 'warning');
+            
+            // Aguardar mais tempo para instalação manual
+            await new Promise(resolve => setTimeout(resolve, 30000));
+          } catch (guiError) {
+            verification.log('Todos os métodos de instalação falharam', 'error');
+            verification.log(`Por favor, instale manualmente o arquivo: ${kernelPath}`, 'warning');
+            return false;
+          }
+        }
       }
+    } catch (kernelError) {
+      verification.log(`Erro ao instalar kernel do WSL 2: ${kernelError.message || 'Erro desconhecido'}`, 'error');
+      return false;
     }
     
-    // Passo 4: Configurar WSL 2 como versão padrão
-    log('Configurando WSL 2 como versão padrão...', 'step');
+    // Passo 4: Definir WSL 2 como versão padrão
+    verification.log('Configurando WSL 2 como versão padrão...', 'step');
     try {
-      await verification.execPromise('wsl --set-default-version 2', 30000, true);
-      log('WSL 2 configurado como versão padrão', 'success');
+      await verification.execPromiseWsl('wsl --set-default-version 2', 30000, true);
+      verification.log('WSL 2 configurado como versão padrão', 'success');
     } catch (defaultError) {
-      log('Não foi possível configurar WSL 2 como padrão agora, será feito depois', 'warning');
+      verification.log('Erro ao definir WSL 2 como padrão. Tentaremos novamente mais tarde', 'warning');
     }
     
-    log('Instalação do WSL concluída com sucesso!', 'success');
-    log('IMPORTANTE: É recomendado reiniciar o computador antes de continuar', 'warning');
+    verification.log('Instalação do WSL concluída com sucesso!', 'success');
+    verification.log('IMPORTANTE: Se encontrar problemas, reinicie o computador e execute o instalador novamente', 'warning');
     
     installState.wslInstalled = true;
     installState.kernelUpdated = true;
     installState.wslConfigured = true;
     saveInstallState();
     
-    return { success: true, needsReboot: true };
+    return { success: true, needsReboot: false };
   } catch (error) {
-    log(`Erro durante a instalação direta do WSL: ${error.message || JSON.stringify(error)}`, 'error');
+    verification.log(`Erro durante a instalação direta do WSL: ${error.message || JSON.stringify(error)}`, 'error');
     return false;
   }
 }
@@ -494,48 +575,80 @@ async function installComponent(component, status) {
         return await installWSLLegacy();
 
       case 'wsl2':
+        // AQUI ESTÁ A CORREÇÃO:
+        // Primeiro, verificar explicitamente se o WSL está instalado
+        log('Verificando se o WSL base está instalado antes de configurar WSL 2...', 'step');
+        
+        // Usar execPromiseWsl para lidar melhor com erros em português
+        try {
+          const wslCheck = await verification.execPromiseWsl('wsl --version', 10000, true);
+          log('WSL base detectado, prosseguindo com configuração WSL 2', 'success');
+        } catch (wslCheckError) {
+          // Analisar o erro para verificar se é "WSL não instalado"
+          if (wslCheckError.isWslError && wslCheckError.errorType === 'wsl_not_installed') {
+            log('WSL não está instalado. Instalando WSL primeiro...', 'warning');
+            
+            // Tentar instalar o WSL base primeiro
+            const wslResult = await installComponent('wsl', status);
+            
+            if (!wslResult) {
+              log('Não foi possível instalar o WSL base, impossível configurar WSL 2', 'error');
+              return false;
+            }
+            
+            // Se instalou o WSL, verificar se é necessário reiniciar
+            log('WSL base instalado, verificando se é necessário reiniciar...', 'step');
+            
+            // Verificar se reboot é necessário
+            const needsReboot = await verification.execPromiseWsl(
+              'powershell -Command "$global:RestartRequired = $true; $global:RestartRequired"',
+              10000,
+              true
+            ).catch(() => "True");
+            
+            if (needsReboot.trim() === "True") {
+              log('É necessário reiniciar o sistema antes de configurar o WSL 2', 'warning');
+              return { success: false, needsReboot: true };
+            }
+          } else {
+            log('Erro desconhecido ao verificar WSL', 'error');
+            return false;
+          }
+        }
+        
+        // Agora que sabemos que o WSL está instalado, configurar WSL 2
         if (status.wslStatus && status.wslStatus.wsl2) {
-          log('WSL 2 já está configurado, pulando configuração', 'info');
+          log('WSL 2 já está configurado como padrão', 'success');
           return true;
         }
         
-        // Tentar configurar WSL 2 com mais robustez
+        // Baixar e instalar o kernel do WSL 2 se necessário
+        const kernelResult = await updateWSL2Kernel();
+        if (!kernelResult) {
+          log('Falha ao atualizar o kernel do WSL 2', 'error');
+          return false;
+        }
+        
+        // Configurar WSL 2 como padrão
+        log('Definindo WSL 2 como versão padrão...', 'step');
         try {
-          // Verificar primeiro se WSL está instalado
-          const wslCheck = await verification.execPromise('wsl --status', 15000, false)
-            .catch(() => "wsl-not-found");
-            
-          if (wslCheck === "wsl-not-found" || wslCheck.includes("não está instalado") || 
-              wslCheck.includes("not installed")) {
-            log('WSL não está instalado, não é possível configurar WSL 2', 'error');
+          await verification.execPromiseWsl('wsl --set-default-version 2', 30000, true);
+          log('WSL 2 definido como versão padrão', 'success');
+          return true;
+        } catch (defaultError) {
+          log('Erro ao definir WSL 2 como versão padrão, tentando método alternativo...', 'warning');
+          
+          // Tentar outro comando ou aguardar e tentar novamente
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          try {
+            await verification.execPromiseWsl('wsl --set-default-version 2', 30000, true);
+            log('WSL 2 configurado como padrão na segunda tentativa', 'success');
+            return true;
+          } catch (retryError) {
+            log('Todas as tentativas de configurar WSL 2 falharam', 'error');
             return false;
           }
-          
-          // Tentar configurar com múltiplas tentativas
-          let success = false;
-          let attempts = 0;
-          const maxAttempts = 3;
-          
-          while (!success && attempts < maxAttempts) {
-            attempts++;
-            try {
-              await verification.execPromise('wsl --set-default-version 2', 60000, true);
-              log(`WSL 2 configurado como versão padrão na tentativa ${attempts}`, 'success');
-              success = true;
-            } catch (setVersionError) {
-              if (attempts < maxAttempts) {
-                log(`Tentativa ${attempts} falhou, aguardando antes de tentar novamente...`, 'warning');
-                await new Promise(resolve => setTimeout(resolve, 5000));
-              } else {
-                throw setVersionError;
-              }
-            }
-          }
-          
-          return success;
-        } catch (error) {
-          log(`Erro ao configurar WSL 2: ${error.message || JSON.stringify(error)}`, 'error');
-          return false;
         }
 
       case 'ubuntu':
@@ -1260,160 +1373,116 @@ async function configureWSL2() {
 
 // Função para atualizar o kernel do WSL 2 quando necessário
 async function updateWSL2Kernel() {
-  verification.log('Atualizando kernel do WSL 2...', 'step');
+  verification.log('Baixando e instalando pacote de atualização do kernel WSL 2...', 'step');
   
+  const tempDir = path.join(os.tmpdir(), 'wsl-installer');
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
+  
+  const kernelPath = path.join(tempDir, 'wsl_update_x64.msi');
+  
+  // Tentar através do bitsadmin (mais confiável para downloads grandes)
   try {
-    // Criar diretório temporário
-    const tempDir = path.join(os.tmpdir(), 'wsl-installer');
-    if (!fs.existsSync(tempDir)) {
-      fs.mkdirSync(tempDir, { recursive: true });
-    }
-
-    const kernelUpdatePath = path.join(tempDir, 'wsl_update_x64.msi');
-    
-    // Tentar vários métodos de download para maior resiliência
-    const downloadMethods = [
-      // Método 1: PowerShell Invoke-WebRequest
-      async () => {
+    verification.log('Baixando pacote via bitsadmin...', 'info');
+    await verification.execPromiseWsl(
+      `bitsadmin /transfer WSLUpdateDownload /download /priority high https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi "${kernelPath}"`, 
+      300000, // 5 minutos
+      true
+    );
+    verification.log('Download do pacote completo via bitsadmin', 'success');
+  } catch (bitsError) {
+    // Alternativa 1: PowerShell WebClient (mais moderno)
+    try {
+      verification.log('Tentando download via PowerShell WebClient...', 'info');
+      await verification.execPromiseWsl(
+        `powershell -Command "(New-Object System.Net.WebClient).DownloadFile('https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', '${kernelPath}')"`, 
+        300000, 
+        true
+      );
+      verification.log('Download do pacote completo via PowerShell WebClient', 'success');
+    } catch (psError) {
+      // Alternativa 2: PowerShell Invoke-WebRequest (mais compatível)
+      try {
+        verification.log('Tentando download via PowerShell Invoke-WebRequest...', 'info');
+        await verification.execPromiseWsl(
+          `powershell -Command "Invoke-WebRequest -Uri 'https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -OutFile '${kernelPath}' -UseBasicParsing"`, 
+          300000, 
+          true
+        );
+        verification.log('Download do pacote completo via PowerShell Invoke-WebRequest', 'success');
+      } catch (iwrError) {
+        // Alternativa 3: curl
         try {
-          verification.log('Baixando kernel via PowerShell...', 'info');
-          await verification.execPromise(
-            `powershell -Command "Invoke-WebRequest -Uri 'https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi' -OutFile '${kernelUpdatePath}' -UseBasicParsing"`, 
-            300000, // 5 minutos
-            true
-          );
-          return true;
-        } catch (e) {
-          verification.log('Download via PowerShell falhou', 'warning');
-          return false;
-        }
-      },
-      // Método 2: BITS
-      async () => {
-        try {
-          verification.log('Baixando kernel via BITS...', 'info');
-          await verification.execPromise(
-            `bitsadmin /transfer WSLUpdateDownload /download /priority normal https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi "${kernelUpdatePath}"`, 
+          verification.log('Tentando download via curl...', 'info');
+          await verification.execPromiseWsl(
+            `curl -L -o "${kernelPath}" https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi`, 
             300000, 
             true
           );
-          return true;
-        } catch (e) {
-          verification.log('Download via BITS falhou', 'warning');
-          return false;
-        }
-      },
-      // Método 3: curl se disponível
-      async () => {
-        try {
-          verification.log('Baixando kernel via curl...', 'info');
-          await verification.execPromise(
-            `curl -L -o "${kernelUpdatePath}" https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi`, 
-            300000, 
-            true
-          );
-          return true;
-        } catch (e) {
-          verification.log('Download via curl falhou', 'warning');
+          verification.log('Download do pacote completo via curl', 'success');
+        } catch (curlError) {
+          verification.log('Falha em todos os métodos de download do kernel', 'error');
+          verification.log('Por favor, baixe e instale manualmente: https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 'warning');
+          
+          // Abrir a página de download para o usuário
+          try {
+            await verification.execPromiseWsl('start https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 5000, true);
+            verification.log('Página de download aberta no navegador', 'info');
+          } catch (e) {}
+          
           return false;
         }
       }
-    ];
-    
-    let downloadSuccess = false;
-    
-    // Tentar cada método de download até um funcionar
-    for (const method of downloadMethods) {
-      if (await method()) {
-        downloadSuccess = true;
-        break;
-      }
     }
-    
-    // Se o download falhou com todos os métodos
-    if (!downloadSuccess) {
-      verification.log('Todos os métodos de download falharam', 'error');
-      // Tentar abrir URL para download manual como último recurso
-      await verification.execPromise('start https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 5000, true);
-      verification.log('URL de download aberta no navegador, baixe manualmente e reinicie o instalador', 'warning');
-      return false;
-    }
-    
-    // Verificar se o arquivo existe
-    if (!fs.existsSync(kernelUpdatePath)) {
-      verification.log('Arquivo de atualização do kernel não foi encontrado após download', 'error');
-      return false;
-    }
-    
-    // Instalar o kernel
-    verification.log('Instalando o kernel do WSL 2...', 'step');
-    
-    // Métodos de instalação
-    const installMethods = [
-      // Método 1: msiexec silencioso
-      async () => {
-        try {
-          verification.log('Instalando kernel via msiexec /qn...', 'info');
-          await verification.execPromise(`msiexec /i "${kernelUpdatePath}" /qn`, 180000, true);
-          return true;
-        } catch (e) {
-          verification.log('Instalação silenciosa falhou', 'warning');
-          return false;
-        }
-      },
-      // Método 2: msiexec alternativo
-      async () => {
-        try {
-          verification.log('Instalando kernel via start /wait...', 'info');
-          await verification.execPromise(`start /wait msiexec /i "${kernelUpdatePath}" /qn`, 180000, true);
-          return true;
-        } catch (e) {
-          verification.log('Método alternativo falhou', 'warning');
-          return false;
-        }
-      },
-      // Método 3: msiexec com interface
-      async () => {
-        try {
-          verification.log('Instalando kernel com interface...', 'info');
-          await verification.execPromise(`msiexec /i "${kernelUpdatePath}"`, 180000, true);
-          // Aguardar mais tempo para instalação manual
-          await new Promise(resolve => setTimeout(resolve, 30000));
-          return true;
-        } catch (e) {
-          verification.log('Instalação com interface falhou', 'warning');
-          return false;
-        }
-      }
-    ];
-    
-    let installSuccess = false;
-    
-    // Tentar cada método de instalação
-    for (const method of installMethods) {
-      if (await method()) {
-        installSuccess = true;
-        break;
-      }
-    }
-    
-    if (installSuccess) {
-      verification.log('Kernel do WSL 2 instalado com sucesso', 'success');
-      installState.kernelUpdated = true;
-      saveInstallState();
-      
-      // Aguardar um pouco para que as alterações façam efeito
-      await new Promise(resolve => setTimeout(resolve, 10000));
-      return true;
-    } else {
-      verification.log('Não foi possível instalar o kernel do WSL 2 automaticamente', 'error');
-      verification.log('Você precisa baixar e instalar manualmente:', 'warning');
-      verification.log('https://wslstorestorage.blob.core.windows.net/wslblob/wsl_update_x64.msi', 'warning');
-      return false;
-    }
-  } catch (error) {
-    verification.log(`Erro ao atualizar kernel do WSL 2: ${error.message || JSON.stringify(error)}`, 'error');
+  }
+  
+  // Verificar se o arquivo foi baixado
+  if (!fs.existsSync(kernelPath)) {
+    verification.log('Arquivo do kernel não encontrado após download', 'error');
     return false;
+  }
+  
+  // Instalar o pacote - tentar vários métodos
+  // Método 1: msiexec /qn (silencioso)
+  try {
+    verification.log('Instalando pacote do kernel (silencioso)...', 'step');
+    await verification.execPromiseWsl(`msiexec /i "${kernelPath}" /qn`, 180000, true);
+    verification.log('Instalação do kernel concluída com sucesso', 'success');
+    return true;
+  } catch (installError) {
+    verification.log('Erro ao instalar via msiexec /qn, tentando método alternativo...', 'warning');
+    
+    // Método 2: msiexec com start /wait
+    try {
+      verification.log('Instalando pacote do kernel (com start /wait)...', 'step');
+      await verification.execPromiseWsl(`start /wait msiexec /i "${kernelPath}" /qn`, 180000, true);
+      verification.log('Instalação do kernel via start /wait concluída', 'success');
+      
+      // Aguardar um tempo para a instalação completar
+      verification.log('Aguardando 15 segundos para a instalação completar...', 'info');
+      await new Promise(resolve => setTimeout(resolve, 15000));
+      
+      return true;
+    } catch (startError) {
+      // Método 3: msiexec com interface (último recurso)
+      try {
+        verification.log('Instalando pacote do kernel (com interface)...', 'step');
+        await verification.execPromiseWsl(`msiexec /i "${kernelPath}"`, 180000, true);
+        verification.log('Instalação do kernel iniciada com interface', 'warning');
+        verification.log('Por favor, complete a instalação na janela que foi aberta', 'warning');
+        
+        // Aguardar mais tempo para instalação manual
+        verification.log('Aguardando 60 segundos para instalação manual...', 'info');
+        await new Promise(resolve => setTimeout(resolve, 60000));
+        
+        return true;
+      } catch (guiError) {
+        verification.log('Todos os métodos de instalação falharam', 'error');
+        verification.log(`Por favor, instale manualmente o arquivo: ${kernelPath}`, 'warning');
+        return false;
+      }
+    }
   }
 }
 
