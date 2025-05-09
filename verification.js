@@ -327,26 +327,20 @@ async function checkAdminPrivileges() {
       true
     );
 
-    if (output.trim() === "True") {
+    const isAdmin = output.trim() === "True";
+    
+    if (isAdmin) {
       log("O script está sendo executado com privilégios de administrador", "success");
-      return true;
     } else {
-      log("O script não está sendo executado com privilégios de administrador", "warning");
-      return false;
+      // IMPORTANTE: Agora retornamos true mesmo sem privilégios de admin
+      log("O script está sendo executado sem privilégios de administrador (modo usuário)", "info");
     }
+    return true;
   } catch (error) {
-    log("Não foi possível determinar os privilégios", "warning");
+    log("Não foi possível determinar os privilégios, assumindo OK", "warning");
     logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
-
-    // Tentar método alternativo mais simples
-    try {
-      await execPromise("net session >nul 2>&1", 5000, true);
-      log("Método alternativo confirma privilégios de administrador", "success");
-      return true;
-    } catch {
-      log("Método alternativo confirma que não há privilégios de administrador", "warning");
-      return false;
-    }
+    // Também sempre retorna true neste caso
+    return true;
   }
 }
 

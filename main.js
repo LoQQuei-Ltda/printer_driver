@@ -325,26 +325,6 @@ async function checkAdminPrivileges() {
   }
 }
 
-// Elevar privilégios do aplicativo (reiniciar como administrador)
-function elevatePrivileges() {
-  try {
-    const appPath = process.execPath;
-    const args = process.argv.slice(1);
-
-    // Usar PowerShell para executar como administrador
-    execFile('powershell.exe', [
-      '-Command',
-      `Start-Process -FilePath '${appPath.replace(/(\s+)/g, '`$1')}' -ArgumentList '${args.join(' ')}' -Verb RunAs`
-    ]);
-
-    // Encerrar o processo atual
-    setTimeout(() => app.exit(), 1000);
-  } catch (error) {
-    console.error('Erro ao elevar privilégios:', error);
-    return false;
-  }
-}
-
 // Verificar e configurar o ambiente necessário (WSL e Ubuntu)
 async function setupEnvironment() {
   try {
@@ -1132,26 +1112,23 @@ function execPromise(command, timeoutMs = 60000) {
 // Este método será chamado quando o Electron terminar a inicialização
 app.whenReady().then(async () => {
   // Verificar se temos privilégios de administrador
-  const isAdmin = await checkAdminPrivileges();
-
-  if (!isAdmin) {
-    // Mostrar diálogo perguntando se deseja continuar com elevação
-    const choice = await dialog.showMessageBox({
-      type: 'question',
-      title: 'Privilégios de Administrador',
-      message: 'Este aplicativo precisa de privilégios de administrador',
-      detail: 'Para instalação e configuração adequada dos componentes, é necessário executar como administrador. Deseja continuar?',
-      buttons: ['Sim', 'Não'],
-      defaultId: 0
-    });
-
-    if (choice.response === 0) {
-      // Tentar elevar privilégios
-      elevatePrivileges();
-      return; // Encerra este processo, o novo será executado como admin
+  const setupWSL = process.argv.includes('--setup-wsl');
+  
+  if (setupWSL) {
+    // Somente verificar privilégios para operações específicas que realmente precisam
+    const isAdmin = await checkAdminPrivileges();
+    if (!isAdmin) {
+      dialog.showMessageBox({
+        type: 'error',
+        title: 'Privilégios de Administrador',
+        message: 'Esta operação específica precisa ser executada como administrador.',
+        detail: 'Por favor, execute a aplicação como administrador quando usar o parâmetro --setup-wsl.',
+        buttons: ['OK']
+      }).then(() => {
+        app.exit(1);
+      });
+      return;
     }
-    // Se o usuário não quiser elevar, continuaremos sem privilégios de admin
-    console.log('Continuando sem privilégios de administrador (algumas funcionalidades podem não funcionar)');
   }
 
   // Inicialização normal do aplicativo
@@ -1635,32 +1612,6 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
 
     isInstallingInProgress = true;
     console.log('Iniciando processo de instalação...');
-
-    // Verificar se está sendo executado como administrador
-    const isAdmin = await checkAdminPrivileges();
-    if (!isAdmin) {
-      isInstallingInProgress = false;
-
-      const choice = await dialog.showMessageBox({
-        type: 'question',
-        title: 'Privilégios de Administrador',
-        message: 'Esta operação precisa ser executada como administrador.',
-        detail: 'Deseja tentar executar com privilégios elevados?',
-        buttons: ['Sim', 'Não'],
-        defaultId: 0
-      });
-
-      if (choice.response === 0) {
-        // Tentar elevar privilégios
-        elevatePrivileges();
-      }
-
-      event.reply('installation-log', {
-        type: 'error',
-        message: 'Privilégios de administrador necessários para instalação.'
-      });
-      return;
-    }
 
     // Determinar o tipo de instalação
     const forceReinstall = options.forceReinstall === true;
@@ -2296,31 +2247,6 @@ ipcMain.on('instalar-componente', async (event, { component }) => {
       type: 'header',
       message: `Iniciando instalação do componente: ${component}`
     });
-
-    // Check admin privileges
-    const isAdmin = await checkAdminPrivileges();
-    if (!isAdmin) {
-      isInstallingComponents = false;
-
-      const choice = await dialog.showMessageBox({
-        type: 'question',
-        title: 'Privilégios de Administrador',
-        message: 'Esta operação precisa ser executada como administrador.',
-        detail: 'Deseja tentar executar com privilégios elevados?',
-        buttons: ['Sim', 'Não'],
-        defaultId: 0
-      });
-
-      if (choice.response === 0) {
-        elevatePrivileges();
-      }
-
-      event.reply('componente-instalado', {
-        success: false,
-        message: 'Privilégios de administrador necessários'
-      });
-      return;
-    }
 
     // Use cached status if available to avoid redundant checks
     const status = global.lastSystemStatus || await verification.checkSystemStatus();

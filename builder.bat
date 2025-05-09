@@ -32,11 +32,11 @@ if not exist "%PROGRAMFILES(X86)%\Inno Setup 6\ISCC.exe" (
   )
 )
 
-echo Limpando diretórios de build anteriores...
-if exist "dist" (
-  echo - Removendo pasta dist...
-  rmdir /s /q dist
-)
+@REM echo Limpando diretórios de build anteriores...
+@REM if exist "dist" (
+@REM   echo - Removendo pasta dist...
+@REM   rmdir /s /q dist
+@REM )
 
 @REM if exist "node_modules" (
 @REM   echo - Removendo node_modules...
@@ -72,14 +72,14 @@ if exist "Output" (
 @REM echo - Instalando dependências com limpeza forçada...
 @REM call npm install --force
 
-echo.
-echo Construindo aplicação Electron...
-call npm run build
-if %ERRORLEVEL% NEQ 0 (
-  echo Erro: Não foi possível construir a aplicação Electron
-  pause
-  exit /b 1
-)
+@REM echo.
+@REM echo Construindo aplicação Electron...
+@REM call npm run build
+@REM if %ERRORLEVEL% NEQ 0 (
+@REM   echo Erro: Não foi possível construir a aplicação Electron
+@REM   pause
+@REM   exit /b 1
+@REM )
 
 echo.
 echo Compilando o instalador com Inno Setup...

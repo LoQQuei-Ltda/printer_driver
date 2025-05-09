@@ -170,7 +170,7 @@ $backgroundJob = Start-Job -ScriptBlock {
         Job-Log "Instalando Ubuntu..."
         try {
             # Instalar o Ubuntu
-            wsl --install -d Ubuntu
+            wsl --install -d Ubuntu --root
             
             # Verificar se a instalação foi bem-sucedida
             if ($LASTEXITCODE -ne 0) {

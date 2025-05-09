@@ -1992,8 +1992,8 @@ async function installUbuntu(attemptCount = 0) {
     await new Promise(resolve => setTimeout(resolve, 10000));
     
     // Executar o comando de instalação
-    verification.log('Executando: wsl --install -d Ubuntu', 'info');
-    await verification.execPromise('wsl --install -d Ubuntu', 1200000, true); // 20 minutos de timeout
+    verification.log('Executando: wsl --install -d Ubuntu --root', 'info');
+    await verification.execPromise('wsl --install -d Ubuntu --root', 1200000, true); // 20 minutos de timeout
     
     // Se chegamos aqui, o comando não lançou erro - marcar como tentativa executada
     installationAttempted = true;
@@ -2109,7 +2109,7 @@ async function installUbuntu(attemptCount = 0) {
     }
 
     try {
-      await verification.execPromise('wsl --install -d Ubuntu', 
+      await verification.execPromise('wsl --install -d Ubuntu --root', 
         1200000, // 20 minutos
         true);
     } catch (error) {

@@ -71,9 +71,17 @@ class AppUpdater {
         return false;
       }
       
-      // We have an update
       console.log(`Update available: ${updateInfo.version}`);
-      this.pendingUpdate = updateInfo;
+      
+      const updateLocal = path.join(app.getPath('userData'), 'Updates');
+      if (!fs.existsSync(updateLocal)) {
+        fs.mkdirSync(updateLocal, { recursive: true });
+      }
+      
+      this.pendingUpdate = {
+        ...updateInfo,
+        downloadDir: updateLocal
+      };
       
       this.sendToRenderer('update-status', { 
         status: 'update-available',
@@ -109,7 +117,7 @@ class AppUpdater {
       });
       
       // Download the update executable
-      const installerPath = path.join(this.updateDir, `Installer_${updateInfo.version}.exe`);
+      const installerPath = path.join(updateInfo.downloadDir || app.getPath('userData') + '/Updates', `Installer_${updateInfo.version}.exe`);
       
       try {
         // Download the installer file
@@ -131,8 +139,8 @@ class AppUpdater {
       
       this.sendToRenderer('update-status', { 
         status: 'installing',
-        message: 'Preparando instalação...' 
-      });
+        message: 'Preparando instalação sem elevação...' 
+      });      
       
       // Verify the installer exists
       if (!fs.existsSync(installerPath)) {
@@ -181,25 +189,32 @@ class AppUpdater {
     try {
       const installerPath = this.pendingUpdate.installerPath;
       
-      // Verify the installer still exists
+      // Verificar se o instalador ainda existe
       if (!fs.existsSync(installerPath)) {
         throw new Error('O arquivo de instalação não foi encontrado');
       }
       
       console.log(`Launching installer: ${installerPath}`);
       
-      // Run the installer with silent flags - adjust flags as needed for your installer
-      const installerProcess = spawn(installerPath, ['/SILENT', '/CLOSEAPPLICATIONS'], {
+      // MODIFICADO: Run the installer with flags that don't require elevation
+      const installerProcess = spawn(installerPath, [
+        '/SILENT', 
+        '/NORESTART', 
+        '/CLOSEAPPLICATIONS',
+        '/RESTARTAPPLICATIONS', 
+        '/LANG=brazilianportuguese',
+        '/CURRENTUSER'
+      ], {
         detached: true,
         stdio: 'ignore'
-      });
+      });  
       
       installerProcess.unref();
       
       // Quit the app to allow the installer to update files
       setTimeout(() => app.quit(), 1000);
       
-      return true;
+      return true;  
     } catch (error) {
       verification.logToFile(`Erro ao executar instalador do updater: ${JSON.stringify(error)}`);
       console.error('Error launching installer:', error);
