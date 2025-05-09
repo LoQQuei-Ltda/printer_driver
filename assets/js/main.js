@@ -285,21 +285,35 @@ class PrintManager {
 
     if (this.dom.autoPrintToggleButton) {
       this.dom.autoPrintToggleButton.addEventListener('click', (event) => {
-        this.showAutoPrintModal();
-      });
-    }
-
-    if (this.dom.autoPrintToggle) {
-      this.dom.autoPrintToggle.addEventListener('change', (event) => {
-        event.stopPropagation();
+        if (event.target === this.dom.autoPrintToggle || 
+            event.target.closest('.toggle-container')) {
+          return;
+        }
         
-        if (!event.target.checked) {
+        if (this.state.autoPrintEnabled) {
           this.deactivateAutoPrint();
         } else {
           this.showAutoPrintModal();
         }
       });
+    
     }
+    
+    if (this.dom.autoPrintToggle) {    
+      this.dom.autoPrintToggle.addEventListener('click', (event) => {
+        event.stopPropagation();
+        
+        if (this.state.autoPrintEnabled) {
+          this.deactivateAutoPrint();
+          
+          setTimeout(() => {
+            this.dom.autoPrintToggle.checked = false;
+          }, 0);
+        } else {
+          this.showAutoPrintModal();
+        }
+      });    
+    }      
 
     // Modal de impressão automática
     if (this.dom.autoPrintModalCloseBtn) {
@@ -384,7 +398,15 @@ class PrintManager {
     
     this.showAutoPrintModal();
   }
-
+  
+  handleAutoPrintToggle() {
+    if (this.state.autoPrintEnabled) {
+      this.deactivateAutoPrint();
+    } else {
+      this.showAutoPrintModal();
+    }
+  }  
+  
   deactivateAutoPrint() {
     this.state.autoPrintEnabled = false;
     this.state.defaultPrinterId = null;

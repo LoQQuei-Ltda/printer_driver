@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const { compareVersions } = require('compare-versions');
+const verification = require('./verification');
 
 class AppUpdater {
   constructor(mainWindow) {
@@ -34,6 +35,7 @@ class AppUpdater {
       
       if (!response.data || !response.data.data) {
         console.log('Invalid update response from server');
+        verification.logToFile(`Resposta de atualização inválida do servidor: ${JSON.stringify(response.response)}`);
         if (!silent) {
           this.sendToRenderer('update-status', { 
             status: 'check-error',
@@ -86,6 +88,7 @@ class AppUpdater {
       
       return true;
     } catch (error) {
+      verification.logToFile(`Erro ao verificar atualizações: ${JSON.stringify(error)}`);
       console.error('Error checking for updates:', error);
       if (!silent) {
         this.sendToRenderer('update-status', { 
@@ -121,6 +124,7 @@ class AppUpdater {
         fs.writeFileSync(installerPath, Buffer.from(response.data));
         console.log(`Update installer downloaded to: ${installerPath}`);
       } catch (downloadError) {
+        verification.logToFile(`Erro ao baixar atualização: ${JSON.stringify(downloadError)}`);
         console.error('Error downloading update:', downloadError);
         throw new Error(`Falha ao baixar atualização: ${downloadError.message}`);
       }
@@ -157,6 +161,7 @@ class AppUpdater {
       
       return true;
     } catch (error) {
+      verification.logToFile(`Erro ao executar instalador/updater: ${JSON.stringify(error)}`);
       console.error('Error downloading/preparing update:', error);
       this.isUpdateInProgress = false;
       this.sendToRenderer('update-status', { 
@@ -196,6 +201,7 @@ class AppUpdater {
       
       return true;
     } catch (error) {
+      verification.logToFile(`Erro ao executar instalador do updater: ${JSON.stringify(error)}`);
       console.error('Error launching installer:', error);
       this.sendToRenderer('update-status', { 
         status: 'update-error',

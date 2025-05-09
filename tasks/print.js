@@ -1,4 +1,5 @@
 const axios = require('axios');
+const verification = require('../verification');
 
 module.exports = {
     printSync: async () => {
@@ -38,6 +39,7 @@ module.exports = {
                     })
                 } catch (error) {
                     console.log(error);
+                    verification.logToFile(`Erro ao sincronizar impressão: ${JSON.stringify(error?.response)}`);
                 }
 
                 if (!fileResponse || fileResponse.status !== 200) {
@@ -74,6 +76,7 @@ module.exports = {
             return
         } catch (error) {
             console.log(error);
+            verification.logToFile(`Erro geral ao sincronizar impressão: ${JSON.stringify(error)}`);
         }
     }
 }

@@ -46,6 +46,52 @@ function initLogFile(logFilePath) {
 function logToFile(message) {
   try {
     if (LOG_FILE) {
+      // Verificar o tamanho atual do arquivo antes de escrever
+      const maxSizeBytes = 5 * 1024 * 1024; // 5MB em bytes
+      
+      // Verificar se o arquivo existe e obter suas estatísticas
+      if (fs.existsSync(LOG_FILE)) {
+        const stats = fs.statSync(LOG_FILE);
+        
+        // Se o arquivo exceder o limite, rotacioná-lo
+        if (stats.size >= maxSizeBytes) {
+          // Criar backup do arquivo atual
+          const backupPath = `${LOG_FILE}.old`;
+          
+          // Remover backup antigo se existir
+          if (fs.existsSync(backupPath)) {
+            try {
+              fs.unlinkSync(backupPath);
+            } catch (unlinkErr) {
+              console.error(`Erro ao remover arquivo de backup antigo: ${unlinkErr.message}`);
+            }
+          }
+          
+          // Renomear arquivo atual para backup
+          try {
+            fs.renameSync(LOG_FILE, backupPath);
+          } catch (renameErr) {
+            console.error(`Erro ao renomear arquivo de log: ${renameErr.message}`);
+            
+            // Se falhar o rename, tentar limpar o arquivo
+            try {
+              fs.writeFileSync(LOG_FILE, '', 'utf8');
+            } catch (writeErr) {
+              console.error(`Erro ao limpar arquivo de log: ${writeErr.message}`);
+            }
+          }
+          
+          // Iniciar novo arquivo
+          try {
+            fs.writeFileSync(LOG_FILE, `Log iniciado em ${new Date().toISOString()} (arquivo anterior foi rotacionado por exceder 10MB)\n`, 'utf8');
+            console.log(`Arquivo de log excedeu 10MB, rotacionado para ${backupPath}`);
+          } catch (initErr) {
+            console.error(`Erro ao inicializar novo arquivo de log: ${initErr.message}`);
+          }
+        }
+      }
+      
+      // Adicionar a nova mensagem ao arquivo
       fs.appendFileSync(LOG_FILE, `${message}\n`, "utf8");
     }
   } catch (err) {

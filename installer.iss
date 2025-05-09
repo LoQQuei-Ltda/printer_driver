@@ -1,5 +1,5 @@
 #define MyAppName "Gerenciamento de Impressão - LoQQuei"
-#define MyAppVersion "1.0.4"
+#define MyAppVersion "1.0.5"
 #define MyAppPublisher "LoQQuei"
 #define MyAppURL "https://loqquei.com.br"
 #define MyAppExeName "Gerenciamento de Impressão - LoQQuei.exe"

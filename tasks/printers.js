@@ -8,11 +8,12 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const verification = require('../verification');
 
 // Configuração
 const PARALLELISM = 50;
-const CONNECTION_TIMEOUT = 200;
-const MAX_EXECUTION_TIME = 5 * 60 * 1000;
+const CONNECTION_TIMEOUT = 500;
+const MAX_EXECUTION_TIME = 10 * 60 * 1000;
 
 module.exports = {
     printersSync: async () => {
@@ -22,6 +23,7 @@ module.exports = {
             // Definir timeout global para não bloquear por muito tempo
             const globalTimeout = setTimeout(() => {
                 console.log('Tempo máximo de execução atingido, interrompendo...');
+                verification.logToFile('Tempo máximo de execução atingido, interrompendo...');
                 process.exit(1);
             }, MAX_EXECUTION_TIME);
             
@@ -39,6 +41,7 @@ module.exports = {
                     console.log('Mapeamento MAC->IP carregado:', macToIpMap);
                 }
             } catch (error) {
+                verification.logToFile(`Erro ao carregar mapeamento MAC->IP, ${error.message}`);
                 console.error('Erro ao carregar mapeamento MAC->IP:', error);
                 // Continuar com mapa vazio se houver erro
                 macToIpMap = {};
@@ -54,6 +57,7 @@ module.exports = {
                     }
                 });
             } catch (error) {
+                verification.logToFile(`Erro ao obter impressoras do servidor, ${JSON.stringify(error?.response)}`);
                 console.log('Erro ao obter impressoras do servidor:', error?.response?.data);
                 clearTimeout(globalTimeout);
                 return;
@@ -70,6 +74,7 @@ module.exports = {
                 printersData = [printersData];
             }
 
+            verification.logToFile(`Recebidas ${printersData.length} impressoras do servidor central`);
             console.log(`Recebidas ${printersData.length} impressoras do servidor central`);
             
             // Mostrar todos os MACs para facilitar diagnóstico
@@ -98,6 +103,7 @@ module.exports = {
                     // Imprimir a tabela ARP após cada rede
                     await dumpArpTable();
                 } catch (error) {
+                    verification.logToFile(`Erro no ping scan da rede ${network.network}: ${error.message}`);
                     console.log(`Erro no ping scan da rede ${network.network}: ${error.message}`);
                 }
             }
@@ -150,6 +156,7 @@ module.exports = {
                                 console.log(`Nenhum endpoint IPP válido encontrado em ${storedIp}:${port}`);
                             }
                         } catch (error) {
+                            verification.logToFile(`Erro ao verificar endpoint IPP em ${storedIp}:`, error.message);
                             console.warn(`Erro ao verificar endpoint IPP em ${storedIp}:`, error.message);
                         }
                     } else {
@@ -187,6 +194,7 @@ module.exports = {
                                     console.log(`Nenhum endpoint IPP válido encontrado em ${foundIP}:${port}`);
                                 }
                             } catch (error) {
+                                verification.logToFile(`Erro ao verificar endpoint IPP em ${foundIP}:`, error.message);
                                 console.warn(`Erro ao verificar endpoint IPP em ${foundIP}:`, error.message);
                             }
                         } else {
@@ -203,6 +211,7 @@ module.exports = {
                     // Se ainda não encontrou, fazer escaneamento de portas em todas as redes
                     if (!internalIp) {
                         for (const network of localNetworks) {
+                            verification.logToFile(`Escaneando rede ${network.network}/${network.cidr} por dispositivos com porta aberta...`);
                             console.log(`Escaneando rede ${network.network}/${network.cidr} por dispositivos com porta aberta...`);
                             
                             // Tentar a porta específica da impressora
@@ -239,6 +248,7 @@ module.exports = {
                                                     console.log(`Nenhum endpoint IPP válido encontrado em ${ip}:${port}, mas a porta está aberta`);
                                                 }
                                             } catch (error) {
+                                                verification.logToFile(`Erro ao verificar endpoint IPP em ${ip}:`, error.message);
                                                 console.warn(`Erro ao verificar endpoint IPP em ${ip}:`, error.message);
                                             }
                                         }
@@ -280,6 +290,7 @@ module.exports = {
                                         console.log(`Nenhum endpoint IPP válido encontrado no IP externo ${externalIp}:${port}`);
                                     }
                                 } catch (error) {
+                                    verification.logToFile(`Erro ao verificar endpoint IPP no IP externo ${externalIp}:`, error.message);
                                     console.warn(`Erro ao verificar endpoint IPP no IP externo ${externalIp}:`, error.message);
                                 }
                             } else {
@@ -334,6 +345,7 @@ module.exports = {
                     fs.writeFileSync(macToIpMapFile, JSON.stringify(macToIpMap, null, 2), 'utf8');
                     console.log('Mapeamento MAC->IP salvo');
                 } catch (error) {
+                    verification.logToFile(`Erro ao salvar mapeamento MAC->IP, ${JSON.stringify(error)}`);
                     console.error('Erro ao salvar mapeamento MAC->IP:', error);
                 }
             }
@@ -341,7 +353,9 @@ module.exports = {
             const sendPrinters = updatedPrinters.filter(printer => printer.ip_address);
 
             // 5. Enviar as impressoras atualizadas para sincronização
+            verification.logToFile(`Enviando ${updatedPrinters.length} impressoras para sincronização`);
             console.log(`Enviando ${updatedPrinters.length} impressoras para sincronização`);
+            verification.logToFile(`impressoras para sincronizar: ${JSON.stringify(sendPrinters)}`);
             let printersResult;
             try {
                 printersResult = await axios.post(`${appConfig.apiLocalUrl}/sync/printers`, {
@@ -352,6 +366,7 @@ module.exports = {
                     }
                 });
             } catch (error) {
+                verification.logToFile(`Erro ao sincronizar impressoras, ${JSON.stringify(error?.response)}`);
                 console.log('Erro ao sincronizar impressoras:', error?.response?.data);
                 clearTimeout(globalTimeout);
                 return;
@@ -377,6 +392,7 @@ module.exports = {
                             if (printer && printer.mac_address) {
                                 const mac = normalizeMAC(printer.mac_address);
                                 if (macToIpMap[mac]) {
+                                    verification.logToFile(`Removendo mapeamento para MAC ${mac} devido a falha de conexão`);
                                     console.log(`Removendo mapeamento para MAC ${mac} devido a falha de conexão`);
                                     delete macToIpMap[mac];
                                     macIpMapChanged = true;
@@ -398,8 +414,10 @@ module.exports = {
                 
                 if (printersResultData.details?.errors?.length > 0) {
                     console.log('Erros durante a sincronização:');
+                    verification.logToFile('Erros durante a sincronização:');
                     printersResultData.details.errors.forEach(error => {
                         console.log(`- ${error.name || 'Impressora desconhecida'}: ${error.error}`);
+                        verification.logToFile(`- ${error.name || 'Impressora desconhecida'}: ${error.error}`);
                     });
                 }
             }
@@ -407,6 +425,7 @@ module.exports = {
             clearTimeout(globalTimeout);
             return printersResultData;
         } catch (error) {
+            verification.logToFile(`Erro geral na sincronização de impressoras, ${JSON.stringify(error)}`);
             console.error('Erro geral na sincronização de impressoras:', error);
             return null;
         }

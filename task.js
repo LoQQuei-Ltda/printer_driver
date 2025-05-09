@@ -45,7 +45,7 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
         });
       } catch (windowError) {
         console.error('Erro ao enviar mensagem para a janela:', windowError);
-        // Continuar com a verificação mesmo se não puder notificar a janela
+        verification.logToFile(`Erro ao enviar mensagem para a janela: ${JSON.stringify(windowError)}`);
       }
     }
     
@@ -69,6 +69,7 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
           });
         } catch (windowError) {
           console.error('Erro ao enviar status de erro:', windowError);
+          verification.logToFile(`Erro ao enviar status de erro: ${JSON.stringify(windowError)}`);
         }
       }
       return; // Retornar sem lançar erro
@@ -86,6 +87,7 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
           });
         } catch (windowError) {
           console.error('Erro ao enviar status de erro:', windowError);
+          verification.logToFile(`Erro ao enviar status de erro: ${JSON.stringify(windowError)}`);
         }
       }
       return; // Retornar sem lançar erro
@@ -105,6 +107,7 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
           });
         } catch (windowError) {
           console.error('Erro ao enviar status de erro:', windowError);
+          verification.logToFile(`Erro ao enviar status de erro: ${JSON.stringify(windowError)}`);
         }
       }
       return; // Retornar sem lançar erro
@@ -125,6 +128,7 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
           });
         } catch (windowError) {
           console.error('Erro ao enviar status de erro:', windowError);
+          verification.logToFile(`Erro ao enviar status de erro: ${JSON.stringify(windowError)}`);
         }
       }
       return; // Retornar sem lançar erro
@@ -142,6 +146,7 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
           });
         } catch (windowError) {
           console.error('Erro ao enviar status de atualizado:', windowError);
+          verification.logToFile(`Erro ao enviar status de atualizado: ${JSON.stringify(windowError)}`);
         }
       }
       return;
@@ -159,6 +164,7 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
         });
       } catch (windowError) {
         console.error('Erro ao enviar status de atualização disponível:', windowError);
+        verification.logToFile(`Erro ao enviar status de atualização disponível: ${JSON.stringify(windowError)}`);
       }
     }
     
@@ -175,6 +181,7 @@ const checkForUpdates = async (silent = false, appConfig, mainWindow) => {
         });
       } catch (windowError) {
         console.error('Erro ao enviar status de erro:', windowError);
+        verification.logToFile(`Erro ao enviar status de erro: ${JSON.stringify(windowError)}`);
       }
     }
   } finally {
@@ -301,6 +308,7 @@ function initializeSyncTasks() {
       await printersSync();
     } catch (error) {
       console.error('Erro na sincronização inicial:', error);
+      verification.logToFile(`Erro na sincronização inicial: ${JSON.stringify(error)}`);
     }
   }, 5000); // 5 segundos de delay
   
@@ -313,6 +321,7 @@ function initializeSyncTasks() {
       await printSync();
     } catch (error) {
       console.error('Erro na sincronização de impressões:', error);
+      verification.logToFile(`Erro na sincronização de impressões: ${JSON.stringify(error)}`);
     }
   });
 
@@ -325,10 +334,12 @@ function initializeSyncTasks() {
       await printersSync();
     } catch (error) {
       console.error('Erro na sincronização de impressoras:', error);
+      verification.logToFile(`Erro na sincronização de impressoras: ${JSON.stringify(error)}`);
     }
   });
   
   console.log('Tarefas de sincronização inicializadas com sucesso.');
+  verification.logToFile('Tarefas de sincronização inicializadas com sucesso.');
 }
 
 module.exports = {
@@ -375,11 +386,13 @@ module.exports = {
             }
           } catch (error) {
             console.error('Erro na verificação periódica:', error);
+            verification.logToFile(`Erro na verificação periódica: ${JSON.stringify(error)}`);
           }
         }, checkInterval);
       }
     } catch (error) {
       console.error('Erro fatal ao verificar o sistema:', error);
+      verification.logToFile(`Erro fatal ao verificar o sistema: ${JSON.stringify(error)}`);
       createStatusLockFile(false);
     }
 
@@ -393,6 +406,7 @@ module.exports = {
         await checkForUpdates(true, appConfig, mainWindow);
       } catch (error) {
         console.error('Erro na verificação programada de atualizações:', error);
+        verification.logToFile(`Erro na verificação programada de atualizações: ${JSON.stringify(error)}`);
       }
     });
     
@@ -404,6 +418,7 @@ module.exports = {
         checkForUpdates(true, appConfig, mainWindow);
       } catch (error) {
         console.error('Erro na verificação inicial de atualizações:', error);
+        verification.logToFile(`Erro na verificação inicial de atualizações: ${JSON.stringify(error)}`);
       }
     }, 120000);
   }
