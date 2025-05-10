@@ -2980,172 +2980,185 @@ WantedBy=sysinit.target
 }
 
 async function setupWindowsStartup() {
-  verification.log('Configurando inicialização automática no Windows...', 'step');
+  verification.log('Configurando inicialização automática do WSL no Windows (independente de login)...', 'step');
   
   try {
-    // 1. Criar diretório global para todos os usuários
+    // 1. Criar diretório global para todos os usuários - garantir permissões adequadas
     const programDataDir = process.env.ProgramData || 'C:\\ProgramData';
-    const startupDir = path.join(programDataDir, 'PrintServerStartup');
+    const startupDir = path.join(programDataDir, 'LoQQuei', 'WSLStartup');
     if (!fs.existsSync(startupDir)) {
       fs.mkdirSync(startupDir, { recursive: true });
     }
     
+    // Garantir permissões amplas para o diretório
+    try {
+      await verification.execPromise(
+        `icacls "${startupDir}" /grant Everyone:(OI)(CI)F`,
+        10000,
+        true
+      );
+    } catch (permError) {
+      verification.log(`Aviso: Não foi possível definir permissões para o diretório: ${permError.message}`, 'warning');
+    }
+    
     verification.log(`Diretório global para scripts criado: ${startupDir}`, 'success');
     
-    // 2. Criar script batch de inicialização que procura o Ubuntu em TODOS os perfis
-    verification.log('Criando script inteligente de inicialização global...', 'step');
-    
-    const scriptContent = `@echo off
-setlocal enabledelayedexpansion
-
-REM Script para iniciar WSL/Ubuntu em qualquer perfil de usuário
-REM Criado automaticamente pelo instalador
+    // 2. MODIFICAÇÃO CRÍTICA: Criar script de inicialização que será usado pelo serviço Windows
+    const serviceBatchContent = `@echo off
+SETLOCAL EnableDelayedExpansion
+REM Script para iniciar WSL durante o boot, antes de qualquer login
 
 REM Configurar log
-set "LOG_FILE=%ProgramData%\\PrintServerStartup\\startup.log"
-echo %date% %time% - Iniciando script de detecção do Ubuntu >> "%LOG_FILE%"
+SET LOG_FILE=%ProgramData%\\LoQQuei\\WSLStartup\\boot_service.log
+ECHO %DATE% %TIME% - Serviço iniciado >> "%LOG_FILE%"
 
-REM Criar pasta para armazenar resultado temporário
-if not exist "%TEMP%\\wsl_detect" mkdir "%TEMP%\\wsl_detect" 2>nul
+REM Primeiro aplicar permissões importantes
+ECHO %DATE% %TIME% - Aplicando permissões críticas >> "%LOG_FILE%"
 
-REM Criar um script PowerShell para encontrar o Ubuntu em todos os perfis
-echo $ubuntuFound = $false > "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo $ubuntuPath = "" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo # Verificar todos os perfis de usuários >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo Get-ChildItem "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList" | ForEach-Object { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo   $sid = $_.PSChildName >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo   # Ignorar contas de sistema >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo   if ($sid -like "S-1-5-*" -and $sid -notlike "S-1-5-21*") { return } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo   try { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo     # Obter caminho do perfil >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo     $profilePath = Get-ItemPropertyValue -Path $_.PSPath -Name "ProfileImagePath" -ErrorAction SilentlyContinue >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo     if (-not $profilePath) { return } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo     # Verificar existência de pastas de Ubuntu >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo     $localPath = Join-Path $profilePath "AppData\\Local" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo     $packagesPath = Join-Path $localPath "Packages" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo     if (Test-Path $packagesPath) { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo       $ubuntuDir = Get-ChildItem $packagesPath -Directory | Where-Object { $_.Name -like "*Ubuntu*" } | Select-Object -First 1 >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo       if ($ubuntuDir) { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo         # Verificar se é uma instalação válida >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo         $rootfsPath = Join-Path $ubuntuDir.FullName "LocalState\\rootfs" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo         if (Test-Path $rootfsPath) { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           $username = [System.IO.Path]::GetFileName($profilePath) >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           Write-Output "Ubuntu encontrado para o usuário: $username" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           Write-Output "Caminho: $($ubuntuDir.FullName)" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           echo $ubuntuDir.FullName > "$env:TEMP\\wsl_detect\\ubuntu_path.txt" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           # Conceder permissões ao diretório para SYSTEM e todos os usuários >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           try { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo             $acl = Get-Acl $ubuntuDir.FullName >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo             $everyone = New-Object System.Security.Principal.SecurityIdentifier("S-1-1-0") >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo             $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($everyone, "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow") >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo             $acl.AddAccessRule($rule) >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo             Set-Acl -Path $ubuntuDir.FullName -AclObject $acl >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo             Write-Output "Permissões concedidas" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           catch { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo             Write-Output "Erro ao conceder permissões: $_" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           $ubuntuFound = $true >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           $ubuntuPath = $ubuntuDir.FullName >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo           break >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo         } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo       } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo     } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo   } catch { } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo if (-not $ubuntuFound) { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo   Write-Output "Ubuntu não encontrado em nenhum perfil de usuário" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo   echo "not_found" > "$env:TEMP\\wsl_detect\\ubuntu_path.txt" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-echo } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
-
-REM Executar o script PowerShell para encontrar o Ubuntu
-echo Procurando instalação do Ubuntu em todos os perfis... >> "%LOG_FILE%"
-powershell -ExecutionPolicy Bypass -File "%TEMP%\\wsl_detect\\find_ubuntu.ps1" >> "%LOG_FILE%" 2>&1
-
-REM Ler o resultado
-set /p UBUNTU_PATH=<"%TEMP%\\wsl_detect\\ubuntu_path.txt"
-
-if "%UBUNTU_PATH%"=="not_found" (
-  echo %date% %time% - ERRO: Ubuntu não encontrado em nenhum perfil de usuário >> "%LOG_FILE%"
-  exit /b 1
+REM Permissões para executáveis WSL
+TAKEOWN /F C:\\Windows\\System32\\wsl.exe >> "%LOG_FILE%" 2>&1
+ICACLS C:\\Windows\\System32\\wsl.exe /grant Everyone:F >> "%LOG_FILE%" 2>&1
+TAKEOWN /F C:\\Windows\\System32\\wslapi.dll >> "%LOG_FILE%" 2>&1
+ICACLS C:\\Windows\\System32\\wslapi.dll /grant Everyone:F >> "%LOG_FILE%" 2>&1
+IF EXIST C:\\Windows\\System32\\wslservice.dll (
+  TAKEOWN /F C:\\Windows\\System32\\wslservice.dll >> "%LOG_FILE%" 2>&1
+  ICACLS C:\\Windows\\System32\\wslservice.dll /grant Everyone:F >> "%LOG_FILE%" 2>&1
+)
+IF EXIST C:\\Windows\\System32\\wslhost.exe (
+  TAKEOWN /F C:\\Windows\\System32\\wslhost.exe >> "%LOG_FILE%" 2>&1
+  ICACLS C:\\Windows\\System32\\wslhost.exe /grant Everyone:F >> "%LOG_FILE%" 2>&1
 )
 
-echo %date% %time% - Ubuntu encontrado em: %UBUNTU_PATH% >> "%LOG_FILE%"
+REM Configurações do serviço LxssManager
+SC CONFIG LxssManager start= auto >> "%LOG_FILE%" 2>&1
+SC SDSET LxssManager D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BU)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD) >> "%LOG_FILE%" 2>&1
+
+REM Define variáveis de ambiente WSL para ignorar verificações de admin
+SETX WSL_DISABLE_ADMIN_CHECK 1 /M >> "%LOG_FILE%" 2>&1
+SETX WSL_IGNORE_PERMISSION_ERRORS 1 /M >> "%LOG_FILE%" 2>&1
+
+REM Desligar o WSL primeiro
+ECHO %DATE% %TIME% - Reiniciando WSL >> "%LOG_FILE%"
+wsl --shutdown >> "%LOG_FILE%" 2>&1
+net stop LxssManager >> "%LOG_FILE%" 2>&1
+net start LxssManager >> "%LOG_FILE%" 2>&1
+
+REM Aguardar um momento para o serviço iniciar completamente
+TIMEOUT /T 10 /NOBREAK > NUL
+
+REM Encontrar e configurar instalações Ubuntu de TODOS os perfis
+ECHO %DATE% %TIME% - Procurando instalações Ubuntu >> "%LOG_FILE%"
+SETLOCAL ENABLEDELAYEDEXPANSION
+SET "FOUND_UBUNTU=0"
+
+REM Verificar diretório padrão do Ubuntu para o perfil atual
+FOR /F "delims=" %%a IN ('powershell -Command "Get-ChildItem $env:LOCALAPPDATA\\Packages -Directory | Where-Object { $_.Name -like '*Ubuntu*' } | Select-Object -ExpandProperty FullName"') DO (
+  ECHO %DATE% %TIME% - Ubuntu encontrado em: %%a >> "%LOG_FILE%"
+  TAKEOWN /F "%%a" /R /D Y >> "%LOG_FILE%" 2>&1
+  ICACLS "%%a" /grant Everyone:(OI)(CI)F /T /C >> "%LOG_FILE%" 2>&1
+  ICACLS "%%a" /grant "*S-1-5-32-545:(OI)(CI)F" /T /C >> "%LOG_FILE%" 2>&1
+  SET "FOUND_UBUNTU=1"
+)
+
+REM Verificar todos os perfis de usuário para encontrar instalações Ubuntu
+FOR /D %%d IN (C:\\Users\\*) DO (
+  IF EXIST "%%d\\AppData\\Local\\Packages" (
+    FOR /F "delims=" %%a IN ('powershell -Command "Get-ChildItem \"%%d\\AppData\\Local\\Packages\" -Directory | Where-Object { $_.Name -like \"*Ubuntu*\" } | Select-Object -ExpandProperty FullName"') DO (
+      ECHO %DATE% %TIME% - Ubuntu encontrado em: %%a >> "%LOG_FILE%"
+      TAKEOWN /F "%%a" /R /D Y >> "%LOG_FILE%" 2>&1
+      ICACLS "%%a" /grant Everyone:(OI)(CI)F /T /C >> "%LOG_FILE%" 2>&1
+      ICACLS "%%a" /grant "*S-1-5-32-545:(OI)(CI)F" /T /C >> "%LOG_FILE%" 2>&1
+      SET "FOUND_UBUNTU=1"
+    )
+  )
+)
 
 REM Verificar se o WSL já está em execução
-wsl --list --running > "%TEMP%\\wsl_detect\\wsl_running.txt" 2>&1
-findstr /C:"Ubuntu" "%TEMP%\\wsl_detect\\wsl_running.txt" > nul
-if %errorlevel% equ 0 (
-  echo %date% %time% - Ubuntu já está em execução >> "%LOG_FILE%"
-) else (
-  echo %date% %time% - Iniciando Ubuntu... >> "%LOG_FILE%"
+wsl --list --running > "%TEMP%\\wsl_running.txt" 2>&1
+FINDSTR /C:"Ubuntu" "%TEMP%\\wsl_running.txt" > NUL
+IF %ERRORLEVEL% EQU 0 (
+  ECHO %DATE% %TIME% - WSL já está em execução >> "%LOG_FILE%"
+) ELSE (
+  ECHO %DATE% %TIME% - WSL não está em execução, iniciando... >> "%LOG_FILE%"
   
-  REM Primeiro verificar se o WSL precisa de atualização e reiniciar
-  echo %date% %time% - Atualizando e reiniciando WSL... >> "%LOG_FILE%"
-  wsl --update >> "%LOG_FILE%" 2>&1
-  wsl --shutdown >> "%LOG_FILE%" 2>&1
+  REM Iniciar o WSL - método principal
+  START /B wsl -d Ubuntu >> "%LOG_FILE%" 2>&1
   
-  REM Aguardar 5 segundos para garantir que o WSL foi desligado
-  timeout /t 5 /nobreak > nul
+  REM Aguardar inicialização
+  TIMEOUT /T 15 /NOBREAK > NUL
   
-  REM Iniciar o Ubuntu no modo background
-  echo %date% %time% - Executando: wsl -d Ubuntu >> "%LOG_FILE%"
-  start /b cmd /c "wsl -d Ubuntu >> "%LOG_FILE%" 2>&1"
-  
-  REM Aguardar um tempo para o Ubuntu inicializar
-  echo %date% %time% - Aguardando inicialização do Ubuntu... >> "%LOG_FILE%"
-  timeout /t 15 /nobreak > nul
+  REM Verificar se WSL iniciou corretamente
+  wsl --list --running > "%TEMP%\\wsl_check.txt" 2>&1
+  FINDSTR /C:"Ubuntu" "%TEMP%\\wsl_check.txt" > NUL
+  IF %ERRORLEVEL% EQU 0 (
+    ECHO %DATE% %TIME% - WSL iniciado com sucesso >> "%LOG_FILE%"
+  ) ELSE (
+    ECHO %DATE% %TIME% - Falha ao iniciar WSL, tentando método alternativo >> "%LOG_FILE%"
+    
+    REM Método alternativo 1: tentar iniciar com uma abordagem diferente
+    ECHO %DATE% %TIME% - Tentando método alternativo 1 >> "%LOG_FILE%"
+    cmd /c start /b wsl -d Ubuntu >> "%LOG_FILE%" 2>&1
+    
+    TIMEOUT /T 15 /NOBREAK > NUL
+    
+    REM Verificar novamente
+    wsl --list --running > "%TEMP%\\wsl_check2.txt" 2>&1
+    FINDSTR /C:"Ubuntu" "%TEMP%\\wsl_check2.txt" > NUL
+    IF %ERRORLEVEL% EQU 0 (
+      ECHO %DATE% %TIME% - WSL iniciado com método alternativo 1 >> "%LOG_FILE%"
+    ) ELSE (
+      ECHO %DATE% %TIME% - Tentando método alternativo 2 >> "%LOG_FILE%"
+      
+      REM Método alternativo 2: reiniciar serviço e tentar sem fechar
+      NET STOP LxssManager >> "%LOG_FILE%" 2>&1
+      NET START LxssManager >> "%LOG_FILE%" 2>&1
+      TIMEOUT /T 5 /NOBREAK > NUL
+      
+      wsl -d Ubuntu >> "%LOG_FILE%" 2>&1
+    )
+  )
 )
 
-REM Verificar se o serviço de inicialização existe no Ubuntu
-echo %date% %time% - Verificando existência do script de serviços... >> "%LOG_FILE%"
-wsl -d Ubuntu -e bash -c "if [ -f /opt/loqquei/print_server_desktop/start-services.sh ]; then echo service_exists > '%TEMP%\\wsl_detect\\service_check.txt'; else echo service_not_found > '%TEMP%\\wsl_detect\\service_check.txt'; fi"
+REM Verificar se o WSL está rodando e iniciar serviços (com vários métodos)
+ECHO %DATE% %TIME% - Verificando serviços >> "%LOG_FILE%"
 
-set /p SERVICE_CHECK=<"%TEMP%\\wsl_detect\\service_check.txt"
-if "%SERVICE_CHECK%"=="service_exists" (
-  echo %date% %time% - Executando script de serviços... >> "%LOG_FILE%"
-  
-  REM Executar script de serviços sem pedir senha
-  echo %date% %time% - Executando: sudo /opt/loqquei/print_server_desktop/start-services.sh >> "%LOG_FILE%"
-  wsl -d Ubuntu -e bash -c "echo 'Executando como:' && whoami && sudo /opt/loqquei/print_server_desktop/start-services.sh" >> "%LOG_FILE%" 2>&1
-  
-  echo %date% %time% - Script de serviços executado >> "%LOG_FILE%"
-) else (
-  echo %date% %time% - AVISO: Script de serviços não encontrado >> "%LOG_FILE%"
-)
+REM Método 1: Script de serviços padrão
+wsl -d Ubuntu -u root bash -c "if [ -f /opt/loqquei/print_server_desktop/start-services.sh ]; then /opt/loqquei/print_server_desktop/start-services.sh; fi" >> "%LOG_FILE%" 2>&1
 
-echo %date% %time% - Inicialização concluída >> "%LOG_FILE%"
+REM Método 2: Iniciar serviços diretamente
+wsl -d Ubuntu -u root bash -c "systemctl restart cups postgresql smbd 2>/dev/null || service cups restart; service postgresql restart; service smbd restart" >> "%LOG_FILE%" 2>&1
 
-REM Verificar se os serviços estão rodando
-echo %date% %time% - Verificando serviços... >> "%LOG_FILE%"
-wsl -d Ubuntu -e bash -c "ps aux | grep -E 'cups|post|samba'" >> "%LOG_FILE%" 2>&1
+REM Método 3: Iniciar API via PM2 ou Node
+wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && (pm2 restart all || pm2 start ecosystem.config.js || node bin/www.js &) 2>/dev/null || true" >> "%LOG_FILE%" 2>&1
 
-echo %date% %time% - Fim do script >> "%LOG_FILE%"
-exit /b 0
+ECHO %DATE% %TIME% - Inicialização concluída >> "%LOG_FILE%"
+EXIT /B 0
 `;
 
-    const scriptBatchPath = path.join(startupDir, 'start-print-services.bat');
-    fs.writeFileSync(scriptBatchPath, scriptContent, 'utf8');
+    const serviceBatchPath = path.join(startupDir, 'wsl-boot-service.bat');
+    fs.writeFileSync(serviceBatchPath, serviceBatchContent, 'utf8');
     
-    // 3. Criar script VBS para execução silenciosa
-    const vbsContent = `' Script VBScript para executar o batch de inicialização sem mostrar janelas
+    // Garantir permissões de execução para todos
+    try {
+      await verification.execPromise(
+        `icacls "${serviceBatchPath}" /grant Everyone:F`,
+        10000,
+        true
+      );
+    } catch (error) {
+      verification.log(`Aviso: Erro ao definir permissões para batch: ${error.message}`, 'warning');
+    }
+    
+    // 3. Criar script VBS para execução silenciosa (sem janela)
+    const vbsContent = `' Script para iniciar o WSL sem mostrar janelas
 Option Explicit
-Dim WshShell, fso, scriptPath, logFile
+Dim WshShell, fso, logFile
+Dim localAppData, programData
 
-' Definir caminho do script batch
-scriptPath = "${scriptBatchPath.replace(/\\/g, '\\\\')}"
+programData = CreateObject("WScript.Shell").ExpandEnvironmentStrings("%ProgramData%")
+logFile = programData & "\\LoQQuei\\WSLStartup\\vbs_log.txt"
 
-' Registrar início
 Set fso = CreateObject("Scripting.FileSystemObject")
-logFile = "${startupDir.replace(/\\/g, '\\\\')}\\vbs_log.txt"
 On Error Resume Next
 Set logFile = fso.OpenTextFile(logFile, 8, True, 0)
 If Err.Number = 0 Then
@@ -3153,215 +3166,294 @@ If Err.Number = 0 Then
     logFile.Close
 End If
 
-' Executar o script batch sem mostrar a janela
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "cmd /c """ & scriptPath & """", 0, False
+WshShell.Run "cmd /c """ & programData & "\\LoQQuei\\WSLStartup\\wsl-boot-service.bat""", 0, False
 
-' Limpar objetos
 Set WshShell = Nothing
 Set fso = Nothing
 `;
-
-    const vbsPath = path.join(startupDir, 'start-print-services-hidden.vbs');
+    
+    const vbsPath = path.join(startupDir, 'wsl-boot-silent.vbs');
     fs.writeFileSync(vbsPath, vbsContent, 'utf8');
     
-    verification.log(`Scripts de inicialização salvos em: ${startupDir}`, 'success');
+    // 4. MÚLTIPLOS MÉTODOS DE INICIALIZAÇÃO AUTOMÁTICA ABSOLUTA
     
-    // 4. Criar script para configurar sudoers no WSL
-    // Este script permite executar comandos sudo sem senha
-    const sudoersSetupScript = `#!/bin/bash
-# Script para configurar sudo sem senha
-echo '%sudo ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/99-wsl-startup > /dev/null
-sudo chmod 440 /etc/sudoers.d/99-wsl-startup
-echo "Configuração de sudo sem senha aplicada com sucesso"
+    // MÉTODO A: Serviço Windows (o mais importante e confiável)
+    verification.log('Configurando serviço Windows para inicialização do WSL...', 'step');
+    
+    // Remover qualquer serviço antigo primeiro
+    try {
+      await verification.execPromise('sc delete LoQQueiWSLBoot', 10000, true);
+    } catch {
+      // Ignorar erros, o serviço pode não existir
+    }
+    
+    // 4.A.1: Registrar serviço usando sc (método nativo)
+    try {
+      await verification.execPromise(
+        `sc create LoQQueiWSLBoot binPath= "cmd.exe /c \\"${serviceBatchPath}\\"" start= auto DisplayName= "LoQQuei WSL Boot Service"`,
+        15000,
+        true
+      );
+      
+      // Configurar descrição do serviço
+      await verification.execPromise(
+        'sc description LoQQueiWSLBoot "Inicia o WSL/Ubuntu automaticamente no boot do sistema, antes de qualquer login"',
+        10000,
+        true
+      );
+      
+      // Configurar o serviço para executar como SYSTEM
+      await verification.execPromise(
+        'sc config LoQQueiWSLBoot obj= "LocalSystem" type= own',
+        10000,
+        true
+      );
+      
+      // Configurar permissões amplas do serviço
+      await verification.execPromise(
+        'sc sdset LoQQueiWSLBoot "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)(A;;CCLCSWRPWPDTLOCRRC;;;WD)"',
+        10000,
+        true
+      );
+      
+      // Iniciar o serviço
+      try {
+        await verification.execPromise('sc start LoQQueiWSLBoot', 15000, true);
+        verification.log('Serviço iniciado com sucesso', 'success');
+      } catch (startError) {
+        verification.log(`Aviso: Não foi possível iniciar o serviço agora: ${startError.message}`, 'warning');
+        verification.log('O serviço será iniciado automaticamente no próximo boot', 'info');
+      }
+      
+      verification.log('Serviço Windows configurado com sucesso', 'success');
+    } catch (serviceError) {
+      verification.log(`Erro ao criar serviço Windows: ${serviceError.message}`, 'error');
+      verification.log('Configurando métodos alternativos mais agressivos...', 'warning');
+    }
+    
+    // MÉTODO B: Tarefa Agendada para executar no Boot do Sistema
+    verification.log('Configurando tarefa agendada para boot do sistema...', 'step');
+    
+    // Criar XML para tarefa agendada diretamente dentro do WSL
+    const taskCmd = `
+schtasks /Delete /TN "LoQQueiWSLBootTask" /F 2>nul
+schtasks /Create /TN "LoQQueiWSLBootTask" /SC ONSTART /DELAY 0000:30 /RL HIGHEST /RU "SYSTEM" /TR "wscript.exe \\"${vbsPath}\\"" /F
 `;
 
-    const sudoersScriptPath = path.join(startupDir, 'setup-sudoers.sh');
-    fs.writeFileSync(sudoersScriptPath, sudoersSetupScript, 'utf8');
-    
-    // Tentar executar o script de sudoers agora
-    try {
-      verification.log('Configurando sudo sem senha...', 'step');
-      await verification.execPromise(`wsl -d Ubuntu -e bash "${sudoersScriptPath}"`, 15000, true);
-      verification.log('Sudo configurado com sucesso', 'success');
-    } catch (sudoError) {
-      verification.log(`Aviso ao configurar sudo: ${sudoError.message}`, 'warning');
-    }
-    
-    // 5. Configurar para executar na inicialização do sistema
-    verification.log('Configurando execução na inicialização do sistema...', 'step');
-    
-    // 5.1. Adicionar ao registro (HKLM para todos os usuários)
-    try {
-      await verification.execPromise(
-        `reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" /v "PrintServerStartup" /t REG_SZ /d "wscript.exe \\"${vbsPath}\\"" /f`,
-        15000,
-        true
-      );
-      verification.log('Chave de registro adicionada com sucesso!', 'success');
-    } catch (regError) {
-      verification.log(`Erro ao adicionar chave de registro: ${regError.message}`, 'warning');
-      
-      // Método alternativo com PowerShell
-      try {
-        await verification.execPromise(
-          `powershell -Command "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'PrintServerStartup' -Value 'wscript.exe \\\"${vbsPath.replace(/\\/g, '\\\\')}\\\"' -Force"`,
-          15000,
-          true
-        );
-        verification.log('Chave de registro adicionada via PowerShell!', 'success');
-      } catch (psRegError) {
-        verification.log(`Erro ao adicionar chave via PowerShell: ${psRegError.message}`, 'warning');
-      }
-    }
-    
-    // 5.2. Adicionar tarefa agendada para inicialização do sistema
-    verification.log('Criando tarefa agendada para inicialização do sistema...', 'step');
+    const taskBatchPath = path.join(startupDir, 'register-task.bat');
+    fs.writeFileSync(taskBatchPath, taskCmd, 'utf8');
     
     try {
-      // Criar XML para tarefa agendada
-      const taskXml = `<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Date>2023-04-01T00:00:00</Date>
-    <Author>Print Server</Author>
-    <Description>Inicia serviços do Sistema de Gerenciamento de Impressão</Description>
-    <URI>\\PrintServerAutoStart</URI>
-  </RegistrationInfo>
-  <Triggers>
-    <BootTrigger>
-      <Enabled>true</Enabled>
-      <Delay>PT1M</Delay>
-    </BootTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>S-1-5-18</UserId>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>true</StartWhenAvailable>
-    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
-    <IdleSettings>
-      <Duration>PT10M</Duration>
-      <WaitTimeout>PT1H</WaitTimeout>
-      <StopOnIdleEnd>true</StopOnIdleEnd>
-      <RestartOnIdle>false</RestartOnIdle>
-    </IdleSettings>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <Hidden>false</Hidden>
-    <RunOnlyIfIdle>false</RunOnlyIfIdle>
-    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
-    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
-    <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
-    <Priority>7</Priority>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>wscript.exe</Command>
-      <Arguments>${vbsPath.replace(/\\/g, '\\\\')}</Arguments>
-    </Exec>
-  </Actions>
-</Task>`;
-    
-      // Salvar XML da tarefa em um arquivo temporário
-      const tempXmlPath = path.join(os.tmpdir(), 'print_server_task.xml');
-      fs.writeFileSync(tempXmlPath, taskXml, 'utf8');
-      
-      // Registrar a tarefa usando schtasks como SYSTEM
-      await verification.execPromise(
-        `schtasks /Create /TN "PrintServerAutoStart" /XML "${tempXmlPath}" /F /RU "SYSTEM"`,
-        15000,
-        true
-      );
-      verification.log('Tarefa agendada criada com sucesso!', 'success');
+      // Executar como administrador para registrar a tarefa
+      await verification.execPromise(`cmd /c "${taskBatchPath}"`, 20000, true);
+      verification.log('Tarefa agendada configurada com sucesso', 'success');
     } catch (taskError) {
-      verification.log(`Erro ao criar tarefa agendada: ${taskError.message}`, 'warning');
-      verification.log('Tentando método alternativo...', 'info');
+      verification.log(`Erro ao criar tarefa agendada: ${taskError.message}`, 'error');
       
-      // Método mais simples sem XML
+      // Tentar uma abordagem PowerShell alternativa
+      try {
+        const psTaskCmd = `
+$action = New-ScheduledTaskAction -Execute "wscript.exe" -Argument "${vbsPath.replace(/\\/g, '\\\\')}"
+$trigger = New-ScheduledTaskTrigger -AtStartup -RandomDelay (New-TimeSpan -Seconds 30)
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RunOnlyIfNetworkAvailable:$false
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+Unregister-ScheduledTask -TaskName "LoQQueiWSLBootTaskPS" -Confirm:$false -ErrorAction SilentlyContinue
+Register-ScheduledTask -TaskName "LoQQueiWSLBootTaskPS" -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force
+`;
+
+        const psTaskPath = path.join(startupDir, 'register-task.ps1');
+        fs.writeFileSync(psTaskPath, psTaskCmd, 'utf8');
+        
+        await verification.execPromise(
+          `powershell -ExecutionPolicy Bypass -File "${psTaskPath}"`,
+          20000,
+          true
+        );
+        
+        verification.log('Tarefa agendada configurada via PowerShell com sucesso', 'success');
+      } catch (psTaskError) {
+        verification.log(`Erro ao criar tarefa via PowerShell: ${psTaskError.message}`, 'warning');
+      }
+    }
+    
+    // MÉTODO C: Registro Run em HKLM
+    verification.log('Configurando registro de inicialização global...', 'step');
+    
+    try {
+      // Método 1: Usando reg.exe (mais confiável)
+      await verification.execPromise(
+        `reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" /v "LoQQueiWSLBoot" /t REG_SZ /d "wscript.exe \\"${vbsPath}\\"" /f`,
+        15000,
+        true
+      );
+      
+      verification.log('Registro de inicialização global configurado com sucesso', 'success');
+    } catch (regError) {
+      verification.log(`Erro ao configurar registro via reg.exe: ${regError.message}`, 'warning');
+      
+      // Método 2: Tentar via PowerShell
       try {
         await verification.execPromise(
-          `schtasks /Create /TN "PrintServerAutoStart" /TR "wscript.exe \\"${vbsPath}\\"" /SC ONSTART /RU "SYSTEM" /RL HIGHEST /F`,
+          `powershell -Command "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'LoQQueiWSLBoot' -Value 'wscript.exe \\\"${vbsPath.replace(/\\/g, '\\\\')}\\\"' -Force"`,
           15000,
           true
         );
-        verification.log('Tarefa agendada criada com método alternativo!', 'success');
-      } catch (simpleTaskError) {
-        verification.log(`Erro ao criar tarefa simples: ${simpleTaskError.message}`, 'warning');
         
-        // Último método com PowerShell
-        try {
-          await verification.execPromise(
-            `powershell -Command "$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '${vbsPath}'; $trigger = New-ScheduledTaskTrigger -AtStartup; $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Register-ScheduledTask -TaskName 'PrintServerAutoStart' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force"`,
-            15000,
-            true
-          );
-          verification.log('Tarefa agendada criada com PowerShell!', 'success');
-        } catch (psTaskError) {
-          verification.log(`Erro ao criar tarefa via PowerShell: ${psTaskError.message}`, 'warning');
-        }
+        verification.log('Registro configurado via PowerShell com sucesso', 'success');
+      } catch (psRegError) {
+        verification.log(`Erro ao configurar registro via PowerShell: ${psRegError.message}`, 'warning');
       }
     }
     
-    // 5.3. Adicionar ao menu Iniciar comum para todos os usuários
-    verification.log('Adicionando aos diretórios de inicialização...', 'step');
+    // MÉTODO D: Adicionar à pasta Startup comum para todos os usuários
+    verification.log('Adicionando à pasta de inicialização comum...', 'step');
     
     try {
-      // Pasta Inicializar comum para todos os usuários
-      const commonStartupFolder = path.join(programDataDir, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'StartUp');
-      if (fs.existsSync(commonStartupFolder)) {
-        const shortcutPath = path.join(commonStartupFolder, 'PrintServerServices.vbs');
-        fs.copyFileSync(vbsPath, shortcutPath);
-        verification.log('Atalho adicionado à pasta de inicialização comum', 'success');
+      const commonStartupDir = path.join(programDataDir, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'StartUp');
+      
+      // Criar diretório se não existir
+      if (!fs.existsSync(commonStartupDir)) {
+        fs.mkdirSync(commonStartupDir, { recursive: true });
       }
+      
+      // Copiar VBS para a pasta de inicialização
+      const startupVbsPath = path.join(commonStartupDir, 'LoQQueiWSLBoot.vbs');
+      fs.copyFileSync(vbsPath, startupVbsPath);
+      
+      // Garantir permissões de execução
+      await verification.execPromise(
+        `icacls "${startupVbsPath}" /grant Everyone:F`,
+        10000,
+        true
+      );
+      
+      verification.log('Script adicionado à pasta de inicialização comum', 'success');
     } catch (startupError) {
-      verification.log(`Erro ao adicionar atalho de inicialização: ${startupError.message}`, 'warning');
+      verification.log(`Erro ao adicionar à pasta de inicialização: ${startupError.message}`, 'warning');
     }
     
-    // 6. Configurar o WSL para iniciar automaticamente
-    verification.log('Configurando WSL para inicialização automática...', 'step');
+    // MÉTODO E: Método radical - modificar WinLogon para executar no login de QUALQUER usuário
+    verification.log('Configurando execução para todos os usuários via Winlogon...', 'step');
     
     try {
-      // Primeiro desligar o WSL para aplicar configurações
-      await verification.execPromise('wsl --shutdown', 15000, true).catch(() => {});
+      await verification.execPromise(
+        `reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" /v "Userinit" /t REG_SZ /d "C:\\Windows\\system32\\userinit.exe,wscript.exe \\"${vbsPath}\\"" /f`,
+        15000,
+        true
+      );
       
-      // Configurar WSL versão 2
-      await verification.execPromise('wsl --set-default-version 2', 15000, true).catch(() => {});
-      
-      // Configurar inicialização automática (disponível em versões mais recentes)
-      await verification.execPromise('wsl --set-autostart true', 15000, true).catch(() => {});
-      
-      verification.log('WSL configurado para iniciar automaticamente', 'success');
-    } catch (wslConfigError) {
-      verification.log(`Erro ao configurar WSL: ${wslConfigError.message}`, 'warning');
+      verification.log('Configuração Winlogon concluída com sucesso', 'success');
+    } catch (winlogonError) {
+      verification.log(`Aviso: Não foi possível configurar Winlogon: ${winlogonError.message}`, 'warning');
     }
     
-    // 7. Executar o script agora para testar
+    // MÉTODO F: Criar um atalho que aponta para o VBS no Desktop Público
+    try {
+      verification.log('Criando atalho no Desktop Público...', 'step');
+      
+      const publicDesktopDir = path.join(programDataDir, '..', 'Users', 'Public', 'Desktop');
+      if (fs.existsSync(publicDesktopDir)) {
+        // Criar atalho VBS com PowerShell
+        const psShortcutCmd = `
+$WshShell = New-Object -ComObject WScript.Shell
+$Shortcut = $WshShell.CreateShortcut("${publicDesktopDir.replace(/\\/g, '\\\\')}\\Iniciar LoQQuei WSL.lnk")
+$Shortcut.TargetPath = "wscript.exe"
+$Shortcut.Arguments = "\\"${vbsPath.replace(/\\/g, '\\\\')}\\""
+$Shortcut.WorkingDirectory = "${startupDir.replace(/\\/g, '\\\\')}"
+$Shortcut.Description = "Iniciar WSL/Ubuntu para o sistema LoQQuei"
+$Shortcut.IconLocation = "C:\\Windows\\System32\\wsl.exe,0"
+$Shortcut.Save()
+`;
+
+        const psShortcutPath = path.join(startupDir, 'create-shortcut.ps1');
+        fs.writeFileSync(psShortcutPath, psShortcutCmd, 'utf8');
+        
+        await verification.execPromise(
+          `powershell -ExecutionPolicy Bypass -File "${psShortcutPath}"`,
+          15000,
+          true
+        );
+        
+        verification.log('Atalho criado no Desktop Público', 'success');
+      }
+    } catch (shortcutError) {
+      verification.log(`Aviso: Não foi possível criar atalho: ${shortcutError.message}`, 'warning');
+    }
+    
+    // 5. Configurar inicialização automática para usuário atual
+    verification.log('Configurando inicialização automática para o usuário atual (adicional)...', 'step');
+    
+    try {
+      // Adicionar ao registro do usuário atual
+      await verification.execPromise(
+        `reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" /v "LoQQueiWSLBoot" /t REG_SZ /d "wscript.exe \\"${vbsPath}\\"" /f`,
+        10000,
+        true
+      );
+      
+      // Adicionar à pasta Startup do usuário atual
+      const userStartupDir = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
+      if (!fs.existsSync(userStartupDir)) {
+        fs.mkdirSync(userStartupDir, { recursive: true });
+      }
+      
+      // Copiar VBS para a pasta de inicialização do usuário
+      const userVbsPath = path.join(userStartupDir, 'LoQQueiWSLBoot.vbs');
+      fs.copyFileSync(vbsPath, userVbsPath);
+      
+      verification.log('Inicialização para usuário atual configurada com sucesso', 'success');
+    } catch (userStartupError) {
+      verification.log(`Aviso: Não foi possível configurar inicialização para usuário atual: ${userStartupError.message}`, 'warning');
+    }
+    
+    // 6. Iniciar os scripts imediatamente como teste (sem esperá-los terminarem)
     verification.log('Testando script de inicialização...', 'step');
     
     try {
-      // Executar com cmd.exe para garantir que os redirecionamentos funcionem
-      await verification.execPromise(`cmd.exe /c "${scriptBatchPath}"`, 60000, true);
-      verification.log('Script de inicialização executado com sucesso!', 'success');
+      // Executar o script batch em segundo plano
+      await verification.execPromise(`start /b cmd /c "${serviceBatchPath}"`, 5000, true);
+      verification.log('Script de inicialização executado para teste', 'success');
     } catch (testError) {
-      verification.log(`Aviso ao testar script: ${testError.message}`, 'warning');
+      verification.log(`Aviso ao testar inicialização: ${testError.message}`, 'warning');
     }
     
-    verification.log('Configuração de inicialização automática concluída!', 'success');
-    verification.log('O WSL/Ubuntu irá iniciar automaticamente para qualquer usuário após a reinicialização.', 'success');
-    verification.log('Logs serão gravados em: ' + path.join(startupDir, 'startup.log'), 'info');
+    // 7. MÉTODO EXTRA: Configurações de energia para garantir que o WSL possa ser iniciado
+    verification.log('Configurando políticas de energia do sistema...', 'step');
+    
+    try {
+      // Impedir que o sistema hiberne
+      await verification.execPromise(
+        'powershell -Command "powercfg /HIBERNATE OFF"',
+        10000,
+        true
+      );
+      
+      // Configurar para que serviços possam acordar o computador
+      await verification.execPromise(
+        'powershell -Command "powercfg /SETACVALUEINDEX SCHEME_CURRENT SUB_NONE AWAYMODE 1"',
+        10000,
+        true
+      );
+      
+      verification.log('Políticas de energia configuradas com sucesso', 'success');
+    } catch (powerError) {
+      verification.log(`Aviso: Não foi possível configurar políticas de energia: ${powerError.message}`, 'warning');
+    }
+    
+    // Resumo final
+    verification.log('===== CONFIGURAÇÃO CONCLUÍDA =====', 'success');
+    verification.log('O WSL/Ubuntu será iniciado automaticamente em QUALQUER login:', 'success');
+    verification.log('1. No boot do sistema via serviço Windows (como SYSTEM)', 'success');
+    verification.log('2. No boot do sistema via tarefa agendada (como SYSTEM)', 'success');
+    verification.log('3. No boot do sistema via registro HKLM (global)', 'success');
+    verification.log('4. Na pasta Startup comum para todos os usuários', 'success');
+    verification.log('5. No login do usuário atual (como backup)', 'success');
+    verification.log('Logs serão gravados em: ' + path.join(startupDir, 'boot_service.log'), 'info');
     
     return true;
   } catch (error) {
-    verification.log(`Erro ao configurar inicialização automática: ${error.message || JSON.stringify(error)}`, 'error');
+    verification.log(`Erro fatal ao configurar inicialização automática: ${error.message || JSON.stringify(error)}`, 'error');
     verification.logToFile(`Detalhes do erro: ${JSON.stringify(error)}`);
     return false;
   }

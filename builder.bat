@@ -72,14 +72,14 @@ if exist "Output" (
 @REM echo - Instalando dependências com limpeza forçada...
 @REM call npm install --force
 
-@REM echo.
-@REM echo Construindo aplicação Electron...
-@REM call npm run build
-@REM if %ERRORLEVEL% NEQ 0 (
-@REM   echo Erro: Não foi possível construir a aplicação Electron
-@REM   pause
-@REM   exit /b 1
-@REM )
+echo.
+echo Construindo aplicação Electron...
+call npm run build
+if %ERRORLEVEL% NEQ 0 (
+  echo Erro: Não foi possível construir a aplicação Electron
+  pause
+  exit /b 1
+)
 
 echo.
 echo Compilando o instalador com Inno Setup...
