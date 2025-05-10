@@ -89,7 +89,6 @@ brazilianportuguese.WSLUpdateFailed=Atualização do WSL falhou. Consulte os log
 
 [Tasks]
 ; Adicionar opção para o usuário escolher se quer que o app sempre execute como admin
-Name: "alwaysadmin"; Description: "Sempre executar como administrador"; GroupDescription: "Configurações adicionais:"; Flags: unchecked
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
 Name: "quicklaunchicon"; Description: "{cm:CreateQuickLaunchIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce; Check: not IsAdminInstallMode
 Name: "startmenuicon"; Description: "Criar ícone no Menu Iniciar"; GroupDescription: "{cm:AdditionalIcons}"; Flags: checkedonce
@@ -104,10 +103,14 @@ Source: ".\node_installer.msi"; DestDir: "{app}"; Flags: ignoreversion
 ; Scripts de instalação e atualização
 Source: ".\scripts\install_wsl_ubuntu.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 Source: ".\scripts\update_wsl.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
+; Script de serviço WSL para inicialização global
+Source: ".\scripts\wsl-service-setup.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 ; Recursos do print_server_desktop
 Source: ".\resources\print_server_desktop\*"; DestDir: "{app}\resources\print_server_desktop"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Scripts de atualização para o WSL
 Source: ".\resources\print_server_desktop\updates\*"; DestDir: "{app}\resources\print_server_desktop\updates"; Flags: ignoreversion
+; Script para configurar permissões globais do WSL
+Source: ".\scripts\configure-wsl-permissions.ps1"; DestDir: "{app}\scripts"; Flags: ignoreversion
 
 [Dirs]
 Name: "{app}"; Permissions: everyone-full
@@ -207,7 +210,7 @@ Filename: "cmd.exe"; Parameters: "/c echo y| cacls ""C:\Windows\System32\wsl.exe
 ; Desabilitar totalmente UAC para permitir acesso completo ao WSL
 Filename: "reg.exe"; Parameters: "add HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System /v EnableLUA /t REG_DWORD /d 0 /f"; Flags: runhidden; StatusMsg: "Desabilitando UAC para acesso WSL..."
 
-; Abordagem radical para resolver problemas específicos com códigos de erro 4294967295 e 4294966852
+; Abordagem radical para resolver problemas específicos com códigos de erro
 Filename: "cmd.exe"; Parameters: "/c wsl --update --web-download"; Flags: runhidden; StatusMsg: "Atualizando WSL..."
 
 ; Reconfigurando com método alternativo para instalação específica contra erros 4294967295
@@ -219,7 +222,7 @@ Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -Command ""& {{
 ; Forçar reinício do serviço WSL para aplicar configurações
 Filename: "cmd.exe"; Parameters: "/c net stop LxssManager && net start LxssManager"; Flags: runhidden; StatusMsg: "Reiniciando serviço WSL..."
 
-; Método radical para corrigir permissões (para resolver erro 4294967295)
+; Método radical para corrigir permissões
 Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wsl.exe"; Flags: runhidden; StatusMsg: "Tomando posse do WSL..."
 Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wslapi.dll"; Flags: runhidden; StatusMsg: "Tomando posse das DLLs de WSL..."
 Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wslservice.dll"; Flags: runhidden; StatusMsg: "Tomando posse das DLLs de WSL..."
@@ -227,6 +230,45 @@ Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wslhost.exe"; Flags
 
 ; Último recurso - garantir que WSL está sendo executado em processo de sistema
 Filename: "icacls.exe"; Parameters: """C:\Windows\System32\lxss"" /grant ""NT AUTHORITY\SYSTEM"":(OI)(CI)F"; Flags: runhidden skipifdoesntexist; StatusMsg: "Configurando permissões de sistema para WSL..."
+
+; Instalar serviço WSL para inicialização global
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\wsl-service-setup.ps1"""; Flags: runhidden; StatusMsg: "Instalando serviço WSL global..."; Check: not WizardSilent
+
+; Método radical - TAKEOWN para todos os arquivos WSL (necessário no Windows 11)
+Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wsl.exe"; Flags: runhidden; StatusMsg: "Tomando posse do WSL..."
+Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wslapi.dll"; Flags: runhidden; StatusMsg: "Tomando posse das DLLs de WSL..."
+Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wslservice.dll"; Flags: runhidden; StatusMsg: "Tomando posse das DLLs de WSL..."
+Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wslhost.exe"; Flags: runhidden; StatusMsg: "Tomando posse das DLLs de WSL..."
+
+; Permissões EXTREMAMENTE radicais - necessárias para Windows 11 com proteções avançadas
+Filename: "cmd.exe"; Parameters: "/c FOR %f in (wsl.exe,wslapi.dll,wslhost.exe,wslservice.dll) DO (takeown /f C:\Windows\System32\%f && icacls C:\Windows\System32\%f /reset && icacls C:\Windows\System32\%f /grant Everyone:F)"; Flags: runhidden; StatusMsg: "Aplicando permissões radicais para WSL..."
+
+; Reiniciar totalmente o serviço WSL para garantir aplicação das configurações
+Filename: "cmd.exe"; Parameters: "/c net stop LxssManager && net start LxssManager"; Flags: runhidden; StatusMsg: "Reiniciando serviço WSL..."
+
+; Variáveis de ambiente extremamente permissivas para WSL
+Filename: "cmd.exe"; Parameters: "/c setx WSL_DISABLE_ADMIN_CHECK 1 /M && setx WSL_IGNORE_PERMISSION_ERRORS 1 /M"; Flags: runhidden; StatusMsg: "Configurando variáveis de ambiente..."
+
+; Aplicar permissões extremas para WSL (script separado)
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\scripts\configure-wsl-permissions.ps1"""; Flags: runhidden; StatusMsg: "Configurando permissões globais para WSL..."; Check: not WizardSilent
+
+; Métodos adicionais de permissão
+Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wsl.exe"; Flags: runhidden; StatusMsg: "Tomando posse do WSL..."
+Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wslapi.dll"; Flags: runhidden; StatusMsg: "Tomando posse das DLLs de WSL..."
+Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wslservice.dll"; Flags: runhidden skipifdoesntexist; StatusMsg: "Tomando posse das DLLs de WSL..."
+Filename: "takeown.exe"; Parameters: "/f C:\Windows\System32\wslhost.exe"; Flags: runhidden skipifdoesntexist; StatusMsg: "Tomando posse das DLLs de WSL..."
+
+; Permitir acesso total a WSL.exe para todos
+Filename: "icacls.exe"; Parameters: "C:\Windows\System32\wsl.exe /grant Everyone:F"; Flags: runhidden; StatusMsg: "Concedendo permissões..."
+Filename: "icacls.exe"; Parameters: "C:\Windows\System32\wslapi.dll /grant Everyone:F"; Flags: runhidden; StatusMsg: "Concedendo permissões..."
+
+; Configurar serviço WSL para todos os usuários
+Filename: "sc.exe"; Parameters: "config LxssManager start= auto"; Flags: runhidden; StatusMsg: "Configurando serviço WSL..."
+Filename: "sc.exe"; Parameters: "sdset LxssManager D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BU)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;WD)"; Flags: runhidden; StatusMsg: "Configurando permissões de serviço WSL..."
+
+; Variáveis de ambiente para ignorar restrições de permissão
+Filename: "setx.exe"; Parameters: "WSL_DISABLE_ADMIN_CHECK 1 /M"; Flags: runhidden; StatusMsg: "Configurando variáveis de ambiente..."
+Filename: "setx.exe"; Parameters: "WSL_IGNORE_PERMISSION_ERRORS 1 /M"; Flags: runhidden; StatusMsg: "Configurando variáveis de ambiente..."
 
 
 [UninstallRun]
@@ -275,6 +317,33 @@ Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control"; ValueType: dword; ValueN
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "WSL_DISABLE_ADMIN_CHECK"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "WSL_IGNORE_PERMISSION_ERRORS"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
 
+; Configurações radicais para WSL - múltiplos métodos de bypass
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Lxss"; ValueType: dword; ValueName: "SkipAdminCheck"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\LxssManager"; ValueType: dword; ValueName: "Start"; ValueData: "2"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\LxssManager"; ValueType: dword; ValueName: "Type"; ValueData: "16"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\LxssManager"; ValueType: string; ValueName: "ObjectName"; ValueData: "LocalSystem"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+
+; Tornar o WSL realmente disponível para todos os usuários sem restrições
+Root: HKLM; Subkey: "SOFTWARE\Policies\Microsoft\Windows\Windows Subsystem for Linux"; ValueType: dword; ValueName: "AllowNonAdminAccess"; ValueData: "1"; Flags: createvalueifdoesntexist uninsdeletevalue; Permissions: everyone-full
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"; ValueType: dword; ValueName: "WSLAccessForAll"; ValueData: "1"; Flags: createvalueifdoesntexist
+
+; Configurações extremas do ambiente para ignorar restrições de WSL
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "WSL_DISABLE_ADMIN_CHECK"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "WSL_IGNORE_PERMISSION_ERRORS"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+
+; Configurações radicais para WSL - múltiplos métodos de bypass
+Root: HKLM; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Lxss"; ValueType: dword; ValueName: "SkipAdminCheck"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\LxssManager"; ValueType: dword; ValueName: "Start"; ValueData: "2"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\LxssManager"; ValueType: dword; ValueName: "Type"; ValueData: "16"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Services\LxssManager"; ValueType: string; ValueName: "ObjectName"; ValueData: "LocalSystem"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+
+; Permitir acesso ao WSL para usuários comuns
+Root: HKLM; Subkey: "SOFTWARE\Policies\Microsoft\Windows\Windows Subsystem for Linux"; ValueType: dword; ValueName: "AllowNonAdminAccess"; ValueData: "1"; Flags: createvalueifdoesntexist uninsdeletevalue; Permissions: everyone-full
+
+; Configurações de ambiente para ignorar restrições
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "WSL_DISABLE_ADMIN_CHECK"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "WSL_IGNORE_PERMISSION_ERRORS"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
+
 
 [Code]
 // Variáveis globais para status
@@ -286,7 +355,6 @@ var
   VirtualizationEnabled: Boolean;
   IsInstalledVersion: String;
   IsUpdateMode: Boolean;
-  ResultCode: Integer;
 
 procedure FixWSLSpecificErrors;
 var
@@ -690,21 +758,6 @@ begin
     Exec('icacls.exe', 'C:\ProgramData\Microsoft\Windows\WindowsApps /grant:r *S-1-5-32-545:(OI)(CI)RX', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
     ConfigureSystemWide;
-
-    // Se o usuário selecionou executar como admin, configurar isso
-    if IsTaskSelected('alwaysadmin') then
-    begin
-      RegWriteStringValue(HKEY_LOCAL_MACHINE, 'SOFTWARE\Microsoft\Windows\CurrentVersion\AppCompatFlags\Layers', ExpandConstant('{app}\{#MyAppExeName}'), 'RUNASADMIN');
-      Log('Aplicativo configurado para executar como administrador conforme solicitado pelo usuário.');
-    end else
-    begin
-      // Garantir que não haja flag de administrador
-      if RegValueExists(HKEY_LOCAL_MACHINE, 'SOFTWARE\Microsoft\Windows\CurrentVersion\AppCompatFlags\Layers', ExpandConstant('{app}\{#MyAppExeName}')) then
-      begin
-        RegDeleteValue(HKEY_LOCAL_MACHINE, 'SOFTWARE\Microsoft\Windows\CurrentVersion\AppCompatFlags\Layers', ExpandConstant('{app}\{#MyAppExeName}'));
-        Log('Removida configuração para executar como administrador.');
-      end;
-    end;
   end;
 end;
 

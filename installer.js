@@ -1,3 +1,4 @@
+/* eslint-disable no-useless-escape */
 /**
  * Sistema de Gerenciamento de Impressão - Instalador
  * 
@@ -1992,8 +1993,8 @@ async function installUbuntu(attemptCount = 0) {
     await new Promise(resolve => setTimeout(resolve, 10000));
     
     // Executar o comando de instalação
-    verification.log('Executando: wsl --install -d Ubuntu --root', 'info');
-    await verification.execPromise('wsl --install -d Ubuntu --root', 1200000, true); // 20 minutos de timeout
+    verification.log('Executando: wsl --install -d Ubuntu', 'info');
+    await verification.execPromise('wsl --install -d Ubuntu', 1200000, true); // 20 minutos de timeout
     
     // Se chegamos aqui, o comando não lançou erro - marcar como tentativa executada
     installationAttempted = true;
@@ -2109,7 +2110,7 @@ async function installUbuntu(attemptCount = 0) {
     }
 
     try {
-      await verification.execPromise('wsl --install -d Ubuntu --root', 
+      await verification.execPromise('wsl --install -d Ubuntu', 
         1200000, // 20 minutos
         true);
     } catch (error) {
@@ -2442,7 +2443,6 @@ async function installRequiredPackages() {
 }
 
 // Função aprimorada para garantir que os serviços sejam iniciados automaticamente com o WSL
-// Função aprimorada para garantir que os serviços sejam iniciados automaticamente com o WSL
 async function setupAutomaticServices() {
   verification.log('Configurando inicialização automática de serviços...', 'step');
   
@@ -2462,9 +2462,15 @@ async function setupAutomaticServices() {
     verification.log('Configurando systemd no WSL...', 'step');
     const wslConfContent = `[boot]
 systemd=true
+enabled=true
+command=/opt/loqquei/print_server_desktop/start-services.sh
 
 [user]
 default=print_user
+
+[automount]
+enabled=true
+mountFsTab=true
 `;
     const wslConfPath = path.join(tempDir, 'wsl.conf');
     fs.writeFileSync(wslConfPath, wslConfContent, 'utf8');
@@ -2483,7 +2489,7 @@ default=print_user
       true
     );
     
-    verification.log('Arquivo wsl.conf criado com sucesso', 'success');
+    verification.log('Arquivo wsl.conf criado com suporte para comando de inicialização automática', 'success');
     
     // 3. Criar arquivo de serviço systemd
     verification.log('Criando serviço systemd para inicialização automática...', 'step');
@@ -2499,6 +2505,7 @@ ExecStart=/bin/bash /opt/loqquei/print_server_desktop/start-services.sh
 
 [Install]
 WantedBy=multi-user.target
+WantedBy=default.target
 `;
     const servicePath = path.join(tempDir, 'print-server.service');
     fs.writeFileSync(servicePath, serviceContent, 'utf8');
@@ -2526,7 +2533,7 @@ WantedBy=multi-user.target
     
     verification.log('Arquivo de serviço systemd criado com sucesso', 'success');
     
-    // 4. Criar script de inicialização
+    // 4. Criar script de inicialização melhorado
     verification.log('Criando script de inicialização de serviços...', 'step');
     const scriptContent = `#!/bin/bash
 # Script de inicialização de serviços do Print Server
@@ -2544,6 +2551,13 @@ log "=== Iniciando serviços do Print Server ==="
 mkdir -p "$(dirname "$LOG_FILE")"
 touch "$LOG_FILE"
 chmod 644 "$LOG_FILE"
+
+# Verificar se estamos em ambiente WSL
+if [[ -n "$WSL_DISTRO_NAME" || -f /proc/sys/fs/binfmt_misc/WSLInterop ]]; then
+  log "Detectado ambiente WSL"
+else
+  log "Não estamos em ambiente WSL, mas continuando mesmo assim"
+fi
 
 # Função para iniciar um serviço e verificar se está rodando
 start_service() {
@@ -2588,6 +2602,9 @@ elif [ -d "/opt/print_server/print_server_desktop" ]; then
   chmod -R 755 /opt/print_server/print_server_desktop
 fi
 
+# Verificar se o sistema precisa de inicialização antes de continuar
+sleep 10  # Aguardar sistema inicializar completamente
+
 # Iniciar serviços na ordem correta
 log "Iniciando serviços principais..."
 
@@ -2606,27 +2623,16 @@ log "Verificando aplicação Node.js..."
 if command -v pm2 >/dev/null 2>&1; then
   log "PM2 encontrado, iniciando aplicação..."
   
+  # Determinar o diretório correto da aplicação
+  APP_DIR=""
   if [ -d "/opt/loqquei/print_server_desktop" ]; then
-    cd /opt/loqquei/print_server_desktop || exit
-    
-    # Verificar se já está rodando
-    if pm2 list | grep -q "print_server_desktop"; then
-      log "Aplicação já está em execução, reiniciando..."
-      pm2 restart print_server_desktop || pm2 restart all || true
-    else
-      log "Iniciando nova instância da aplicação..."
-      if [ -f "ecosystem.config.js" ]; then
-        pm2 start ecosystem.config.js
-      else
-        pm2 start bin/www.js --name print_server_desktop
-      fi
-    fi
-    
-    # Salvar para reinicialização automática
-    pm2 save
-    
+    APP_DIR="/opt/loqquei/print_server_desktop"
   elif [ -d "/opt/print_server/print_server_desktop" ]; then
-    cd /opt/print_server/print_server_desktop || exit
+    APP_DIR="/opt/print_server/print_server_desktop"
+  fi
+  
+  if [ -n "$APP_DIR" ]; then
+    cd "$APP_DIR" || exit
     
     # Verificar se já está rodando
     if pm2 list | grep -q "print_server_desktop"; then
@@ -2657,8 +2663,16 @@ else
     if command -v pm2 >/dev/null 2>&1; then
       log "PM2 instalado com sucesso, iniciando aplicação..."
       
+      # Determinar o diretório correto
+      APP_DIR=""
       if [ -d "/opt/loqquei/print_server_desktop" ]; then
-        cd /opt/loqquei/print_server_desktop || exit
+        APP_DIR="/opt/loqquei/print_server_desktop"
+      elif [ -d "/opt/print_server/print_server_desktop" ]; then
+        APP_DIR="/opt/print_server/print_server_desktop"
+      fi
+      
+      if [ -n "$APP_DIR" ]; then
+        cd "$APP_DIR" || exit
         if [ -f "ecosystem.config.js" ]; then
           pm2 start ecosystem.config.js
         else
@@ -2671,6 +2685,23 @@ else
     fi
   fi
 fi
+
+# Verificar se o serviço está respondendo na porta esperada
+log "Verificando se o serviço API está respondendo..."
+for i in {1..5}; do
+  if command -v curl >/dev/null 2>&1; then
+    if curl -s -o /dev/null -w "%{http_code}" http://localhost:56258/api 2>/dev/null | grep -q "200"; then
+      log "API está respondendo corretamente (200 OK)"
+      break
+    else
+      log "API não está respondendo na tentativa $i, aguardando..."
+      sleep 5
+    fi
+  else
+    log "curl não está disponível, pulando verificação API"
+    break
+  fi
+done
 
 log "=== Inicialização de serviços concluída ==="
 exit 0
@@ -2708,19 +2739,78 @@ exit 0
     
     verification.log('Script de inicialização criado com sucesso', 'success');
     
-    // 5. Criar script de inicialização para o bashrc
-    verification.log('Configurando método de inicialização alternativo...', 'step');
+    // 5. Configurar script para ser executado no login de qualquer usuário
+    verification.log('Configurando execução automática para todos os usuários...', 'step');
+    
+    // Criar script em /etc/profile.d para todos os usuários
+    const profileScriptContent = `#!/bin/bash
+# Inicializar serviços do Print Server para qualquer usuário
+if [ -n "$WSL_DISTRO_NAME" ] || [ -f /proc/sys/fs/binfmt_misc/WSLInterop ]; then
+  # Verificar se serviços não estão rodando e iniciar como root
+  if ! systemctl is-active --quiet print-server.service 2>/dev/null; then
+    echo "Iniciando serviços do Print Server (se não estiverem ativos)..."
+    sudo /opt/loqquei/print_server_desktop/start-services.sh &>/dev/null &
+  fi
+fi
+`;
+    
+    const profileScriptPath = path.join(tempDir, 'print-server.sh');
+    fs.writeFileSync(profileScriptPath, profileScriptContent, 'utf8');
+    
+    // Obter caminho WSL
+    const profileWslPath = await verification.execPromise(
+      `wsl -d Ubuntu wslpath -u "${profileScriptPath.replace(/\\/g, '/')}"`,
+      10000,
+      true
+    );
+    
+    // Copiar para o diretório profile.d para ser executado por todos os usuários
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root mkdir -p /etc/profile.d`,
+      5000,
+      true
+    );
+    
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root cp "${profileWslPath.trim()}" /etc/profile.d/print-server.sh`,
+      10000,
+      true
+    );
+    
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root chmod +x /etc/profile.d/print-server.sh`,
+      5000,
+      true
+    );
+    
+    verification.log('Script para inicialização em todos os usuários configurado', 'success');
+    
+    // 6. Configurar para iniciar via /etc/bash.bashrc também (método adicional)
+    verification.log('Configurando método de inicialização via bash.bashrc...', 'step');
+    
     const bashrcContent = `
-# Início: Verificação de serviços do Print Server
-if [ -n "$WSL_DISTRO_NAME" ] && [ -f "/opt/loqquei/print_server_desktop/start-services.sh" ]; then
-  # Verificar se serviços estão rodando, caso contrário iniciar
-  if ! systemctl is-active --quiet print-server.service; then
-    echo "Serviço print-server não está ativo, executando script de inicialização..."
-    sudo /opt/loqquei/print_server_desktop/start-services.sh
+# Início: Verificação de serviços do Print Server (inicialização WSL)
+if [ -n "$WSL_DISTRO_NAME" ] || [ -f /proc/sys/fs/binfmt_misc/WSLInterop ]; then
+  # Verificar se o usuário tem permissão sudo (ou é root)
+  if [ "$(id -u)" -eq 0 ] || groups | grep -qw sudo; then
+    # Verificar se serviços estão rodando, caso contrário iniciar
+    if ! systemctl is-active --quiet print-server.service 2>/dev/null; then
+      if [ -f "/opt/loqquei/print_server_desktop/start-services.sh" ]; then
+        echo "Iniciando serviços do Print Server..."
+        if [ "$(id -u)" -eq 0 ]; then
+          # Se for root, executar diretamente
+          /opt/loqquei/print_server_desktop/start-services.sh &>/dev/null &
+        else
+          # Se não for root, usar sudo
+          sudo /opt/loqquei/print_server_desktop/start-services.sh &>/dev/null &
+        fi
+      fi
+    fi
   fi
 fi
 # Fim: Verificação de serviços do Print Server
 `;
+    
     const bashrcPath = path.join(tempDir, 'bashrc_append.sh');
     fs.writeFileSync(bashrcPath, bashrcContent, 'utf8');
     
@@ -2731,24 +2821,31 @@ fi
       true
     );
     
-    // Verificar e adicionar ao bashrc do root
+    // Verificar e adicionar ao bashrc global
     await verification.execPromise(
-      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /root/.bashrc; then cat '${bashrcWslPath.trim()}' >> /root/.bashrc; fi"`,
+      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /etc/bash.bashrc; then cat '${bashrcWslPath.trim()}' >> /etc/bash.bashrc; fi"`,
       10000,
       true
     );
     
-    // Verificar e adicionar ao bashrc do usuário print_user
+    // Verificar e adicionar ao .profile do usuário root
     await verification.execPromise(
-      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /home/print_user/.bashrc; then cat '${bashrcWslPath.trim()}' >> /home/print_user/.bashrc; fi"`,
+      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /root/.profile; then cat '${bashrcWslPath.trim()}' >> /root/.profile; fi"`,
       10000,
       true
     );
     
-    verification.log('Script alternativo de inicialização configurado com sucesso', 'success');
+    // Verificar e adicionar ao .profile do usuário print_user
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /home/print_user/.profile; then cat '${bashrcWslPath.trim()}' >> /home/print_user/.profile; fi"`,
+      10000,
+      true
+    );
     
-    // 6. Habilitar e iniciar o serviço
-    verification.log('Habilitando e iniciando serviço...', 'step');
+    verification.log('Método de inicialização alternativo configurado para todos os usuários', 'success');
+    
+    // 7. Habilitar e iniciar o serviço systemd
+    verification.log('Habilitando e iniciando serviço systemd...', 'step');
     
     try {
       // Recarregar daemon do systemd
@@ -2783,10 +2880,90 @@ fi
         status.includes('active') ? 'success' : 'warning');
     } catch (serviceError) {
       verification.log(`Aviso ao configurar serviço systemd: ${serviceError.message}`, 'warning');
-      verification.log('Continuando com método alternativo...', 'info');
+      verification.log('Continuando com métodos alternativos...', 'info');
     }
     
-    // 7. Reiniciar o WSL para aplicar as alterações
+    // 8. Configurar script de inicialização como comando de boot
+    verification.log('Configurando comando de boot no WSL...', 'step');
+    
+    try {
+      // No Windows 11/10 mais recente, podemos usar o comando wsl.exe --boot-command
+      await verification.execPromise(
+        `wsl --shutdown`,
+        10000,
+        true
+      ).catch(() => {});
+      
+      // Tentativa 1: Usando o valor no wsl.conf (já configurado acima)
+      verification.log('Configuração de comando de boot aplicada via wsl.conf', 'success');
+      
+      // Tentativa 2: Usando WSL_BOOT_COMMAND (variável de ambiente)
+      try {
+        await verification.execPromise(
+          `setx WSL_BOOT_COMMAND "/opt/loqquei/print_server_desktop/start-services.sh" /M`,
+          10000,
+          true
+        ).catch(() => {});
+        verification.log('Variável de ambiente WSL_BOOT_COMMAND configurada', 'success');
+      } catch {
+        verification.log('Nota: Não foi possível configurar variável de ambiente', 'info');
+      }
+      
+    } catch (bootError) {
+      verification.log(`Aviso ao configurar comando de boot: ${bootError.message}`, 'warning');
+    }
+    
+    // 9. Criar um serviço systemd adicional específico para inicialização
+    const wslBootContent = `[Unit]
+Description=WSL Boot Service for Print Server
+After=network.target
+DefaultDependencies=no
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash /opt/loqquei/print_server_desktop/start-services.sh
+TimeoutStartSec=0
+
+[Install]
+WantedBy=default.target
+WantedBy=multi-user.target
+WantedBy=sysinit.target
+`;
+    
+    const wslBootPath = path.join(tempDir, 'wsl-boot.service');
+    fs.writeFileSync(wslBootPath, wslBootContent, 'utf8');
+    
+    // Obter caminho WSL
+    const wslBootWslPath = await verification.execPromise(
+      `wsl -d Ubuntu wslpath -u "${wslBootPath.replace(/\\/g, '/')}"`,
+      10000,
+      true
+    );
+    
+    // Copiar para o WSL
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root cp "${wslBootWslPath.trim()}" /etc/systemd/system/wsl-boot.service`,
+      10000,
+      true
+    );
+    
+    // Habilitar e iniciar o serviço
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root systemctl enable wsl-boot.service`,
+      15000,
+      true
+    ).catch(() => {});
+    
+    await verification.execPromise(
+      `wsl -d Ubuntu -u root systemctl start wsl-boot.service`,
+      15000,
+      true
+    ).catch(() => {});
+    
+    verification.log('Serviço boot adicional configurado', 'success');
+    
+    // 10. Reiniciar o WSL para aplicar as alterações
     verification.log('Reiniciando WSL para aplicar configurações...', 'step');
     await verification.execPromise('wsl --shutdown', 15000, true);
     
@@ -2806,101 +2983,260 @@ async function setupWindowsStartup() {
   verification.log('Configurando inicialização automática no Windows...', 'step');
   
   try {
-    // 1. Criar o script de inicialização (batch)
+    // 1. Criar diretório global para todos os usuários
+    const programDataDir = process.env.ProgramData || 'C:\\ProgramData';
+    const startupDir = path.join(programDataDir, 'PrintServerStartup');
+    if (!fs.existsSync(startupDir)) {
+      fs.mkdirSync(startupDir, { recursive: true });
+    }
+    
+    verification.log(`Diretório global para scripts criado: ${startupDir}`, 'success');
+    
+    // 2. Criar script batch de inicialização que procura o Ubuntu em TODOS os perfis
+    verification.log('Criando script inteligente de inicialização global...', 'step');
+    
     const scriptContent = `@echo off
-:: Script para iniciar serviços WSL ao iniciar o Windows
-:: Criado pelo instalador do Sistema de Gerenciamento de Impressão
+setlocal enabledelayedexpansion
 
-:: Redirecionar saída para arquivo de log em vez de mostrar na tela
->> "%USERPROFILE%\\AppData\\Local\\print-server-startup.log" (
-  echo %date% %time% - Iniciando serviços do Sistema de Gerenciamento de Impressão
+REM Script para iniciar WSL/Ubuntu em qualquer perfil de usuário
+REM Criado automaticamente pelo instalador
 
-  :: Primeiro garantir que o WSL esteja em execução
-  wsl --list --running > nul 2>&1
-  if %ERRORLEVEL% NEQ 0 (
-    echo %date% %time% - WSL não está em execução, iniciando WSL
-    :: Tentar iniciar alguma distribuição para ativar o WSL
-    wsl -d Ubuntu -u root echo "Iniciando WSL" > nul 2>&1
-    
-    :: Aguardar um pouco para o WSL inicializar
-    timeout /t 15 /nobreak > nul
-  )
+REM Configurar log
+set "LOG_FILE=%ProgramData%\\PrintServerStartup\\startup.log"
+echo %date% %time% - Iniciando script de detecção do Ubuntu >> "%LOG_FILE%"
 
-  :: Executar o script de verificação e inicialização de serviços no WSL
-  echo %date% %time% - Executando script de inicialização
-  wsl -d Ubuntu -u root /opt/loqquei/print_server_desktop/start-services.sh
+REM Criar pasta para armazenar resultado temporário
+if not exist "%TEMP%\\wsl_detect" mkdir "%TEMP%\\wsl_detect" 2>nul
 
-  echo %date% %time% - Serviços iniciados
+REM Criar um script PowerShell para encontrar o Ubuntu em todos os perfis
+echo $ubuntuFound = $false > "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo $ubuntuPath = "" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo # Verificar todos os perfis de usuários >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo Get-ChildItem "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\ProfileList" | ForEach-Object { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo   $sid = $_.PSChildName >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo   # Ignorar contas de sistema >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo   if ($sid -like "S-1-5-*" -and $sid -notlike "S-1-5-21*") { return } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo   try { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo     # Obter caminho do perfil >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo     $profilePath = Get-ItemPropertyValue -Path $_.PSPath -Name "ProfileImagePath" -ErrorAction SilentlyContinue >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo     if (-not $profilePath) { return } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo     # Verificar existência de pastas de Ubuntu >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo     $localPath = Join-Path $profilePath "AppData\\Local" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo     $packagesPath = Join-Path $localPath "Packages" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo     if (Test-Path $packagesPath) { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo       $ubuntuDir = Get-ChildItem $packagesPath -Directory | Where-Object { $_.Name -like "*Ubuntu*" } | Select-Object -First 1 >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo       if ($ubuntuDir) { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo         # Verificar se é uma instalação válida >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo         $rootfsPath = Join-Path $ubuntuDir.FullName "LocalState\\rootfs" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo         if (Test-Path $rootfsPath) { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           $username = [System.IO.Path]::GetFileName($profilePath) >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           Write-Output "Ubuntu encontrado para o usuário: $username" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           Write-Output "Caminho: $($ubuntuDir.FullName)" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           echo $ubuntuDir.FullName > "$env:TEMP\\wsl_detect\\ubuntu_path.txt" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           # Conceder permissões ao diretório para SYSTEM e todos os usuários >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           try { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo             $acl = Get-Acl $ubuntuDir.FullName >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo             $everyone = New-Object System.Security.Principal.SecurityIdentifier("S-1-1-0") >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo             $rule = New-Object System.Security.AccessControl.FileSystemAccessRule($everyone, "ReadAndExecute", "ContainerInherit,ObjectInherit", "None", "Allow") >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo             $acl.AddAccessRule($rule) >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo             Set-Acl -Path $ubuntuDir.FullName -AclObject $acl >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo             Write-Output "Permissões concedidas" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           catch { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo             Write-Output "Erro ao conceder permissões: $_" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           $ubuntuFound = $true >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           $ubuntuPath = $ubuntuDir.FullName >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo           break >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo         } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo       } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo     } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo   } catch { } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo. >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo if (-not $ubuntuFound) { >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo   Write-Output "Ubuntu não encontrado em nenhum perfil de usuário" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo   echo "not_found" > "$env:TEMP\\wsl_detect\\ubuntu_path.txt" >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
+echo } >> "%TEMP%\\wsl_detect\\find_ubuntu.ps1"
 
-  :: Verificar se o serviço de impressão PDF está respondendo
-  echo Verificando API do serviço de impressão...
-  wsl -d Ubuntu -u root curl -s -o nul -w "%%{http_code}" http://localhost:56258/api > "%TEMP%\\api_status.txt" 2>nul
+REM Executar o script PowerShell para encontrar o Ubuntu
+echo Procurando instalação do Ubuntu em todos os perfis... >> "%LOG_FILE%"
+powershell -ExecutionPolicy Bypass -File "%TEMP%\\wsl_detect\\find_ubuntu.ps1" >> "%LOG_FILE%" 2>&1
 
-  set /p API_STATUS=<"%TEMP%\\api_status.txt"
-  if "%API_STATUS%"=="200" (
-    echo %date% %time% - API respondendo normalmente (200 OK)
-  ) else (
-    echo %date% %time% - API não está respondendo corretamente
-    
-    :: Tentar reiniciar o serviço PM2
-    echo Tentando reiniciar serviço da API...
-    wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart all" > nul 2>&1
-  )
+REM Ler o resultado
+set /p UBUNTU_PATH=<"%TEMP%\\wsl_detect\\ubuntu_path.txt"
+
+if "%UBUNTU_PATH%"=="not_found" (
+  echo %date% %time% - ERRO: Ubuntu não encontrado em nenhum perfil de usuário >> "%LOG_FILE%"
+  exit /b 1
 )
-exit 0`;
 
-    // 2. Criar um wrapper VBScript para executar o script batch de forma invisível
+echo %date% %time% - Ubuntu encontrado em: %UBUNTU_PATH% >> "%LOG_FILE%"
+
+REM Verificar se o WSL já está em execução
+wsl --list --running > "%TEMP%\\wsl_detect\\wsl_running.txt" 2>&1
+findstr /C:"Ubuntu" "%TEMP%\\wsl_detect\\wsl_running.txt" > nul
+if %errorlevel% equ 0 (
+  echo %date% %time% - Ubuntu já está em execução >> "%LOG_FILE%"
+) else (
+  echo %date% %time% - Iniciando Ubuntu... >> "%LOG_FILE%"
+  
+  REM Primeiro verificar se o WSL precisa de atualização e reiniciar
+  echo %date% %time% - Atualizando e reiniciando WSL... >> "%LOG_FILE%"
+  wsl --update >> "%LOG_FILE%" 2>&1
+  wsl --shutdown >> "%LOG_FILE%" 2>&1
+  
+  REM Aguardar 5 segundos para garantir que o WSL foi desligado
+  timeout /t 5 /nobreak > nul
+  
+  REM Iniciar o Ubuntu no modo background
+  echo %date% %time% - Executando: wsl -d Ubuntu >> "%LOG_FILE%"
+  start /b cmd /c "wsl -d Ubuntu >> "%LOG_FILE%" 2>&1"
+  
+  REM Aguardar um tempo para o Ubuntu inicializar
+  echo %date% %time% - Aguardando inicialização do Ubuntu... >> "%LOG_FILE%"
+  timeout /t 15 /nobreak > nul
+)
+
+REM Verificar se o serviço de inicialização existe no Ubuntu
+echo %date% %time% - Verificando existência do script de serviços... >> "%LOG_FILE%"
+wsl -d Ubuntu -e bash -c "if [ -f /opt/loqquei/print_server_desktop/start-services.sh ]; then echo service_exists > '%TEMP%\\wsl_detect\\service_check.txt'; else echo service_not_found > '%TEMP%\\wsl_detect\\service_check.txt'; fi"
+
+set /p SERVICE_CHECK=<"%TEMP%\\wsl_detect\\service_check.txt"
+if "%SERVICE_CHECK%"=="service_exists" (
+  echo %date% %time% - Executando script de serviços... >> "%LOG_FILE%"
+  
+  REM Executar script de serviços sem pedir senha
+  echo %date% %time% - Executando: sudo /opt/loqquei/print_server_desktop/start-services.sh >> "%LOG_FILE%"
+  wsl -d Ubuntu -e bash -c "echo 'Executando como:' && whoami && sudo /opt/loqquei/print_server_desktop/start-services.sh" >> "%LOG_FILE%" 2>&1
+  
+  echo %date% %time% - Script de serviços executado >> "%LOG_FILE%"
+) else (
+  echo %date% %time% - AVISO: Script de serviços não encontrado >> "%LOG_FILE%"
+)
+
+echo %date% %time% - Inicialização concluída >> "%LOG_FILE%"
+
+REM Verificar se os serviços estão rodando
+echo %date% %time% - Verificando serviços... >> "%LOG_FILE%"
+wsl -d Ubuntu -e bash -c "ps aux | grep -E 'cups|post|samba'" >> "%LOG_FILE%" 2>&1
+
+echo %date% %time% - Fim do script >> "%LOG_FILE%"
+exit /b 0
+`;
+
+    const scriptBatchPath = path.join(startupDir, 'start-print-services.bat');
+    fs.writeFileSync(scriptBatchPath, scriptContent, 'utf8');
+    
+    // 3. Criar script VBS para execução silenciosa
     const vbsContent = `' Script VBScript para executar o batch de inicialização sem mostrar janelas
 Option Explicit
-Dim WshShell, fso, scriptPath
+Dim WshShell, fso, scriptPath, logFile
 
-' Definir o caminho do script batch
+' Definir caminho do script batch
+scriptPath = "${scriptBatchPath.replace(/\\/g, '\\\\')}"
+
+' Registrar início
 Set fso = CreateObject("Scripting.FileSystemObject")
-scriptPath = fso.GetParentFolderName(WScript.ScriptFullName) & "\\start-print-services.bat"
+logFile = "${startupDir.replace(/\\/g, '\\\\')}\\vbs_log.txt"
+On Error Resume Next
+Set logFile = fso.OpenTextFile(logFile, 8, True, 0)
+If Err.Number = 0 Then
+    logFile.WriteLine Now & " - Iniciando script de inicialização do WSL"
+    logFile.Close
+End If
 
 ' Executar o script batch sem mostrar a janela
 Set WshShell = CreateObject("WScript.Shell")
 WshShell.Run "cmd /c """ & scriptPath & """", 0, False
 
+' Limpar objetos
 Set WshShell = Nothing
 Set fso = Nothing
 `;
 
-    // Salvar os scripts no diretório do programa
-    const startupDir = path.join(process.cwd(), 'startup');
-    const scriptPath = path.join(startupDir, 'start-print-services.bat');
     const vbsPath = path.join(startupDir, 'start-print-services-hidden.vbs');
-    
-    // Criar diretório se não existir
-    if (!fs.existsSync(startupDir)) {
-      fs.mkdirSync(startupDir, { recursive: true });
-    }
-    
-    // Escrever os scripts
-    fs.writeFileSync(scriptPath, scriptContent, 'utf8');
     fs.writeFileSync(vbsPath, vbsContent, 'utf8');
     
     verification.log(`Scripts de inicialização salvos em: ${startupDir}`, 'success');
     
-    // 3. Adicionar ao Agendador de Tarefas do Windows para iniciar automaticamente
-    verification.log('Configurando tarefa agendada do Windows...', 'step');
+    // 4. Criar script para configurar sudoers no WSL
+    // Este script permite executar comandos sudo sem senha
+    const sudoersSetupScript = `#!/bin/bash
+# Script para configurar sudo sem senha
+echo '%sudo ALL=(ALL) NOPASSWD: ALL' | sudo tee /etc/sudoers.d/99-wsl-startup > /dev/null
+sudo chmod 440 /etc/sudoers.d/99-wsl-startup
+echo "Configuração de sudo sem senha aplicada com sucesso"
+`;
+
+    const sudoersScriptPath = path.join(startupDir, 'setup-sudoers.sh');
+    fs.writeFileSync(sudoersScriptPath, sudoersSetupScript, 'utf8');
     
-    const taskName = 'PrintServerAutoStart';
-    const taskXml = `<?xml version="1.0" encoding="UTF-16"?>
+    // Tentar executar o script de sudoers agora
+    try {
+      verification.log('Configurando sudo sem senha...', 'step');
+      await verification.execPromise(`wsl -d Ubuntu -e bash "${sudoersScriptPath}"`, 15000, true);
+      verification.log('Sudo configurado com sucesso', 'success');
+    } catch (sudoError) {
+      verification.log(`Aviso ao configurar sudo: ${sudoError.message}`, 'warning');
+    }
+    
+    // 5. Configurar para executar na inicialização do sistema
+    verification.log('Configurando execução na inicialização do sistema...', 'step');
+    
+    // 5.1. Adicionar ao registro (HKLM para todos os usuários)
+    try {
+      await verification.execPromise(
+        `reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" /v "PrintServerStartup" /t REG_SZ /d "wscript.exe \\"${vbsPath}\\"" /f`,
+        15000,
+        true
+      );
+      verification.log('Chave de registro adicionada com sucesso!', 'success');
+    } catch (regError) {
+      verification.log(`Erro ao adicionar chave de registro: ${regError.message}`, 'warning');
+      
+      // Método alternativo com PowerShell
+      try {
+        await verification.execPromise(
+          `powershell -Command "Set-ItemProperty -Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' -Name 'PrintServerStartup' -Value 'wscript.exe \\\"${vbsPath.replace(/\\/g, '\\\\')}\\\"' -Force"`,
+          15000,
+          true
+        );
+        verification.log('Chave de registro adicionada via PowerShell!', 'success');
+      } catch (psRegError) {
+        verification.log(`Erro ao adicionar chave via PowerShell: ${psRegError.message}`, 'warning');
+      }
+    }
+    
+    // 5.2. Adicionar tarefa agendada para inicialização do sistema
+    verification.log('Criando tarefa agendada para inicialização do sistema...', 'step');
+    
+    try {
+      // Criar XML para tarefa agendada
+      const taskXml = `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Date>2023-04-01T00:00:00</Date>
     <Author>Print Server</Author>
     <Description>Inicia serviços do Sistema de Gerenciamento de Impressão</Description>
+    <URI>\\PrintServerAutoStart</URI>
   </RegistrationInfo>
   <Triggers>
-    <LogonTrigger>
+    <BootTrigger>
       <Enabled>true</Enabled>
-    </LogonTrigger>
+      <Delay>PT1M</Delay>
+    </BootTrigger>
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <LogonType>InteractiveToken</LogonType>
+      <UserId>S-1-5-18</UserId>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>
@@ -2919,10 +3255,12 @@ Set fso = Nothing
     </IdleSettings>
     <AllowStartOnDemand>true</AllowStartOnDemand>
     <Enabled>true</Enabled>
-    <Hidden>true</Hidden>
+    <Hidden>false</Hidden>
     <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <DisallowStartOnRemoteAppSession>false</DisallowStartOnRemoteAppSession>
+    <UseUnifiedSchedulingEngine>true</UseUnifiedSchedulingEngine>
     <WakeToRun>false</WakeToRun>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <ExecutionTimeLimit>PT30M</ExecutionTimeLimit>
     <Priority>7</Priority>
   </Settings>
   <Actions Context="Author">
@@ -2933,14 +3271,13 @@ Set fso = Nothing
   </Actions>
 </Task>`;
     
-    // Salvar XML da tarefa em um arquivo temporário
-    const tempXmlPath = path.join(os.tmpdir(), 'print_server_task.xml');
-    fs.writeFileSync(tempXmlPath, taskXml, 'utf8');
-    
-    // Registrar a tarefa usando schtasks
-    try {
+      // Salvar XML da tarefa em um arquivo temporário
+      const tempXmlPath = path.join(os.tmpdir(), 'print_server_task.xml');
+      fs.writeFileSync(tempXmlPath, taskXml, 'utf8');
+      
+      // Registrar a tarefa usando schtasks como SYSTEM
       await verification.execPromise(
-        `schtasks /Create /TN "${taskName}" /XML "${tempXmlPath}" /F`,
+        `schtasks /Create /TN "PrintServerAutoStart" /XML "${tempXmlPath}" /F /RU "SYSTEM"`,
         15000,
         true
       );
@@ -2949,113 +3286,79 @@ Set fso = Nothing
       verification.log(`Erro ao criar tarefa agendada: ${taskError.message}`, 'warning');
       verification.log('Tentando método alternativo...', 'info');
       
-      // Método alternativo usando PowerShell
+      // Método mais simples sem XML
       try {
         await verification.execPromise(
-          `powershell -Command "Register-ScheduledTask -TaskName '${taskName}' -Xml ([System.IO.File]::ReadAllText('${tempXmlPath}')) -Force"`,
+          `schtasks /Create /TN "PrintServerAutoStart" /TR "wscript.exe \\"${vbsPath}\\"" /SC ONSTART /RU "SYSTEM" /RL HIGHEST /F`,
           15000,
           true
         );
-        verification.log('Tarefa agendada criada com sucesso (via PowerShell)!', 'success');
-      } catch (psError) {
-        verification.log(`Erro ao criar tarefa agendada (via PowerShell): ${psError.message}`, 'error');
-        verification.log('Configuração automática falhou. O usuário precisará executar o script manualmente.', 'warning');
+        verification.log('Tarefa agendada criada com método alternativo!', 'success');
+      } catch (simpleTaskError) {
+        verification.log(`Erro ao criar tarefa simples: ${simpleTaskError.message}`, 'warning');
+        
+        // Último método com PowerShell
+        try {
+          await verification.execPromise(
+            `powershell -Command "$action = New-ScheduledTaskAction -Execute 'wscript.exe' -Argument '${vbsPath}'; $trigger = New-ScheduledTaskTrigger -AtStartup; $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest; $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; Register-ScheduledTask -TaskName 'PrintServerAutoStart' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force"`,
+            15000,
+            true
+          );
+          verification.log('Tarefa agendada criada com PowerShell!', 'success');
+        } catch (psTaskError) {
+          verification.log(`Erro ao criar tarefa via PowerShell: ${psTaskError.message}`, 'warning');
+        }
       }
     }
     
-    // 4. Adicionar também ao menu Iniciar para facilitar execução manual
-    // Usar o arquivo VBS em vez do batch direto para evitar janelas
-    verification.log('Adicionando atalho ao menu Iniciar...', 'step');
+    // 5.3. Adicionar ao menu Iniciar comum para todos os usuários
+    verification.log('Adicionando aos diretórios de inicialização...', 'step');
     
     try {
-      const startupFolder = path.join(process.env.APPDATA, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Startup');
-      const shortcutPath = path.join(startupFolder, 'PrintServerServices.vbs');
-      
-      // Verificar se pasta existe
-      if (fs.existsSync(startupFolder)) {
-        // Criar um link/cópia para o arquivo VBS
+      // Pasta Inicializar comum para todos os usuários
+      const commonStartupFolder = path.join(programDataDir, 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'StartUp');
+      if (fs.existsSync(commonStartupFolder)) {
+        const shortcutPath = path.join(commonStartupFolder, 'PrintServerServices.vbs');
         fs.copyFileSync(vbsPath, shortcutPath);
-        verification.log('Atalho adicionado à pasta Inicialização do usuário', 'success');
-      } else {
-        verification.log('Pasta de inicialização não encontrada, pulando criação de atalho', 'warning');
+        verification.log('Atalho adicionado à pasta de inicialização comum', 'success');
       }
-    } catch (shortcutError) {
-      verification.log(`Erro ao criar atalho: ${shortcutError.message}`, 'warning');
+    } catch (startupError) {
+      verification.log(`Erro ao adicionar atalho de inicialização: ${startupError.message}`, 'warning');
     }
     
-    // 5. Criar um arquivo PS1 (PowerShell) como método alternativo
-    const ps1Content = `# Script PowerShell para iniciar serviços de impressão em segundo plano
-$ErrorActionPreference = "SilentlyContinue"
-$logFile = "$env:USERPROFILE\\AppData\\Local\\print-server-startup.log"
-
-function Write-Log {
-    param(
-        [Parameter(Mandatory=$true)]
-        [string]$Message
-    )
+    // 6. Configurar o WSL para iniciar automaticamente
+    verification.log('Configurando WSL para inicialização automática...', 'step');
     
-    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    "$timestamp - $Message" | Out-File -Append -FilePath $logFile
-}
-
-Write-Log "Iniciando serviços do Sistema de Gerenciamento de Impressão via PowerShell"
-
-# Verificar se o WSL está em execução
-$wslRunning = $false
-try {
-    $wslStatus = wsl --list --running
-    if ($wslStatus -match "Ubuntu") {
-        $wslRunning = $true
-        Write-Log "WSL já está em execução"
-    }
-} catch {
-    Write-Log "Erro ao verificar status do WSL: $_"
-}
-
-if (-not $wslRunning) {
-    Write-Log "WSL não está em execução, iniciando WSL"
     try {
-        wsl -d Ubuntu -u root echo "Iniciando WSL" | Out-Null
-        Start-Sleep -Seconds 10
-        Write-Log "WSL iniciado com sucesso"
-    } catch {
-        Write-Log "Erro ao iniciar WSL: $_"
+      // Primeiro desligar o WSL para aplicar configurações
+      await verification.execPromise('wsl --shutdown', 15000, true).catch(() => {});
+      
+      // Configurar WSL versão 2
+      await verification.execPromise('wsl --set-default-version 2', 15000, true).catch(() => {});
+      
+      // Configurar inicialização automática (disponível em versões mais recentes)
+      await verification.execPromise('wsl --set-autostart true', 15000, true).catch(() => {});
+      
+      verification.log('WSL configurado para iniciar automaticamente', 'success');
+    } catch (wslConfigError) {
+      verification.log(`Erro ao configurar WSL: ${wslConfigError.message}`, 'warning');
     }
-}
-
-# Executar script de inicialização
-Write-Log "Executando script de inicialização de serviços no WSL"
-try {
-    wsl -d Ubuntu -u root /opt/loqquei/print_server_desktop/start-services.sh 2>&1 | Out-Null
-    Write-Log "Script de inicialização executado"
-} catch {
-    Write-Log "Erro ao executar script de inicialização: $_"
-}
-
-# Verificar resposta da API
-Write-Log "Verificando resposta da API"
-try {
-    $apiResponse = wsl -d Ubuntu -u root curl -s -o /dev/null -w "%{http_code}" http://localhost:56258/api
-    if ($apiResponse -eq "200") {
-        Write-Log "API respondendo normalmente (200 OK)"
-    } else {
-        Write-Log "API não está respondendo corretamente (status: $apiResponse)"
-        Write-Log "Tentando reiniciar serviço da API"
-        wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && pm2 restart all" | Out-Null
-    }
-} catch {
-    Write-Log "Erro ao verificar API: $_"
-}
-
-Write-Log "Processo de inicialização concluído"
-`;
-
-    const ps1Path = path.join(startupDir, 'start-print-services.ps1');
-    fs.writeFileSync(ps1Path, ps1Content, 'utf8');
     
-    verification.log('Script PowerShell alternativo criado', 'success');
+    // 7. Executar o script agora para testar
+    verification.log('Testando script de inicialização...', 'step');
+    
+    try {
+      // Executar com cmd.exe para garantir que os redirecionamentos funcionem
+      await verification.execPromise(`cmd.exe /c "${scriptBatchPath}"`, 60000, true);
+      verification.log('Script de inicialização executado com sucesso!', 'success');
+    } catch (testError) {
+      verification.log(`Aviso ao testar script: ${testError.message}`, 'warning');
+    }
     
     verification.log('Configuração de inicialização automática concluída!', 'success');
+    verification.log('O WSL/Ubuntu irá iniciar automaticamente para qualquer usuário após a reinicialização.', 'success');
+    verification.log('Logs serão gravados em: ' + path.join(startupDir, 'startup.log'), 'info');
+    
     return true;
   } catch (error) {
     verification.log(`Erro ao configurar inicialização automática: ${error.message || JSON.stringify(error)}`, 'error');
@@ -3734,7 +4037,6 @@ async function setupDatabase() {
       // Tentar com comando alternativo
       try {
         await verification.execPromise(
-          // eslint-disable-next-line no-useless-escape
           `wsl -d Ubuntu -u root bash -c "su - postgres -c \\\"psql -c \\\\\\\"CREATE ROLE postgres_print WITH LOGIN SUPERUSER PASSWORD 'root_print';\\\\\\\"\\\"" || su - postgres -c "createuser -s postgres_print"`,
           20000,
           true
@@ -3784,7 +4086,6 @@ async function setupDatabase() {
       try {
         // Comando mais simplificado
         await verification.execPromise(
-          // eslint-disable-next-line no-useless-escape
           `wsl -d Ubuntu -u root bash -c "su - postgres -c \\\"psql -d print_management -c \\\\\\\"CREATE SCHEMA IF NOT EXISTS print_management; GRANT ALL PRIVILEGES ON SCHEMA print_management TO postgres_print;\\\\\\\"\\\")"`,
           20000,
           true

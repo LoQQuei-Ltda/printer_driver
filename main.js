@@ -1138,11 +1138,14 @@ app.whenReady().then(async () => {
 
   // Verificar e configurar componentes do sistema
   // Importante: Aguardamos a conclusão da verificação/instalação antes de prosseguir
-  try {
-    await setupEnvironment();
-    console.log('Configuração do ambiente concluída ou não necessária');
-  } catch (error) {
-    console.error('Erro durante a configuração do ambiente:', error);
+  const isAdmin = await checkAdminPrivileges();
+  if (isAdmin) {
+    try {
+      await setupEnvironment();
+      console.log('Configuração do ambiente concluída ou não necessária');
+    } catch (error) {
+      console.error('Erro durante a configuração do ambiente:', error);
+    }
   }
 
   printersSync();
@@ -1501,6 +1504,16 @@ ipcMain.on('get-user', (event) => {
 // Verificar status de instalação do WSL
 ipcMain.on('verificar-instalacao', async (event) => {
   try {
+    if (!checkAdminPrivileges()) {
+      await dialog.showMessageBox({
+        type: 'info',
+        title: 'Sem privilégios de administrador',
+        message: 'Sem privilégios de administrador',
+        detail: 'Os dados apresentados na verificação do sistema podem apresentar dados incorretos devido a falta de privilégios.',
+        buttons: ['OK']
+      });
+    };
+
     const wslStatus = await installer.checkWSLStatusDetailed();
 
     // Verificar se o usuário padrão está configurado
