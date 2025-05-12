@@ -2991,7 +2991,7 @@ async function createWslBootServiceFinal() {
       fs.mkdirSync(startupDir, { recursive: true });
     }
     
-    // 2. Script de serviço simplificado SEM PM2
+    // 2. Script de serviço simplificado SEM PM2 - CORRIGIDO para usar wsl.exe do System32
     const serviceBatchContent = `@echo off
 SETLOCAL EnableDelayedExpansion
 
@@ -3002,20 +3002,20 @@ ECHO %DATE% %TIME% - Servico WSL Boot iniciado >> "%LOG_FILE%" 2>&1
 
 REM Desligar WSL para inicializacao limpa
 ECHO %DATE% %TIME% - Desligando WSL >> "%LOG_FILE%" 2>&1
-wsl --shutdown >> "%LOG_FILE%" 2>&1
+C:\\Windows\\System32\\wsl.exe --shutdown >> "%LOG_FILE%" 2>&1
 
 REM Aguardar desligamento completo
 timeout /t 5 /nobreak > NUL
 
-REM Iniciar WSL com Ubuntu de forma completa
+REM Iniciar WSL com Ubuntu de forma completa - usando caminho absoluto do wsl.exe
 ECHO %DATE% %TIME% - Iniciando WSL com Ubuntu >> "%LOG_FILE%" 2>&1
-start "WSL Daemon" /min wsl -d Ubuntu >> "%LOG_FILE%" 2>&1
+start "WSL Daemon" /min C:\\Windows\\System32\\wsl.exe -d Ubuntu >> "%LOG_FILE%" 2>&1
 
 REM Aguardar inicializacao
 timeout /t 15 /nobreak > NUL
 
 REM Verificar se WSL esta em execucao
-wsl -d Ubuntu -u root echo "Teste WSL inicializado" >> "%LOG_FILE%" 2>&1
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root echo "Teste WSL inicializado" >> "%LOG_FILE%" 2>&1
 IF %ERRORLEVEL% NEQ 0 (
     ECHO %DATE% %TIME% - ERRO: WSL nao inicializou corretamente >> "%LOG_FILE%" 2>&1
     EXIT /B 1
@@ -3023,11 +3023,11 @@ IF %ERRORLEVEL% NEQ 0 (
 
 REM Iniciar servicos no Ubuntu (sem PM2)
 ECHO %DATE% %TIME% - Iniciando servicos no Ubuntu >> "%LOG_FILE%" 2>&1
-wsl -d Ubuntu -u root systemctl restart postgresql cups smbd >> "%LOG_FILE%" 2>&1
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root systemctl restart postgresql cups smbd >> "%LOG_FILE%" 2>&1
 
 REM Iniciar diretamente a API sem PM2
 ECHO %DATE% %TIME% - Iniciando API manualmente >> "%LOG_FILE%" 2>&1
-wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &" >> "%LOG_FILE%" 2>&1
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &" >> "%LOG_FILE%" 2>&1
 
 ECHO %DATE% %TIME% - Inicializacao concluida com sucesso >> "%LOG_FILE%" 2>&1
 
@@ -3035,10 +3035,9 @@ REM Loop para manter o WSL ativo
 ECHO %DATE% %TIME% - Entrando em modo de monitoramento >> "%LOG_FILE%" 2>&1
 
 :LOOP
-wsl -d Ubuntu -u root echo "Heartbeat %DATE% %TIME%" >> "%LOG_FILE%" 2>&1
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root echo "Heartbeat %DATE% %TIME%" >> "%LOG_FILE%" 2>&1
 timeout /t 300 /nobreak > NUL
-GOTO LOOP
-`;
+GOTO LOOP`;
 
     const serviceBatchPath = path.join(startupDir, 'wsl-boot-service.bat');
     fs.writeFileSync(serviceBatchPath, serviceBatchContent, 'utf8');
@@ -3099,13 +3098,6 @@ GOTO LOOP
         true
       );
       
-      // Aumentar timeout específico para esse serviço
-      await verification.execPromise(
-        'REG ADD "HKLM\\SYSTEM\\CurrentControlSet\\Services\\LoQQueiWSLBoot\\Parameters" /v "ServiceDll" /t REG_EXPAND_SZ /d "" /f',
-        10000,
-        true
-      ).catch(() => {});
-      
       verification.log('Timeout aumentado no registro', 'success');
     } catch {
       verification.log('Aviso: Não foi possível configurar registro', 'warning');
@@ -3124,203 +3116,38 @@ call wsl-boot-service.bat
     // 8. Criar serviço com a conta do usuário
     let serviceCreated = false;
     
-    // Primeiro, verificar se temos a senha do usuário
-    verification.log('Solicitando senha para o serviço...', 'step');
-    
-    // Solicitar a senha via PowerShell
-    const passwordScriptContent = `
-Add-Type -AssemblyName System.Windows.Forms
-[System.Windows.Forms.Application]::EnableVisualStyles()
-
-function Get-SecurePassword {
-    $form = New-Object System.Windows.Forms.Form
-    $form.Text = "Senha para Servico WSL"
-    $form.Size = New-Object System.Drawing.Size(430, 200)
-    $form.StartPosition = "CenterScreen"
-    $form.FormBorderStyle = "FixedDialog"
-    $form.TopMost = $true
-
-    $label = New-Object System.Windows.Forms.Label
-    $label.Location = New-Object System.Drawing.Point(10, 20)
-    $label.Size = New-Object System.Drawing.Size(400, 20)
-    $label.Text = "Digite a senha para o usuario $env:USERDOMAIN\\$env:USERNAME"
-    $form.Controls.Add($label)
-
-    $pwdLabel = New-Object System.Windows.Forms.Label
-    $pwdLabel.Location = New-Object System.Drawing.Point(10, 60)
-    $pwdLabel.Size = New-Object System.Drawing.Size(100, 20)
-    $pwdLabel.Text = "Senha:"
-    $form.Controls.Add($pwdLabel)
-
-    $passwordBox = New-Object System.Windows.Forms.MaskedTextBox
-    $passwordBox.Location = New-Object System.Drawing.Point(120, 60)
-    $passwordBox.Size = New-Object System.Drawing.Size(280, 20)
-    $passwordBox.PasswordChar = '*'
-    $form.Controls.Add($passwordBox)
-
-    $okButton = New-Object System.Windows.Forms.Button
-    $okButton.Location = New-Object System.Drawing.Point(230, 120)
-    $okButton.Size = New-Object System.Drawing.Size(75, 23)
-    $okButton.Text = "OK"
-    $okButton.DialogResult = [System.Windows.Forms.DialogResult]::OK
-    $form.AcceptButton = $okButton
-    $form.Controls.Add($okButton)
-
-    $cancelButton = New-Object System.Windows.Forms.Button
-    $cancelButton.Location = New-Object System.Drawing.Point(320, 120)
-    $cancelButton.Size = New-Object System.Drawing.Size(75, 23)
-    $cancelButton.Text = "Cancelar"
-    $cancelButton.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
-    $form.CancelButton = $cancelButton
-    $form.Controls.Add($cancelButton)
-
-    $form.Add_Shown({$passwordBox.Focus()})
-    $result = $form.ShowDialog()
-
-    if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-        return $passwordBox.Text
-    } else {
-        return $null
-    }
-}
-
-# Solicitar senha
-$password = Get-SecurePassword
-
-if ($password -ne $null) {
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($password)
-    $encoded = [System.Convert]::ToBase64String($bytes)
-    Write-Output "PASSWORD:$encoded"
-} else {
-    Write-Output "CANCELLED"
-}
-`;
-    
-    const passwordScriptPath = path.join(os.tmpdir(), 'get-password.ps1');
-    fs.writeFileSync(passwordScriptPath, passwordScriptContent, 'utf8');
-    
-    let password = '';
+    // Criar serviço como LocalSystem (método mais confiável)
+    verification.log('Criando serviço como LocalSystem...', 'step');
     
     try {
-      const passwordResult = await verification.execPromise(
-        `powershell -ExecutionPolicy Bypass -File "${passwordScriptPath}"`,
-        120000,
+      const binPath = `cmd.exe /c "${cmdPath}"`;
+      
+      // Criar serviço como LocalSystem
+      await verification.execPromise(
+        `sc create LoQQueiWSLBoot binPath= "${binPath}" start= auto DisplayName= "LoQQuei WSL Boot Service"`,
+        20000,
         true
       );
       
-      if (passwordResult.includes('PASSWORD:')) {
-        // Extrair e decodificar a senha
-        const base64Password = passwordResult.split('PASSWORD:')[1].trim();
-        password = Buffer.from(base64Password, 'base64').toString('utf8');
-        verification.log('Senha obtida com sucesso', 'success');
-      } else {
-        verification.log('Senha não fornecida, usando LocalSystem', 'warning');
-      }
+      // Configurar descrição
+      await verification.execPromise(
+        'sc description LoQQueiWSLBoot "Inicializa o WSL e servicos Ubuntu"',
+        10000,
+        true
+      );
       
-      // Limpar arquivo temporário
-      try {
-        fs.unlinkSync(passwordScriptPath);
-      } catch { /* ignorar erros */ }
-    } catch {
-      verification.log('Erro ao solicitar senha, usando LocalSystem', 'warning');
+      serviceCreated = true;
+      verification.log('Serviço criado como LocalSystem', 'success');
+    } catch (scError) {
+      verification.log(`Erro ao criar serviço: ${JSON.stringify(scError)}`, 'error');
+      return false;
     }
     
-    // Configurar o serviço com a conta do usuário se tivermos senha
-    if (userAccount && password) {
-      verification.log(`Criando serviço com a conta ${userAccount}...`, 'step');
-      
-      try {
-        const binPath = `cmd.exe /c "${cmdPath}"`;
-        
-        // Criar serviço
-        await verification.execPromise(
-          `sc create LoQQueiWSLBoot binPath= "${binPath}" start= auto DisplayName= "LoQQuei WSL Boot Service" obj= "${userAccount}" password= "${password}"`,
-          20000,
-          true
-        );
-        
-        // Configurar descrição
-        await verification.execPromise(
-          'sc description LoQQueiWSLBoot "Inicializa o WSL e servicos Ubuntu"',
-          10000,
-          true
-        );
-        
-        serviceCreated = true;
-        verification.log('Serviço criado com conta de usuário com sucesso', 'success');
-      } catch (scError) {
-        verification.log(`Erro ao criar serviço com conta de usuário: ${JSON.stringify(scError)}`, 'warning');
-        verification.log('Tentando método alternativo...', 'info');
-      }
-    }
-    
-    // Se não tivermos usuário/senha ou falhou, criar com LocalSystem
-    if (!serviceCreated) {
-      verification.log('Criando serviço como LocalSystem...', 'step');
-      
-      try {
-        const binPath = `cmd.exe /c "${cmdPath}"`;
-        
-        // Criar serviço como LocalSystem
-        await verification.execPromise(
-          `sc create LoQQueiWSLBoot binPath= "${binPath}" start= auto DisplayName= "LoQQuei WSL Boot Service"`,
-          20000,
-          true
-        );
-        
-        // Configurar descrição
-        await verification.execPromise(
-          'sc description LoQQueiWSLBoot "Inicializa o WSL e servicos Ubuntu"',
-          10000,
-          true
-        );
-        
-        serviceCreated = true;
-        verification.log('Serviço criado como LocalSystem', 'success');
-      } catch (scError) {
-        verification.log(`Erro ao criar serviço: ${JSON.stringify(scError)}`, 'error');
-        return false;
-      }
-    }
-    
-    // 9. Iniciar o serviço - tentativa 1: iniciar diretamente
-    verification.log('Iniciando o serviço...', 'step');
+    // 9. Criar inicialização alternativa via Startup folder
+    verification.log('Criando método alternativo de inicialização...', 'step');
     
     try {
-      await verification.execPromise('sc start LoQQueiWSLBoot', 60000, true);
-      verification.log('Serviço iniciado com sucesso!', 'success');
-    } catch {
-      verification.log('Não foi possível iniciar o serviço automaticamente', 'warning');
-      
-      // Tentativa 2: Usar schtasks
-      try {
-        verification.log('Tentando método alternativo com schtasks...', 'step');
-        
-        // Criar uma tarefa programada para executar o script imediatamente
-        await verification.execPromise(
-          `schtasks /create /tn "IniciarWSL" /tr "${cmdPath}" /sc once /st 00:00 /ru SYSTEM /f`,
-          20000,
-          true
-        );
-        
-        // Executar a tarefa
-        await verification.execPromise('schtasks /run /tn "IniciarWSL"', 20000, true);
-        
-        // Excluir tarefa
-        await verification.execPromise('schtasks /delete /tn "IniciarWSL" /f', 10000, true).catch(() => {});
-        
-        verification.log('Script inicializado via tarefa agendada', 'success');
-      } catch {
-        verification.log('Não foi possível iniciar com tarefa agendada', 'warning');
-        verification.log('O serviço iniciará automaticamente após reinicialização', 'info');
-      }
-    }
-    
-    // 10. Criar inicialização de backup
-    verification.log('Configurando inicialização alternativa...', 'step');
-    
-    try {
-      // Adicionar ao registro
+      // Adicionar ao registro de execução automática do usuário
       await verification.execPromise(
         `reg add "HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run" /v "LoQQueiWSLBoot" /t REG_SZ /d "\\"${serviceBatchPath}\\"" /f`,
         10000,
@@ -3336,7 +3163,7 @@ if ($password -ne $null) {
       // Script simplificado para pasta Startup
       const startupScript = `@echo off
 REM Script para inicialização de backup do WSL
-start "" /min "${serviceBatchPath}"
+start "" /min "C:\\Windows\\System32\\cmd.exe" /c "${serviceBatchPath}"
 `;
       
       const startupPath = path.join(userStartupDir, 'LoQQuei WSL Boot.cmd');
@@ -3347,7 +3174,7 @@ start "" /min "${serviceBatchPath}"
       verification.log('Aviso: Não foi possível configurar inicialização de backup', 'warning');
     }
     
-    // 11. Criar ferramenta de diagnóstico
+    // 10. Criar ferramenta de diagnóstico
     verification.log('Criando assistente de diagnóstico...', 'step');
     
     const diagnoseScript = `@echo off
@@ -3385,13 +3212,13 @@ echo Status do servico Windows:
 sc query LoQQueiWSLBoot
 echo.
 echo Distribuicoes WSL ativas:
-wsl --list --running
+C:\\Windows\\System32\\wsl.exe --list --running
 echo.
 echo Processos na porta 56258:
-wsl -d Ubuntu -u root bash -c "lsof -i :56258 || echo 'Nenhum processo usando a porta'"
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root bash -c "lsof -i :56258 || echo 'Nenhum processo usando a porta'"
 echo.
 echo Status dos servicos no Ubuntu:
-wsl -d Ubuntu -u root bash -c "systemctl status postgresql cups smbd | grep Active"
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root bash -c "systemctl status postgresql cups smbd | grep Active"
 echo.
 pause
 goto :menu
@@ -3418,23 +3245,23 @@ echo.
 echo Corrigindo conflitos de porta 56258...
 echo.
 echo Desligando WSL completamente:
-wsl --shutdown
+C:\\Windows\\System32\\wsl.exe --shutdown
 timeout /t 5 /nobreak >nul
 echo.
 echo Reiniciando Ubuntu:
-wsl -d Ubuntu -u root echo "Ubuntu reiniciado"
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root echo "Ubuntu reiniciado"
 echo.
 echo Matando processos na porta 56258:
-wsl -d Ubuntu -u root bash -c "lsof -i :56258 | grep -v PID | awk '{print \\$2}' | xargs -r kill -9 || echo 'Nenhum processo encontrado'"
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root bash -c "lsof -i :56258 | grep -v PID | awk '{print \\$2}' | xargs -r kill -9 || echo 'Nenhum processo encontrado'"
 echo.
 echo Matando processos node:
-wsl -d Ubuntu -u root bash -c "pkill -f node || echo 'Nenhum processo node encontrado'"
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root bash -c "pkill -f node || echo 'Nenhum processo node encontrado'"
 echo.
 echo Reiniciando API manualmente:
-wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"
 echo.
 echo Status final:
-wsl -d Ubuntu -u root bash -c "lsof -i :56258 || echo 'Nenhum processo encontrado para porta 56258'"
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root bash -c "lsof -i :56258 || echo 'Nenhum processo encontrado para porta 56258'"
 echo.
 pause
 goto :menu
@@ -3448,17 +3275,17 @@ echo Parando servico Windows:
 sc stop LoQQueiWSLBoot
 echo.
 echo Desligando WSL:
-wsl --shutdown
+C:\\Windows\\System32\\wsl.exe --shutdown
 timeout /t 5 /nobreak >nul
 echo.
 echo Iniciando Ubuntu:
-wsl -d Ubuntu -u root echo "Ubuntu iniciado"
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root echo "Ubuntu iniciado"
 echo.
 echo Iniciando servicos:
-wsl -d Ubuntu -u root systemctl restart postgresql cups smbd
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root systemctl restart postgresql cups smbd
 echo.
 echo Iniciando API manualmente:
-wsl -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"
+C:\\Windows\\System32\\wsl.exe -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"
 echo.
 echo Reiniciando servico Windows:
 sc start LoQQueiWSLBoot

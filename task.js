@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { printSync } = require('./tasks/print');
-const { printersSync } = require('./tasks/printers');
+// const { printersSync } = require('./tasks/printers');
 const verification = require('./verification');
 
 // Variável global para controlar o estado da sincronização
@@ -305,7 +305,7 @@ function initializeSyncTasks() {
   setTimeout(async () => {
     try {
       await printSync();
-      await printersSync();
+      // await printersSync();
     } catch (error) {
       console.error('Erro na sincronização inicial:', error);
       verification.logToFile(`Erro na sincronização inicial: ${JSON.stringify(error)}`);
@@ -329,14 +329,14 @@ function initializeSyncTasks() {
   ruleForPrinterSync.minute = [0, 15, 30, 45];
 
   // Sincronização de impressoras a cada 15 minutos
-  schedule.scheduleJob(ruleForPrinterSync, async () => {
-    try {
-      await printersSync();
-    } catch (error) {
-      console.error('Erro na sincronização de impressoras:', error);
-      verification.logToFile(`Erro na sincronização de impressoras: ${JSON.stringify(error)}`);
-    }
-  });
+  // schedule.scheduleJob(ruleForPrinterSync, async () => {
+  //   try {
+  //     await printersSync();
+  //   } catch (error) {
+  //     console.error('Erro na sincronização de impressoras:', error);
+  //     verification.logToFile(`Erro na sincronização de impressoras: ${JSON.stringify(error)}`);
+  //   }
+  // });
   
   console.log('Tarefas de sincronização inicializadas com sucesso.');
   verification.logToFile('Tarefas de sincronização inicializadas com sucesso.');

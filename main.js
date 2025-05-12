@@ -73,7 +73,7 @@ if (setupWSL) {
           detail: 'O sistema está pronto para uso, caso algo não funcione, volte a aba de sistema e faça uma verificação completa do sistema, e se necessário, reinstale.',
           buttons: ['OK']
         }).then(() => {
-          printersSync();
+          // printersSync();
           initTask();
           app.exit(0);
         });
@@ -1148,7 +1148,7 @@ app.whenReady().then(async () => {
     }
   }
 
-  printersSync();
+  // printersSync();
   initTask();
   await ensureServicesRunning();
   
@@ -2082,7 +2082,7 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
         detail: 'O sistema está pronto para uso, caso algo não funcione, volte a aba de sistema e faça uma verificação completa do sistema, e se necessário, reinstale.',
         buttons: ['OK']
       });
-      printersSync();
+      // printersSync();
       initTask();
       // Atualizar o status do sistema após a instalação
       try {

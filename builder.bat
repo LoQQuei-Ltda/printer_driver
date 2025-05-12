@@ -48,38 +48,38 @@ if exist "Output" (
   rmdir /s /q Output
 )
 
-@REM echo.
-@REM echo Limpando diretórios de build anteriores...
-@REM echo - Fechando processos relacionados...
-@REM taskkill /f /im electron.exe >nul 2>&1
-@REM taskkill /f /im app-builder.exe >nul 2>&1
-@REM taskkill /f /im "Instalador de Gerenciamento de Impressão.exe" >nul 2>&1
+echo.
+echo Limpando diretórios de build anteriores...
+echo - Fechando processos relacionados...
+taskkill /f /im electron.exe >nul 2>&1
+taskkill /f /im app-builder.exe >nul 2>&1
+taskkill /f /im "Instalador de Gerenciamento de Impressão.exe" >nul 2>&1
 
-@REM REM Pausa para garantir que todos os processos foram encerrados
-@REM timeout /t 2 /nobreak >nul
+REM Pausa para garantir que todos os processos foram encerrados
+timeout /t 2 /nobreak >nul
 
-@REM if exist "dist" (
-@REM   echo - Removendo pasta dist...
-@REM   rmdir /s /q dist 2>nul
-@REM   if exist "dist" (
-@REM     rd /s /q dist 2>nul
-@REM   )
-@REM )
+if exist "dist" (
+  echo - Removendo pasta dist...
+  rmdir /s /q dist 2>nul
+  if exist "dist" (
+    rd /s /q dist 2>nul
+  )
+)
 
-@REM echo - Limpando cache do NPM...
-@REM call npm cache clean --force
+echo - Limpando cache do NPM...
+call npm cache clean --force
 
-@REM echo - Instalando dependências com limpeza forçada...
-@REM call npm install --force
+echo - Instalando dependências com limpeza forçada...
+call npm install --force
 
-@REM echo.
-@REM echo Construindo aplicação Electron...
-@REM call npm run build
-@REM if %ERRORLEVEL% NEQ 0 (
-@REM   echo Erro: Não foi possível construir a aplicação Electron
-@REM   pause
-@REM   exit /b 1
-@REM )
+echo.
+echo Construindo aplicação Electron...
+call npm run build
+if %ERRORLEVEL% NEQ 0 (
+  echo Erro: Não foi possível construir a aplicação Electron
+  pause
+  exit /b 1
+)
 
 echo.
 echo Compilando o instalador com Inno Setup...
