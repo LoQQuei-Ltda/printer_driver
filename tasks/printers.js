@@ -57,7 +57,7 @@ module.exports = {
                     }
                 });
             } catch (error) {
-                verification.logToFile(`Erro ao obter impressoras do servidor, ${JSON.stringify(error?.response)}`);
+                verification.logToFile(`Erro ao obter impressoras do servidor, ${JSON.stringify(error)}`);
                 console.log('Erro ao obter impressoras do servidor:', error?.response?.data);
                 clearTimeout(globalTimeout);
                 return;

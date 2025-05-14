@@ -1,5 +1,5 @@
 #define MyAppName "Gerenciamento de Impressão - LoQQuei"
-#define MyAppVersion "1.0.6"
+#define MyAppVersion "1.0.8"
 #define MyAppPublisher "LoQQuei"
 #define MyAppURL "https://loqquei.com.br"
 #define MyAppExeName "Gerenciamento de Impressão - LoQQuei.exe"
@@ -355,6 +355,586 @@ var
   VirtualizationEnabled: Boolean;
   IsInstalledVersion: String;
   IsUpdateMode: Boolean;
+  AdminPasswordPage: TInputQueryWizardPage;
+  CreateServiceCheck: TNewCheckBox;
+  AdminUsername, AdminPassword: String;
+
+// Função para obter nome de usuário do Windows
+function GetWindowsUserName: String;
+var
+  FileName: String;
+  UserNameValue: String;
+begin
+  // Método alternativo usando variáveis de ambiente
+  UserNameValue := GetEnv('USERNAME');
+  if UserNameValue = '' then
+    UserNameValue := 'Administrator';
+    
+  // Adicionar domínio se disponível
+  if GetEnv('USERDOMAIN') <> '' then
+    Result := GetEnv('USERDOMAIN') + '\' + UserNameValue
+  else
+    Result := '.\' + UserNameValue;
+end;
+
+procedure InitializeWizard;
+begin
+  // Criar página para solicitar senha de administrador
+  AdminPasswordPage := CreateInputQueryPage(wpWelcome,
+    'Configuração do Serviço WSL',
+    'Informações para execução do serviço WSL como usuário administrador',
+    'Por favor, forneça suas credenciais de administrador para configurar o serviço WSL. ' +
+    'Isso permitirá que o serviço seja executado com privilégios adequados.');
+    
+  // Adicionar campos para entrada de dados
+  AdminPasswordPage.Add('Nome de usuário (ex: DOMINIO\usuario):', False);
+  AdminPasswordPage.Add('Senha:', True);
+  
+  // Preencher automaticamente o nome de usuário atual
+  AdminPasswordPage.Values[0] := GetWindowsUserName();
+  
+  // Adicionar checkbox para optar por criar ou não o serviço
+  CreateServiceCheck := TNewCheckBox.Create(AdminPasswordPage);
+  CreateServiceCheck.Parent := AdminPasswordPage.Surface;
+  CreateServiceCheck.Caption := 'Criar serviço Windows para inicialização automática (recomendado)';
+  CreateServiceCheck.Top := 120;
+  CreateServiceCheck.Left := 0;
+  CreateServiceCheck.Width := AdminPasswordPage.SurfaceWidth;
+  CreateServiceCheck.Checked := True;
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  
+  if CurPageID = AdminPasswordPage.ID then
+  begin
+    AdminUsername := AdminPasswordPage.Values[0];
+    AdminPassword := AdminPasswordPage.Values[1];
+  end;
+end;
+
+// Procedimento atualizado para criar scripts e serviço WSL
+procedure CreateWslStartupScripts;
+var
+  UserStartupPath, CommonStartupPath, UserDesktopPath, ServiceBatchPath: String;
+  StartupScript, DiagnosticScript, ServiceBatchScript: String;
+  ResultCode: Integer;
+  ErrorCode: Integer;
+begin
+  // Obter caminhos de destino
+  UserStartupPath := ExpandConstant('{userstartup}\LoQQuei-WSL-Startup.cmd');
+  CommonStartupPath := ExpandConstant('{commonstartup}\LoQQuei-WSL-Startup.cmd');
+  UserDesktopPath := ExpandConstant('{userdesktop}\Diagnostico WSL.cmd');
+  ServiceBatchPath := ExpandConstant('{app}\scripts\WSL-Service-Runner.cmd');
+
+  // Remover serviço antigo se existir
+  Exec('sc', 'stop LoQQueiWSLBoot', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('sc', 'delete LoQQueiWSLBoot', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(2000);
+
+  // Criar script de inicialização
+  StartupScript := '@echo off' + #13#10 +
+    'REM Script para iniciar WSL automaticamente' + #13#10 +
+    'SETLOCAL EnableDelayedExpansion' + #13#10 +
+    '' + #13#10 +
+    'ECHO Iniciando WSL...' + #13#10 +
+    '' + #13#10 +
+    'REM Aguardar Windows terminar de inicializar' + #13#10 +
+    'timeout /t 30 /nobreak > NUL' + #13#10 +
+    '' + #13#10 +
+    'REM Desligar WSL para inicialização limpa' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" --shutdown' + #13#10 +
+    '' + #13#10 +
+    'REM Aguardar desligamento completo' + #13#10 +
+    'timeout /t 5 /nobreak > NUL' + #13#10 +
+    '' + #13#10 +
+    'REM Iniciar WSL com Ubuntu de forma completa' + #13#10 +
+    'start "WSL Daemon" /min "%SystemRoot%\System32\wsl.exe" -d Ubuntu' + #13#10 +
+    '' + #13#10 +
+    'REM Aguardar inicialização' + #13#10 +
+    'timeout /t 15 /nobreak > NUL' + #13#10 +
+    '' + #13#10 +
+    'REM Iniciar serviços no Ubuntu' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root systemctl restart postgresql cups smbd' + #13#10 +
+    '' + #13#10 +
+    'REM Iniciar a API manualmente' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"' + #13#10 +
+    '' + #13#10 +
+    'REM Sair sem entrar em loop (mais leve para o sistema)' + #13#10 +
+    'EXIT';
+
+  // Script para execução como serviço (sem EXIT no final)
+  ServiceBatchScript := '@echo off' + #13#10 +
+    'REM Script para iniciar WSL como serviço' + #13#10 +
+    'SETLOCAL EnableDelayedExpansion' + #13#10 +
+    '' + #13#10 +
+    'ECHO %DATE% %TIME% - Iniciando serviço WSL... >> "%ProgramData%\LoQQuei\wsl-service.log"' + #13#10 +
+    '' + #13#10 +
+    'REM Aguardar Windows terminar de inicializar' + #13#10 +
+    'timeout /t 60 /nobreak > NUL' + #13#10 +
+    '' + #13#10 +
+    'REM Desligar WSL para inicialização limpa' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" --shutdown >> "%ProgramData%\LoQQuei\wsl-service.log" 2>&1' + #13#10 +
+    '' + #13#10 +
+    'REM Aguardar desligamento completo' + #13#10 +
+    'timeout /t 5 /nobreak > NUL' + #13#10 +
+    '' + #13#10 +
+    'REM Iniciar WSL com Ubuntu de forma completa' + #13#10 +
+    'start "WSL Daemon" /min "%SystemRoot%\System32\wsl.exe" -d Ubuntu >> "%ProgramData%\LoQQuei\wsl-service.log" 2>&1' + #13#10 +
+    '' + #13#10 +
+    'REM Aguardar inicialização' + #13#10 +
+    'timeout /t 15 /nobreak > NUL' + #13#10 +
+    '' + #13#10 +
+    'REM Iniciar serviços no Ubuntu' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root systemctl restart postgresql cups smbd >> "%ProgramData%\LoQQuei\wsl-service.log" 2>&1' + #13#10 +
+    '' + #13#10 +
+    'REM Iniciar a API manualmente' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &" >> "%ProgramData%\LoQQuei\wsl-service.log" 2>&1' + #13#10 +
+    '' + #13#10 +
+    'ECHO %DATE% %TIME% - Serviço WSL iniciado com sucesso >> "%ProgramData%\LoQQuei\wsl-service.log"' + #13#10 +
+    '' + #13#10 +
+    'REM Aguardar para manter o serviço em execução' + #13#10 +
+    ':LOOP' + #13#10 +
+    'REM Verificação de heartbeat a cada 5 minutos' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root echo "Heartbeat %DATE% %TIME%" >> "%ProgramData%\LoQQuei\wsl-service.log" 2>&1' + #13#10 +
+    'timeout /t 300 /nobreak > NUL' + #13#10 +
+    'goto LOOP';
+
+  // Criar script de diagnóstico
+  DiagnosticScript := '@echo off' + #13#10 +
+    'title Assistente de Diagnostico WSL' + #13#10 +
+    'color 1F' + #13#10 +
+    'cls' + #13#10 +
+    '' + #13#10 +
+    ':menu' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Assistente de Diagnostico WSL - Solucao de Problemas' + #13#10 +
+    'echo =============================================' + #13#10 +
+    'echo.' + #13#10 +
+    'echo 1. Verificar status do WSL' + #13#10 +
+    'echo 2. Reiniciar WSL e servicos manualmente' + #13#10 +
+    'echo 3. Verificar/Corrigir conflitos na porta da API' + #13#10 +
+    'echo 4. Iniciar servico via script de inicializacao' + #13#10 +
+    'echo 5. Reiniciar servico Windows do WSL' + #13#10 +
+    'echo 0. Sair' + #13#10 +
+    'echo.' + #13#10 +
+    'choice /C 123450 /N /M "Escolha uma opcao (0-5): "' + #13#10 +
+    '' + #13#10 +
+    'if errorlevel 6 goto :EOF' + #13#10 +
+    'if errorlevel 5 goto :reiniciarServico' + #13#10 +
+    'if errorlevel 4 goto :executar' + #13#10 +
+    'if errorlevel 3 goto :corrigirPorta' + #13#10 +
+    'if errorlevel 2 goto :reiniciar' + #13#10 +
+    'if errorlevel 1 goto :verificarStatus' + #13#10 +
+    '' + #13#10 +
+    ':verificarStatus' + #13#10 +
+    'cls' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Verificando status do WSL e servicos:' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Status do serviço Windows:' + #13#10 +
+    'sc query LoQQueiWSLBoot' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Distribuicoes WSL ativas:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" --list --running' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Processos na porta 56258:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "lsof -i :56258 || echo ''Nenhum processo usando a porta''"' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Status dos servicos no Ubuntu:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "systemctl status postgresql cups smbd | grep Active"' + #13#10 +
+    'echo.' + #13#10 +
+    'pause' + #13#10 +
+    'goto :menu' + #13#10 +
+    '' + #13#10 +
+    ':corrigirPorta' + #13#10 +
+    'cls' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Corrigindo conflitos de porta 56258...' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Desligando WSL completamente:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" --shutdown' + #13#10 +
+    'timeout /t 5 /nobreak >nul' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Reiniciando Ubuntu:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root echo "Ubuntu reiniciado"' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Matando processos na porta 56258:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "lsof -i :56258 | grep -v PID | awk ''{print $2}'' | xargs -r kill -9 || echo ''Nenhum processo encontrado''"' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Matando processos node:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "pkill -f node || echo ''Nenhum processo node encontrado''"' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Reiniciando API manualmente:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Status final:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "lsof -i :56258 || echo ''Nenhum processo encontrado para porta 56258''"' + #13#10 +
+    'echo.' + #13#10 +
+    'pause' + #13#10 +
+    'goto :menu' + #13#10 +
+    '' + #13#10 +
+    ':reiniciar' + #13#10 +
+    'cls' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Reiniciando WSL e servicos...' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Desligando WSL:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" --shutdown' + #13#10 +
+    'timeout /t 5 /nobreak >nul' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Iniciando Ubuntu:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root echo "Ubuntu iniciado"' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Iniciando servicos:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root systemctl restart postgresql cups smbd' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Iniciando API manualmente:' + #13#10 +
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Reinicializacao concluida.' + #13#10 +
+    'pause' + #13#10 +
+    'goto :menu' + #13#10 +
+    '' + #13#10 +
+    ':executar' + #13#10 +
+    'cls' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Executando script de inicializacao diretamente...' + #13#10 +
+    'echo.' + #13#10 +
+    'call "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\LoQQuei-WSL-Startup.cmd"' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Execucao direta concluida.' + #13#10 +
+    'pause' + #13#10 +
+    'goto :menu' + #13#10 +
+    '' + #13#10 +
+    ':reiniciarServico' + #13#10 +
+    'cls' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Reiniciando serviço Windows do WSL...' + #13#10 +
+    'echo.' + #13#10 +
+    'net stop LoQQueiWSLBoot' + #13#10 +
+    'timeout /t 5 /nobreak >nul' + #13#10 +
+    'net start LoQQueiWSLBoot' + #13#10 +
+    'echo.' + #13#10 +
+    'echo Status do serviço:' + #13#10 +
+    'sc query LoQQueiWSLBoot' + #13#10 +
+    'echo.' + #13#10 +
+    'pause' + #13#10 +
+    'goto :menu';
+
+  // Garantir que o diretório scripts exista
+  if not DirExists(ExpandConstant('{app}\scripts')) then
+    CreateDir(ExpandConstant('{app}\scripts'));
+
+  // Garantir que o diretório de logs exista
+  if not DirExists(ExpandConstant('{commonappdata}\LoQQuei')) then
+    CreateDir(ExpandConstant('{commonappdata}\LoQQuei'));
+
+  // Salvar os scripts nos locais apropriados
+  if not SaveStringToFile(UserStartupPath, StartupScript, False) then
+    Log('Erro ao salvar script de inicialização no diretório do usuário');
+
+  if not SaveStringToFile(CommonStartupPath, StartupScript, False) then
+    Log('Erro ao salvar script de inicialização no diretório comum');
+
+  if not SaveStringToFile(UserDesktopPath, DiagnosticScript, False) then
+    Log('Erro ao salvar script de diagnóstico na área de trabalho');
+
+  if not SaveStringToFile(ServiceBatchPath, ServiceBatchScript, False) then
+    Log('Erro ao salvar script de serviço');
+
+  // Configurar permissões para o script de serviço
+  Exec('icacls', '"' + ServiceBatchPath + '" /grant Everyone:F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // Configurar registro para inicialização automática
+  RegWriteStringValue(HKCU, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 
+    'LoQQueiWSLStartup', UserStartupPath);
+
+  // Criar serviço Windows se habilitado e se as credenciais foram fornecidas
+  if CreateServiceCheck.Checked and (AdminUsername <> '') then
+  begin
+    Log('Criando serviço Windows com as credenciais do administrador...');
+    
+    // Criar o serviço - este comando utiliza a conta de administrador e senha fornecidas
+    if Exec('sc', 
+      'create LoQQueiWSLBoot binPath= "cmd.exe /c \"' + ServiceBatchPath + '\"" start= auto DisplayName= "LoQQuei WSL Boot Service" obj= "' + AdminUsername + '" password= "' + AdminPassword + '"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      // Configurar descrição para o serviço
+      Exec('sc', 'description LoQQueiWSLBoot "Inicializa o WSL e serviços necessários para o sistema LoQQuei"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      
+      // Iniciar o serviço
+      Exec('sc', 'start LoQQueiWSLBoot', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      
+      Log('Serviço Windows criado e iniciado com sucesso');
+    end
+    else
+    begin
+      // Se falhar ao criar o serviço, tentar criar com o LocalSystem (menos desejável, mas melhor que nada)
+      Log('Erro ao criar serviço com credenciais do administrador, tentando LocalSystem...');
+      ErrorCode := ResultCode;
+      
+      // Cria serviço como LocalSystem
+      if Exec('sc', 
+        'create LoQQueiWSLBoot binPath= "cmd.exe /c \"' + ServiceBatchPath + '\"" start= auto DisplayName= "LoQQuei WSL Boot Service"', 
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      begin
+        Exec('sc', 'description LoQQueiWSLBoot "Inicializa o WSL e serviços necessários para o sistema LoQQuei"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+        Exec('sc', 'start LoQQueiWSLBoot', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+        
+        // Mostrar mensagem sobre o problema de criação do serviço
+        MsgBox('Não foi possível criar o serviço com a conta de administrador (erro: ' + IntToStr(ErrorCode) + '). ' +
+              'O serviço foi criado usando a conta LocalSystem, mas pode ter limitações de funcionamento.' + #13#10 + #13#10 +
+              'Você pode tentar reconfigurar o serviço manualmente mais tarde usando o comando:' + #13#10 +
+              'sc config LoQQueiWSLBoot obj= "DOMINIO\usuario" password= "senha"', mbInformation, MB_OK);
+      end
+      else
+      begin
+        // Se falhar até com LocalSystem, usar apenas o método de inicialização via Startup
+        Log('Erro ao criar serviço Windows, usando apenas método de inicialização via Startup');
+        MsgBox('Não foi possível criar o serviço Windows para inicialização automática. ' +
+              'O sistema usará o método de inicialização via pasta Startup, que funciona apenas quando um usuário faz login.' + #13#10 + #13#10 +
+              'Você pode tentar criar o serviço manualmente mais tarde usando o comando:' + #13#10 +
+              'sc create LoQQueiWSLBoot binPath= "cmd.exe /c \"' + ServiceBatchPath + '\"" start= auto', mbInformation, MB_OK);
+      end;
+    end;
+  end
+  else 
+  begin
+    Log('Criação de serviço Windows desabilitada pelo usuário. Usando apenas inicialização via Startup');
+  end;
+end;
+
+procedure CreateWslStartupScript;
+var
+  FilePath: String;
+  Lines: TArrayOfString;
+  Index: Integer;
+begin
+  FilePath := ExpandConstant('{tmp}\LoQQuei-WSL-Startup.cmd');
+  Index := 0;
+  
+  // Definir o número de linhas
+  SetArrayLength(Lines, 22);
+  
+  // Criar o conteúdo do script
+  Lines[Index] := '@echo off'; Index := Index + 1;
+  Lines[Index] := 'REM Script para iniciar WSL automaticamente'; Index := Index + 1;
+  Lines[Index] := 'SETLOCAL EnableDelayedExpansion'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := 'ECHO Iniciando WSL...'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := 'REM Aguardar Windows terminar de inicializar'; Index := Index + 1;
+  Lines[Index] := 'timeout /t 30 /nobreak > NUL'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := 'REM Desligar WSL para inicialização limpa'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" --shutdown'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := 'REM Aguardar desligamento completo'; Index := Index + 1;
+  Lines[Index] := 'timeout /t 5 /nobreak > NUL'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := 'REM Iniciar WSL com Ubuntu de forma completa'; Index := Index + 1;
+  Lines[Index] := 'start "WSL Daemon" /min "%SystemRoot%\System32\wsl.exe" -d Ubuntu'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := 'REM Aguardar inicialização'; Index := Index + 1;
+  Lines[Index] := 'timeout /t 15 /nobreak > NUL'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  
+  // Salvar a primeira parte do arquivo
+  SaveStringsToFile(FilePath, Lines, False);
+  
+  // Redefinir o array para a segunda parte
+  SetArrayLength(Lines, 8);
+  Index := 0;
+  
+  // Segunda parte do script
+  Lines[Index] := 'REM Iniciar serviços no Ubuntu'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root systemctl restart postgresql cups smbd'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := 'REM Iniciar a API manualmente'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := 'REM Sair sem entrar em loop (mais leve para o sistema)'; Index := Index + 1;
+  Lines[Index] := 'EXIT'; Index := Index + 1;
+  
+  // Adicionar a segunda parte ao arquivo
+  SaveStringsToFile(FilePath, Lines, True);
+  
+  // Configurar registro para inicialização automática (usando o mesmo script)
+  RegWriteStringValue(HKCU, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 
+    'LoQQueiWSLStartup', ExpandConstant('"{userstartup}\LoQQuei-WSL-Startup.cmd"'));
+end;
+
+// Procedimento para criar o utilitário de diagnóstico
+procedure CreateWslDiagnosticScript;
+var
+  FilePath: String;
+  Lines: TArrayOfString;
+  Index: Integer;
+begin
+  FilePath := ExpandConstant('{tmp}\Diagnostico-WSL.cmd');
+  Index := 0;
+  
+  // Definir o número de linhas para a primeira parte
+  SetArrayLength(Lines, 25);
+  
+  // Criar o conteúdo do script de diagnóstico
+  Lines[Index] := '@echo off'; Index := Index + 1;
+  Lines[Index] := 'title Assistente de Diagnostico WSL'; Index := Index + 1;
+  Lines[Index] := 'color 1F'; Index := Index + 1;
+  Lines[Index] := 'cls'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := ':menu'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Assistente de Diagnostico WSL - Solucao de Problemas'; Index := Index + 1;
+  Lines[Index] := 'echo ============================================='; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo 1. Verificar status do WSL'; Index := Index + 1;
+  Lines[Index] := 'echo 2. Reiniciar WSL e servicos manualmente'; Index := Index + 1;
+  Lines[Index] := 'echo 3. Verificar/Corrigir conflitos na porta da API'; Index := Index + 1;
+  Lines[Index] := 'echo 4. Iniciar servico via script de inicializacao'; Index := Index + 1;
+  Lines[Index] := 'echo 0. Sair'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'choice /C 12340 /N /M "Escolha uma opcao (0-4): "'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := 'if errorlevel 5 goto :EOF'; Index := Index + 1;
+  Lines[Index] := 'if errorlevel 4 goto :executar'; Index := Index + 1;
+  Lines[Index] := 'if errorlevel 3 goto :corrigirPorta'; Index := Index + 1;
+  Lines[Index] := 'if errorlevel 2 goto :reiniciar'; Index := Index + 1;
+  Lines[Index] := 'if errorlevel 1 goto :verificarStatus'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  
+  // Salvar a primeira parte do arquivo
+  SaveStringsToFile(FilePath, Lines, False);
+  
+  // Redefinir o array para a segunda parte
+  SetArrayLength(Lines, 22);
+  Index := 0;
+  
+  // Segunda parte - verificarStatus
+  Lines[Index] := ':verificarStatus'; Index := Index + 1;
+  Lines[Index] := 'cls'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Verificando status do WSL e servicos:'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Distribuicoes WSL ativas:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" --list --running'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Processos na porta 56258:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "lsof -i :56258 || echo ''Nenhum processo usando a porta''"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Status dos servicos no Ubuntu:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "systemctl status postgresql cups smbd | grep Active"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'pause'; Index := Index + 1;
+  Lines[Index] := 'goto :menu'; Index := Index + 1;
+  Lines[Index] := ''; Index := Index + 1;
+  
+  // Adicionar a segunda parte ao arquivo
+  SaveStringsToFile(FilePath, Lines, True);
+  
+  // Redefinir o array para a terceira parte (corrigirPorta)
+  SetArrayLength(Lines, 26);
+  Index := 0;
+  
+  // Terceira parte - corrigirPorta
+  Lines[Index] := ':corrigirPorta'; Index := Index + 1;
+  Lines[Index] := 'cls'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Corrigindo conflitos de porta 56258...'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Desligando WSL completamente:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" --shutdown'; Index := Index + 1;
+  Lines[Index] := 'timeout /t 5 /nobreak >nul'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Reiniciando Ubuntu:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root echo "Ubuntu reiniciado"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Matando processos na porta 56258:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "lsof -i :56258 | grep -v PID | awk ''{print \$2}'' | xargs -r kill -9 || echo ''Nenhum processo encontrado''"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Matando processos node:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "pkill -f node || echo ''Nenhum processo node encontrado''"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Reiniciando API manualmente:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Status final:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "lsof -i :56258 || echo ''Nenhum processo encontrado para porta 56258''"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'pause'; Index := Index + 1;
+  Lines[Index] := 'goto :menu'; Index := Index + 1;
+  
+  // Adicionar a terceira parte ao arquivo
+  SaveStringsToFile(FilePath, Lines, True);
+  
+  // Redefinir o array para a quarta parte (reiniciar)
+  SetArrayLength(Lines, 22);
+  Index := 0;
+  
+  // Quarta parte - reiniciar
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := ':reiniciar'; Index := Index + 1;
+  Lines[Index] := 'cls'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Reiniciando WSL e servicos...'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Desligando WSL:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" --shutdown'; Index := Index + 1;
+  Lines[Index] := 'timeout /t 5 /nobreak >nul'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Iniciando Ubuntu:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root echo "Ubuntu iniciado"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Iniciando servicos:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root systemctl restart postgresql cups smbd'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Iniciando API manualmente:'; Index := Index + 1;
+  Lines[Index] := '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Reinicializacao concluida.'; Index := Index + 1;
+  Lines[Index] := 'pause'; Index := Index + 1;
+  Lines[Index] := 'goto :menu'; Index := Index + 1;
+  
+  // Adicionar a quarta parte ao arquivo
+  SaveStringsToFile(FilePath, Lines, True);
+  
+  // Redefinir o array para a quinta parte (executar)
+  SetArrayLength(Lines, 10);
+  Index := 0;
+  
+  // Quinta parte - executar
+  Lines[Index] := ''; Index := Index + 1;
+  Lines[Index] := ':executar'; Index := Index + 1;
+  Lines[Index] := 'cls'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Executando script de inicializacao diretamente...'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'call "%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\LoQQuei-WSL-Startup.cmd"'; Index := Index + 1;
+  Lines[Index] := 'echo.'; Index := Index + 1;
+  Lines[Index] := 'echo Execucao direta concluida.'; Index := Index + 1;
+  Lines[Index] := 'pause'; Index := Index + 1;
+  Lines[Index] := 'goto :menu'; Index := Index + 1;
+  
+  // Adicionar a quinta parte ao arquivo
+  SaveStringsToFile(FilePath, Lines, True);
+end;
+
+// Função para remover antigo serviço LoQQueiWSLBoot se existir
+procedure RemoveOldService;
+var
+  ResultCode: Integer;
+begin
+  // Parar o serviço se estiver em execução
+  Exec('sc', 'stop LoQQueiWSLBoot', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  
+  // Remover o serviço
+  Exec('sc', 'delete LoQQueiWSLBoot', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  
+  // Aguardar um momento para processamento
+  Sleep(3000);
+end;
 
 procedure FixWSLSpecificErrors;
 var
@@ -758,6 +1338,15 @@ begin
     Exec('icacls.exe', 'C:\ProgramData\Microsoft\Windows\WindowsApps /grant:r *S-1-5-32-545:(OI)(CI)RX', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
     ConfigureSystemWide;
+
+    RemoveOldService;
+
+    CreateWslStartupScripts;
+
+    if MsgBox('Deseja iniciar o WSL agora?', mbConfirmation, MB_YESNO) = IDYES then
+    begin
+      Exec(ExpandConstant('{userstartup}\LoQQuei-WSL-Startup.cmd'), '', '', SW_SHOW, ewNoWait, ResultCode);
+    end;
   end;
 end;
 
