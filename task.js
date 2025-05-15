@@ -401,25 +401,25 @@ module.exports = {
     ruleForMinute.minute = [0];
     
     // Verificação programada a cada hora
-    schedule.scheduleJob(ruleForMinute, async () => {
-      try {
-        await checkForUpdates(true, appConfig, mainWindow);
-      } catch (error) {
-        console.error('Erro na verificação programada de atualizações:', error);
-        verification.logToFile(`Erro na verificação programada de atualizações: ${JSON.stringify(error)}`);
-      }
-    });    
+    // schedule.scheduleJob(ruleForMinute, async () => {
+    //   try {
+    //     await checkForUpdates(true, appConfig, mainWindow);
+    //   } catch (error) {
+    //     console.error('Erro na verificação programada de atualizações:', error);
+    //     verification.logToFile(`Erro na verificação programada de atualizações: ${JSON.stringify(error)}`);
+    //   }
+    // });    
     
-    global.checkForUpdates = checkForUpdates;
+    // global.checkForUpdates = checkForUpdates;
     
-    // Verificação inicial após 2 minutos
-    setTimeout(() => {
-      try {
-        checkForUpdates(true, appConfig, mainWindow);
-      } catch (error) {
-        console.error('Erro na verificação inicial de atualizações:', error);
-        verification.logToFile(`Erro na verificação inicial de atualizações: ${JSON.stringify(error)}`);
-      }
-    }, 120000);
+    // // Verificação inicial após 2 minutos
+    // setTimeout(() => {
+    //   try {
+    //     checkForUpdates(true, appConfig, mainWindow);
+    //   } catch (error) {
+    //     console.error('Erro na verificação inicial de atualizações:', error);
+    //     verification.logToFile(`Erro na verificação inicial de atualizações: ${JSON.stringify(error)}`);
+    //   }
+    // }, 120000);
   }
 }

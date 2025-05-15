@@ -1160,9 +1160,9 @@ app.whenReady().then(async () => {
 
     updater = new AppUpdater(mainWindow);
 
-    setTimeout(() => {
-      updater.checkForUpdates(true);
-    }, 3000);
+    // setTimeout(() => {
+    //   updater.checkForUpdates(true);
+    // }, 3000);
   } else {
     createLoginWindow();
   }
@@ -1229,11 +1229,11 @@ ipcMain.on('set-critical-operation', (event, isCritical) => {
   global.criticalOperation = isCritical;
 });
 
-ipcMain.on('check-for-updates', () => {
-  if (updater) {
-    updater.checkForUpdates();
-  }
-});
+// ipcMain.on('check-for-updates', () => {
+//   if (updater) {
+//     updater.checkForUpdates();
+//   }
+// });
 
 ipcMain.on('solicitar-iniciar-instalacao', () => {
   console.log('Recebida solicitação para iniciar instalação via interface');
