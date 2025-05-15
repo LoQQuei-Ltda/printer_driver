@@ -203,7 +203,6 @@ class AppUpdater {
         '/CLOSEAPPLICATIONS',
         '/RESTARTAPPLICATIONS', 
         '/LANG=brazilianportuguese',
-        '/CURRENTUSER'
       ], {
         detached: true,
         stdio: 'ignore'

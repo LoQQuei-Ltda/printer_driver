@@ -408,7 +408,7 @@ module.exports = {
         console.error('Erro na verificação programada de atualizações:', error);
         verification.logToFile(`Erro na verificação programada de atualizações: ${JSON.stringify(error)}`);
       }
-    });
+    });    
     
     global.checkForUpdates = checkForUpdates;
     

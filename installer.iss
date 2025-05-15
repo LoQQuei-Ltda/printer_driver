@@ -1,5 +1,5 @@
 #define MyAppName "Gerenciamento de Impressão - LoQQuei"
-#define MyAppVersion "1.0.8"
+#define MyAppVersion "1.0.9"
 #define MyAppPublisher "LoQQuei"
 #define MyAppURL "https://loqquei.com.br"
 #define MyAppExeName "Gerenciamento de Impressão - LoQQuei.exe"
@@ -344,6 +344,8 @@ Root: HKLM; Subkey: "SOFTWARE\Policies\Microsoft\Windows\Windows Subsystem for L
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "WSL_DISABLE_ADMIN_CHECK"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
 Root: HKLM; Subkey: "SYSTEM\CurrentControlSet\Control\Session Manager\Environment"; ValueType: string; ValueName: "WSL_IGNORE_PERMISSION_ERRORS"; ValueData: "1"; Flags: createvalueifdoesntexist; Permissions: everyone-full
 
+Root: HKLM; Subkey: "SOFTWARE\LoQQuei\PrintManagement"; ValueType: string; ValueName: "Version"; ValueData: "{#MyAppVersion}"; Flags: uninsdeletevalue
+
 
 [Code]
 // Variáveis globais para status
@@ -458,8 +460,10 @@ begin
     'REM Iniciar serviços no Ubuntu' + #13#10 +
     '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root systemctl restart postgresql cups smbd' + #13#10 +
     '' + #13#10 +
-    'REM Iniciar a API manualmente' + #13#10 +
-    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"' + #13#10 +
+    // IMPORTANTE: A linha seguinte deve ser modificada ou removida para evitar inicialização direta do node.js
+    // '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &"' + #13#10 +
+    // Substituir por:
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "/opt/loqquei/print_server_desktop/start-services.sh"' + #13#10 +
     '' + #13#10 +
     'REM Sair sem entrar em loop (mais leve para o sistema)' + #13#10 +
     'EXIT';
@@ -489,8 +493,10 @@ begin
     'REM Iniciar serviços no Ubuntu' + #13#10 +
     '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root systemctl restart postgresql cups smbd >> "%ProgramData%\LoQQuei\wsl-service.log" 2>&1' + #13#10 +
     '' + #13#10 +
-    'REM Iniciar a API manualmente' + #13#10 +
-    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &" >> "%ProgramData%\LoQQuei\wsl-service.log" 2>&1' + #13#10 +
+    // IMPORTANTE: A linha seguinte deve ser modificada ou removida para evitar inicialização direta do node.js
+    // '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "cd /opt/loqquei/print_server_desktop && nohup node bin/www.js > /var/log/print_server.log 2>&1 &" >> "%ProgramData%\LoQQuei\wsl-service.log" 2>&1' + #13#10 +
+    // Substituir por:
+    '"%SystemRoot%\System32\wsl.exe" -d Ubuntu -u root bash -c "/opt/loqquei/print_server_desktop/start-services.sh" >> "%ProgramData%\LoQQuei\wsl-service.log" 2>&1' + #13#10 +
     '' + #13#10 +
     'ECHO %DATE% %TIME% - Serviço WSL iniciado com sucesso >> "%ProgramData%\LoQQuei\wsl-service.log"' + #13#10 +
     '' + #13#10 +

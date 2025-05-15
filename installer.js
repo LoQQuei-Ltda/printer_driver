@@ -2490,7 +2490,8 @@ mountFsTab=true
     
     verification.log('Arquivo wsl.conf criado com suporte para comando de inicialização automática', 'success');
     
-    // 3. Criar arquivo de serviço systemd
+    // 3. Criar arquivo de serviço systemd (APENAS UM MÉTODO)
+    // Removemos serviços redundantes e mantemos apenas o principal
     verification.log('Criando serviço systemd para inicialização automática...', 'step');
     const serviceContent = `[Unit]
 Description=Print Server Services
@@ -2504,7 +2505,6 @@ ExecStart=/bin/bash /opt/loqquei/print_server_desktop/start-services.sh
 
 [Install]
 WantedBy=multi-user.target
-WantedBy=default.target
 `;
     const servicePath = path.join(tempDir, 'print-server.service');
     fs.writeFileSync(servicePath, serviceContent, 'utf8');
@@ -2532,7 +2532,7 @@ WantedBy=default.target
     
     verification.log('Arquivo de serviço systemd criado com sucesso', 'success');
     
-    // 4. Criar script de inicialização melhorado
+    // 4. Criar script de inicialização melhorado com verificação de processos existentes
     verification.log('Criando script de inicialização de serviços...', 'step');
     const scriptContent = `#!/bin/bash
 # Script de inicialização de serviços do Print Server
@@ -2557,6 +2557,24 @@ if [[ -n "$WSL_DISTRO_NAME" || -f /proc/sys/fs/binfmt_misc/WSLInterop ]]; then
 else
   log "Não estamos em ambiente WSL, mas continuando mesmo assim"
 fi
+
+# Importante: Verificar se já existe PM2 ou node rodando na porta 56258
+check_port() {
+  if command -v lsof >/dev/null 2>&1; then
+    if lsof -i :56258 >/dev/null 2>&1; then
+      log "AVISO: Porta 56258 já está em uso!"
+      log "Processos usando a porta 56258:"
+      lsof -i :56258
+      return 0  # porta em uso
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    if netstat -tuln | grep -q ":56258\\b"; then
+      log "AVISO: Porta 56258 já está em uso (verificado via netstat)!"
+      return 0  # porta em uso
+    fi
+  fi
+  return 1  # porta livre
+}
 
 # Função para iniciar um serviço e verificar se está rodando
 start_service() {
@@ -2616,11 +2634,28 @@ start_service postgresql
 start_service cups
 start_service smbd
 
-# Iniciar PM2 para gerenciar o servidor Node.js
+# Iniciar PM2 para gerenciar o servidor Node.js com verificação prévia de processos
 log "Verificando aplicação Node.js..."
 
+# IMPORTANTE: Primeiro verificar se já há processos executando ou porta em uso
+if check_port; then
+  log "ATENÇÃO: Já existe um processo usando a porta 56258. Não iniciaremos outro processo."
+  log "Caso haja problemas, execute manualmente: pm2 delete all && pm2 start ecosystem.config.js"
+  exit 0
+fi
+
+# Verificar e limpar processos PM2 antigos para evitar duplicação
 if command -v pm2 >/dev/null 2>&1; then
-  log "PM2 encontrado, iniciando aplicação..."
+  log "PM2 encontrado, verificando instâncias existentes..."
+  
+  # Verificar se já existe uma instância em execução
+  if pm2 list | grep -q "print_server_desktop"; then
+    log "Instância print_server_desktop já existe, não iniciaremos outra"
+    exit 0
+  fi
+  
+  # Limpar todas as instâncias PM2 antes de iniciar
+  pm2 delete all 2>/dev/null || true
   
   # Determinar o diretório correto da aplicação
   APP_DIR=""
@@ -2633,17 +2668,11 @@ if command -v pm2 >/dev/null 2>&1; then
   if [ -n "$APP_DIR" ]; then
     cd "$APP_DIR" || exit
     
-    # Verificar se já está rodando
-    if pm2 list | grep -q "print_server_desktop"; then
-      log "Aplicação já está em execução, reiniciando..."
-      pm2 restart print_server_desktop || pm2 restart all || true
+    log "Iniciando nova instância da aplicação..."
+    if [ -f "ecosystem.config.js" ]; then
+      pm2 start ecosystem.config.js
     else
-      log "Iniciando nova instância da aplicação..."
-      if [ -f "ecosystem.config.js" ]; then
-        pm2 start ecosystem.config.js
-      else
-        pm2 start bin/www.js --name print_server_desktop
-      fi
+      pm2 start bin/www.js --name print_server_desktop
     fi
     
     # Salvar para reinicialização automática
@@ -2738,72 +2767,20 @@ exit 0
     
     verification.log('Script de inicialização criado com sucesso', 'success');
     
-    // 5. Configurar script para ser executado no login de qualquer usuário
-    verification.log('Configurando execução automática para todos os usuários...', 'step');
+    // 5. REMOVIDO script em /etc/profile.d para todos os usuários (isso causava duplicação)
     
-    // Criar script em /etc/profile.d para todos os usuários
-    const profileScriptContent = `#!/bin/bash
-# Inicializar serviços do Print Server para qualquer usuário
-if [ -n "$WSL_DISTRO_NAME" ] || [ -f /proc/sys/fs/binfmt_misc/WSLInterop ]; then
-  # Verificar se serviços não estão rodando e iniciar como root
-  if ! systemctl is-active --quiet print-server.service 2>/dev/null; then
-    echo "Iniciando serviços do Print Server (se não estiverem ativos)..."
-    sudo /opt/loqquei/print_server_desktop/start-services.sh &>/dev/null &
-  fi
-fi
-`;
-    
-    const profileScriptPath = path.join(tempDir, 'print-server.sh');
-    fs.writeFileSync(profileScriptPath, profileScriptContent, 'utf8');
-    
-    // Obter caminho WSL
-    const profileWslPath = await verification.execPromise(
-      `wsl -d Ubuntu wslpath -u "${profileScriptPath.replace(/\\/g, '/')}"`,
-      10000,
-      true
-    );
-    
-    // Copiar para o diretório profile.d para ser executado por todos os usuários
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root mkdir -p /etc/profile.d`,
-      5000,
-      true
-    );
-    
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root cp "${profileWslPath.trim()}" /etc/profile.d/print-server.sh`,
-      10000,
-      true
-    );
-    
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root chmod +x /etc/profile.d/print-server.sh`,
-      5000,
-      true
-    );
-    
-    verification.log('Script para inicialização em todos os usuários configurado', 'success');
-    
-    // 6. Configurar para iniciar via /etc/bash.bashrc também (método adicional)
-    verification.log('Configurando método de inicialização via bash.bashrc...', 'step');
+    // 6. MODIFICADO script para /etc/bash.bashrc para só verificar, não iniciar novos processos
+    verification.log('Configurando verificação em vez de inicialização automática via bash.bashrc...', 'step');
     
     const bashrcContent = `
 # Início: Verificação de serviços do Print Server (inicialização WSL)
 if [ -n "$WSL_DISTRO_NAME" ] || [ -f /proc/sys/fs/binfmt_misc/WSLInterop ]; then
-  # Verificar se o usuário tem permissão sudo (ou é root)
-  if [ "$(id -u)" -eq 0 ] || groups | grep -qw sudo; then
-    # Verificar se serviços estão rodando, caso contrário iniciar
-    if ! systemctl is-active --quiet print-server.service 2>/dev/null; then
-      if [ -f "/opt/loqquei/print_server_desktop/start-services.sh" ]; then
-        echo "Iniciando serviços do Print Server..."
-        if [ "$(id -u)" -eq 0 ]; then
-          # Se for root, executar diretamente
-          /opt/loqquei/print_server_desktop/start-services.sh &>/dev/null &
-        else
-          # Se não for root, usar sudo
-          sudo /opt/loqquei/print_server_desktop/start-services.sh &>/dev/null &
-        fi
-      fi
+  # Verificar se os serviços estão rodando, sem iniciar automaticamente
+  if [ -f "/opt/loqquei/print_server_desktop/start-services.sh" ]; then
+    # Verificar se algum serviço está rodando na porta 56258
+    if command -v lsof >/dev/null 2>&1 && ! lsof -i :56258 >/dev/null 2>&1; then
+      echo "Aviso: Serviços do Print Server podem não estar rodando."
+      echo "Execute 'sudo /opt/loqquei/print_server_desktop/start-services.sh' manualmente para iniciar."
     fi
   fi
 fi
@@ -2820,31 +2797,34 @@ fi
       true
     );
     
-    // Verificar e adicionar ao bashrc global
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /etc/bash.bashrc; then cat '${bashrcWslPath.trim()}' >> /etc/bash.bashrc; fi"`,
+    // Verificar se o texto já existe no bashrc
+    const checkBashrc = await verification.execPromise(
+      `wsl -d Ubuntu -u root bash -c "if grep -q 'Verificação de serviços do Print Server' /etc/bash.bashrc; then echo 'exists'; else echo 'not_exists'; fi"`,
       10000,
       true
     );
     
-    // Verificar e adicionar ao .profile do usuário root
+    // Se o texto já existe, remover para evitar múltiplas entradas
+    if (checkBashrc.trim() === 'exists') {
+      verification.log('Removendo configuração antiga de bash.bashrc...', 'step');
+      await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "sed -i '/Início: Verificação de serviços do Print Server/,/Fim: Verificação de serviços do Print Server/d' /etc/bash.bashrc"`,
+        10000,
+        true
+      );
+    }
+    
+    // Adicionar ao bash.bashrc
     await verification.execPromise(
-      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /root/.profile; then cat '${bashrcWslPath.trim()}' >> /root/.profile; fi"`,
+      `wsl -d Ubuntu -u root bash -c "cat '${bashrcWslPath.trim()}' >> /etc/bash.bashrc"`,
       10000,
       true
     );
     
-    // Verificar e adicionar ao .profile do usuário print_user
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root bash -c "if ! grep -q 'Verificação de serviços do Print Server' /home/print_user/.profile; then cat '${bashrcWslPath.trim()}' >> /home/print_user/.profile; fi"`,
-      10000,
-      true
-    );
-    
-    verification.log('Método de inicialização alternativo configurado para todos os usuários', 'success');
+    verification.log('Configuração atualizada em bash.bashrc', 'success');
     
     // 7. Habilitar e iniciar o serviço systemd
-    verification.log('Habilitando e iniciando serviço systemd...', 'step');
+    verification.log('Habilitando serviço systemd...', 'step');
     
     try {
       // Recarregar daemon do systemd
@@ -2861,108 +2841,23 @@ fi
         true
       );
       
-      // Iniciar o serviço
-      await verification.execPromise(
-        `wsl -d Ubuntu -u root systemctl start print-server.service`,
-        30000,
-        true
-      );
-      
-      // Verificar status
-      const status = await verification.execPromise(
-        `wsl -d Ubuntu -u root systemctl status print-server.service || true`,
-        10000,
-        true
-      );
-      
-      verification.log(`Status do serviço: ${status.includes('active') ? 'Ativo' : 'Inativo'}`, 
-        status.includes('active') ? 'success' : 'warning');
+      verification.log('Serviço habilitado com sucesso', 'success');
     } catch (serviceError) {
       verification.log(`Aviso ao configurar serviço systemd: ${serviceError.message}`, 'warning');
-      verification.log('Continuando com métodos alternativos...', 'info');
     }
     
-    // 8. Configurar script de inicialização como comando de boot
-    verification.log('Configurando comando de boot no WSL...', 'step');
-    
+    // 8. Remover qualquer serviço boot duplicado
     try {
-      // No Windows 11/10 mais recente, podemos usar o comando wsl.exe --boot-command
       await verification.execPromise(
-        `wsl --shutdown`,
+        `wsl -d Ubuntu -u root systemctl disable wsl-boot.service 2>/dev/null || true`,
         10000,
         true
-      ).catch(() => {});
-      
-      // Tentativa 1: Usando o valor no wsl.conf (já configurado acima)
-      verification.log('Configuração de comando de boot aplicada via wsl.conf', 'success');
-      
-      // Tentativa 2: Usando WSL_BOOT_COMMAND (variável de ambiente)
-      try {
-        await verification.execPromise(
-          `setx WSL_BOOT_COMMAND "/opt/loqquei/print_server_desktop/start-services.sh" /M`,
-          10000,
-          true
-        ).catch(() => {});
-        verification.log('Variável de ambiente WSL_BOOT_COMMAND configurada', 'success');
-      } catch {
-        verification.log('Nota: Não foi possível configurar variável de ambiente', 'info');
-      }
-      
-    } catch (bootError) {
-      verification.log(`Aviso ao configurar comando de boot: ${bootError.message}`, 'warning');
+      );
+    } catch {
+      // Ignorar erros
     }
     
-    // 9. Criar um serviço systemd adicional específico para inicialização
-    const wslBootContent = `[Unit]
-Description=WSL Boot Service for Print Server
-After=network.target
-DefaultDependencies=no
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/bash /opt/loqquei/print_server_desktop/start-services.sh
-TimeoutStartSec=0
-
-[Install]
-WantedBy=default.target
-WantedBy=multi-user.target
-WantedBy=sysinit.target
-`;
-    
-    const wslBootPath = path.join(tempDir, 'wsl-boot.service');
-    fs.writeFileSync(wslBootPath, wslBootContent, 'utf8');
-    
-    // Obter caminho WSL
-    const wslBootWslPath = await verification.execPromise(
-      `wsl -d Ubuntu wslpath -u "${wslBootPath.replace(/\\/g, '/')}"`,
-      10000,
-      true
-    );
-    
-    // Copiar para o WSL
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root cp "${wslBootWslPath.trim()}" /etc/systemd/system/wsl-boot.service`,
-      10000,
-      true
-    );
-    
-    // Habilitar e iniciar o serviço
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root systemctl enable wsl-boot.service`,
-      15000,
-      true
-    ).catch(() => {});
-    
-    await verification.execPromise(
-      `wsl -d Ubuntu -u root systemctl start wsl-boot.service`,
-      15000,
-      true
-    ).catch(() => {});
-    
-    verification.log('Serviço boot adicional configurado', 'success');
-    
-    // 10. Reiniciar o WSL para aplicar as alterações
+    // 9. Reiniciar o WSL para aplicar as alterações
     verification.log('Reiniciando WSL para aplicar configurações...', 'step');
     await verification.execPromise('wsl --shutdown', 15000, true);
     
@@ -5261,15 +5156,58 @@ module.exports = {
       verification.log('Erro ao ajustar permissões, continuando...', 'warning');
     }
 
+    // IMPORTANTE: Verificar e parar quaisquer processos PM2 existentes antes de iniciar novos
+    verification.log('Verificando e limpando processos existentes na porta 56258...', 'step');
+    
+    try {
+      // Verificar processos na porta
+      const portCheck = await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "lsof -i :56258 || echo 'No processes'"`,
+        15000, 
+        false
+      );
+      
+      if (!portCheck.includes("No processes")) {
+        verification.log('Processos encontrados na porta 56258. Parando-os antes de iniciar novos...', 'warning');
+        
+        // Matar processos na porta 56258
+        await verification.execPromise(
+          `wsl -d Ubuntu -u root bash -c "lsof -i :56258 -t | xargs -r kill -9"`,
+          15000,
+          false
+        );
+        
+        // Parar processos PM2
+        await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 delete all || true"', 15000, false);
+        
+        // Verificar node diretamente
+        await verification.execPromise('wsl -d Ubuntu -u root bash -c "pkill -f node || true"', 15000, false);
+        
+        // Aguardar terminarem
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        verification.log('Processos anteriores encerrados', 'success');
+      } else {
+        verification.log('Nenhum processo encontrado na porta 56258', 'success');
+      }
+    } catch (portCheckError) {
+      verification.log('Erro ao verificar processos existentes, tentando limpar PM2 mesmo assim...', 'warning');
+      verification.logToFile(`Erro: ${JSON.stringify(portCheckError)}`);
+      
+      // Tentar parar PM2 de qualquer forma
+      try {
+        await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 delete all || true"', 15000, false);
+      } catch {
+        // Ignorar erros
+      }
+    }
+
     // Iniciar com PM2 de forma mais resiliente
     verification.log('Iniciando aplicação com PM2...', 'step');
     
     try {
-      // Parar qualquer instância existente de forma limpa
-      await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 delete all || true"', 20000, false);
-      
-      // Iniciar usando ecosystem.config.js ou método alternativo
-      const startCmd = `cd "${appDir}" && pm2 start ecosystem.config.js || pm2 start bin/www.js --name print_server_desktop`;
+      // Iniciar usando ecosystem.config.js ou método alternativo, depois de limpar PM2
+      const startCmd = `cd "${appDir}" && pm2 delete all 2>/dev/null || true && pm2 start ecosystem.config.js || pm2 start bin/www.js --name print_server_desktop`;
       await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${startCmd}"`, 60000, true);
       
       // Verificar se está em execução
@@ -5278,28 +5216,14 @@ module.exports = {
       if (checkRunning.includes('print_server') || checkRunning.includes('online')) {
         verification.log('Aplicação iniciada com PM2 com sucesso', 'success');
         
-        // Salvar configuração para reinicialização automática
+        // Salvar configuração para reinicialização automática (apenas uma vez)
         await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 save"', 15000, false);
-        await verification.execPromise(
-          `wsl -d Ubuntu -u root bash -c "grep -q 'Auto start PM2' ~/.bashrc || echo '\n# Início: Auto start PM2\nif command -v pm2 &> /dev/null; then\n  pm2 resurrect || pm2 start /opt/loqquei/print_server_desktop/ecosystem.config.js\nfi\n# Fim: Auto start PM2' >> ~/.bashrc"`,
-          15000,
-          true
-        );
+        
+        // REMOVIDO: Não adicionar ao .bashrc para evitar duplicação
         verification.log('Configuração PM2 salva', 'success');
         
-        // Configurar inicialização automática
-        try {
-          await verification.execPromise('wsl -d Ubuntu -u root bash -c "pm2 startup || true"', 20000, false);
-          await verification.execPromise(
-            `wsl -d Ubuntu -u root bash -c "grep -q 'Auto start PM2' ~/.bashrc || echo '\n# Início: Auto start PM2\nif command -v pm2 &> /dev/null; then\n  pm2 resurrect || pm2 start /opt/loqquei/print_server_desktop/ecosystem.config.js\nfi\n# Fim: Auto start PM2' >> ~/.bashrc"`,
-            15000,
-            true
-          );
-          verification.log('Inicialização automática configurada', 'success');
-        } catch {
-          verification.log('Erro ao configurar inicialização automática, continuando...', 'warning');
-        }
-        
+        // NÃO usar pm2 startup para evitar problemas de inicialização múltipla
+        verification.log('PM2 configurado para iniciar via serviço systemd apenas', 'success');
         return true;
       } else {
         verification.log('Aplicação possivelmente não iniciada, tentando método alternativo...', 'warning');
@@ -5312,6 +5236,20 @@ module.exports = {
     // Método alternativo de inicialização
     try {
       verification.log('Tentando método alternativo de inicialização...', 'step');
+      
+      // IMPORTANTE: Verificar se a porta já está em uso
+      const portFreeCheck = await verification.execPromise(
+        `wsl -d Ubuntu -u root bash -c "lsof -i :56258 || echo 'Port free'"`,
+        15000,
+        false
+      );
+      
+      if (!portFreeCheck.includes("Port free")) {
+        verification.log('Porta 56258 já está em uso! Não iniciaremos outro processo.', 'warning');
+        return true; // Retornar true para não bloquear instalação, mas não iniciar outro processo
+      }
+      
+      // Iniciar com método direto (Node.js)
       const simpleStartCmd = `cd "${appDir}" && nohup node bin/www.js > /var/log/print_server.log 2>&1 &`;
       
       await verification.execPromise(`wsl -d Ubuntu -u root bash -c "${simpleStartCmd}"`, 20000, true);
