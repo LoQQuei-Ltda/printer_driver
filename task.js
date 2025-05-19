@@ -305,38 +305,38 @@ function initializeSyncTasks() {
   setTimeout(async () => {
     try {
       await printSync();
-      await printersSync();
+      // await printersSync();
     } catch (error) {
       console.error('Erro na sincronização inicial:', error);
       verification.logToFile(`Erro na sincronização inicial: ${JSON.stringify(error)}`);
     }
   }, 5000); // 5 segundos de delay
   
-  const ruleForZeroSecond = new schedule.RecurrenceRule();
-  ruleForZeroSecond.second = [0];
+  // const ruleForZeroSecond = new schedule.RecurrenceRule();
+  // ruleForZeroSecond.second = [0];
 
   // Sincronização de impressões a cada minuto
-  schedule.scheduleJob(ruleForZeroSecond, async () => {
-    try {
-      await printSync();
-    } catch (error) {
-      console.error('Erro na sincronização de impressões:', error);
-      verification.logToFile(`Erro na sincronização de impressões: ${JSON.stringify(error)}`);
-    }
-  });
+  // schedule.scheduleJob(ruleForZeroSecond, async () => {
+  //   try {
+  //     await printSync();
+  //   } catch (error) {
+  //     console.error('Erro na sincronização de impressões:', error);
+  //     verification.logToFile(`Erro na sincronização de impressões: ${JSON.stringify(error)}`);
+  //   }
+  // });
 
-  const ruleForPrinterSync = new schedule.RecurrenceRule();
-  ruleForPrinterSync.minute = [0, 15, 30, 45];
+  // const ruleForPrinterSync = new schedule.RecurrenceRule();
+  // ruleForPrinterSync.minute = [0, 15, 30, 45];
 
   // Sincronização de impressoras a cada 15 minutos
-  schedule.scheduleJob(ruleForPrinterSync, async () => {
-    try {
-      await printersSync();
-    } catch (error) {
-      console.error('Erro na sincronização de impressoras:', error);
-      verification.logToFile(`Erro na sincronização de impressoras: ${JSON.stringify(error)}`);
-    }
-  });
+  // schedule.scheduleJob(ruleForPrinterSync, async () => {
+  //   try {
+  //     // await printersSync();
+  //   } catch (error) {
+  //     console.error('Erro na sincronização de impressoras:', error);
+  //     verification.logToFile(`Erro na sincronização de impressoras: ${JSON.stringify(error)}`);
+  //   }
+  // });
   
   console.log('Tarefas de sincronização inicializadas com sucesso.');
   verification.logToFile('Tarefas de sincronização inicializadas com sucesso.');
@@ -400,6 +400,16 @@ module.exports = {
     const ruleForMinute = new schedule.RecurrenceRule();
     ruleForMinute.minute = [0];
     
+    const ruleForZeroSecond = new schedule.RecurrenceRule();
+    ruleForZeroSecond.second = [0];
+    schedule.scheduleJob(ruleForZeroSecond, async () => {
+      try {
+        await printSync();
+      } catch (error) {
+        console.error('Erro na sincronização de impressões:', error);
+        verification.logToFile(`Erro na sincronização de impressões: ${JSON.stringify(error)}`);
+      }
+    });
     // Verificação programada a cada hora
     // schedule.scheduleJob(ruleForMinute, async () => {
     //   try {

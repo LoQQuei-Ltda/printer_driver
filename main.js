@@ -73,7 +73,7 @@ if (setupWSL) {
           detail: 'O sistema está pronto para uso, caso algo não funcione, volte a aba de sistema e faça uma verificação completa do sistema, e se necessário, reinstale.',
           buttons: ['OK']
         }).then(() => {
-          printersSync();
+          // printersSync();
           initTask();
           app.exit(0);
         });
@@ -494,8 +494,11 @@ function isAuthenticated() {
 function saveUserData(userData) {
   try {
     ensureDirectories();
+    console.log("userData> ", userData);
     const data = userData && userData.data ? userData.data : userData;
+    console.log("data> ", data);
     fs.writeFileSync(appConfig.userDataFile, JSON.stringify(data, null, 2), 'utf8');
+    console.log("salvo!!");
   } catch (error) {
     console.error('Erro ao salvar dados do usuário:', error);
   }
@@ -1148,7 +1151,7 @@ app.whenReady().then(async () => {
     }
   }
 
-  printersSync();
+  // printersSync();
   initTask();
   await ensureServicesRunning();
   
@@ -2082,7 +2085,7 @@ ipcMain.on('iniciar-instalacao', async (event, options = {}) => {
         detail: 'O sistema está pronto para uso, caso algo não funcione, volte a aba de sistema e faça uma verificação completa do sistema, e se necessário, reinstale.',
         buttons: ['OK']
       });
-      printersSync();
+      // printersSync();
       initTask();
       // Atualizar o status do sistema após a instalação
       try {
@@ -2545,7 +2548,7 @@ ipcMain.on('navegar-para', (event, dados) => {
 module.exports = {
   userData: getUserData(),
   getAutoPrintConfig,
-  appConfig
+  appConfig: appConfig
 };
 
 initTask();

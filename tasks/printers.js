@@ -49,6 +49,9 @@ module.exports = {
 
             // 1. Obter impressoras do servidor central
             let printersSystem;
+            verification.logToFile('Obtendo impressoras do servidor central...');
+            verification.logToFile(`${appConfig.apiPrincipalServiceUrl}/desktop/printers`);
+            verification.logToFile(`Authorization: Bearer ${userData.token}`);
             try {
                 printersSystem = await axios.get(`${appConfig.apiPrincipalServiceUrl}/desktop/printers`, {
                     headers: {
@@ -58,7 +61,7 @@ module.exports = {
                 });
             } catch (error) {
                 verification.logToFile(`Erro ao obter impressoras do servidor, ${JSON.stringify(error)}`);
-                console.log('Erro ao obter impressoras do servidor:', error?.response?.data);
+                console.log('Erro ao obter impressoras do servidor:', JSON.stringify(error));
                 clearTimeout(globalTimeout);
                 return;
             }

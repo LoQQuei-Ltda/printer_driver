@@ -6,6 +6,7 @@ module.exports = {
         const { appConfig, userData } = require('../main');
         
         try {
+            verification.logToFile('Iniciando sincronização de impressão...');
             const response = await axios.get(`${appConfig.apiLocalUrl}/sync`);
 
             let data
